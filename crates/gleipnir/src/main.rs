@@ -58,6 +58,7 @@ fn main() {
             gleipnir_editor::bind_keys(cx);
             gleipnir_workspace::bind_keys(cx);
             gleipnir_project_panel::bind_keys(cx);
+            gleipnir_search::bind_keys(cx);
             set_menus(cx);
 
             // Loaded last, so that it overrides the defaults.
@@ -82,9 +83,10 @@ fn main() {
                 store
             });
             cx.set_global(GlobalStore(store));
-            cx.set_global(WorkspaceInit(Rc::new(
-                gleipnir_project_panel::add_to_workspace,
-            )));
+            cx.set_global(WorkspaceInit(Rc::new(|workspace, window, cx| {
+                gleipnir_project_panel::add_to_workspace(workspace, window, cx);
+                gleipnir_search::add_to_workspace(workspace, window, cx);
+            })));
 
             let window = open_project_window(target.root.clone(), false, cx);
             if let Some(file) = target.file.clone() {
@@ -126,6 +128,18 @@ fn set_menus(cx: &mut App) {
                 MenuItem::separator(),
                 MenuItem::action("Save", gleipnir_editor::Save),
                 MenuItem::action("Save As…", SaveAs),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Navigate".into(),
+            items: vec![
+                MenuItem::action("Search Everywhere", gleipnir_search::SearchEverywhere),
+                MenuItem::action("Go to File…", gleipnir_search::GoToFile),
+                MenuItem::action("Go to Class…", gleipnir_search::GoToClass),
+                MenuItem::action("Go to Symbol…", gleipnir_search::GoToSymbol),
+                MenuItem::action("Find Action…", gleipnir_search::FindAction),
+                MenuItem::action("Recent Files", gleipnir_search::RecentFiles),
             ],
             disabled: false,
         },

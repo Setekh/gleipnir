@@ -10,6 +10,7 @@ name = "gleipnir_core"
 [dependencies]
 anyhow.workspace = true
 futures.workspace = true
+gleipnir-index.workspace = true
 gleipnir-syntax.workspace = true
 gleipnir-text.workspace = true
 gpui.workspace = true

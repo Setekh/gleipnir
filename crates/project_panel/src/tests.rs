@@ -442,17 +442,9 @@ fn the_tree_state_is_saved_and_restored(cx: &mut TestAppContext) {
     let workspace = s.workspace.clone();
     let panel = s.cx.update(|window, cx| {
         let store = workspace.read(cx).store().clone();
+        let project = workspace.read(cx).project().cloned();
         let weak = workspace.downgrade();
-        cx.new(|cx| {
-            ProjectPanel::new(
-                weak,
-                workspace.clone(),
-                store,
-                Some(root.clone()),
-                window,
-                cx,
-            )
-        })
+        cx.new(|cx| ProjectPanel::new(weak, workspace.clone(), store, project, window, cx))
     });
     s.cx.update(|window, cx| {
         panel.update(cx, |p, cx| p.restore_state(saved.clone(), window, cx));

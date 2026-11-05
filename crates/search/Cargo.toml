@@ -1,0 +1,23 @@
+[package]
+name = "gleipnir-search"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gleipnir_search"
+
+[dependencies]
+gleipnir-core.workspace = true
+gleipnir-index.workspace = true
+gleipnir-syntax.workspace = true
+gleipnir-ui.workspace = true
+gleipnir-workspace.workspace = true
+gpui.workspace = true
+
+[dev-dependencies]
+gleipnir-editor.workspace = true
+gleipnir-test-support = { path = "../test_support" }
+gpui = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
+tempfile = "3"

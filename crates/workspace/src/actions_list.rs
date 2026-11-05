@@ -28,8 +28,10 @@ pub fn humanize_action_name(name: &str) -> String {
     title
 }
 
-/// All commands, sorted by title, with whichever shortcut currently wins for each.
+/// All commands, sorted by title, with whichever shortcut would run each from where focus is now.
+/// Shortcuts bound only in a context, like the editor's, show when focus is in that context.
 pub fn list_actions(window: &Window, cx: &App) -> Vec<ActionInfo> {
+    let focused = window.focused(cx);
     let mut actions: Vec<ActionInfo> = cx
         .all_action_names()
         .iter()
@@ -39,16 +41,20 @@ pub fn list_actions(window: &Window, cx: &App) -> Vec<ActionInfo> {
         })
         .filter_map(|name| {
             let action = cx.build_action(name, None).ok()?;
-            let shortcut = window
-                .highest_precedence_binding_for_action(action.as_ref())
-                .map(|binding| {
-                    binding
-                        .keystrokes()
-                        .iter()
-                        .map(|k| k.unparse(cx.platform_info().os))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                });
+            let binding = match &focused {
+                Some(focus) => {
+                    window.highest_precedence_binding_for_action_in(action.as_ref(), focus)
+                }
+                None => window.highest_precedence_binding_for_action(action.as_ref()),
+            };
+            let shortcut = binding.map(|binding| {
+                binding
+                    .keystrokes()
+                    .iter()
+                    .map(|k| k.unparse(cx.platform_info().os))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            });
             Some(ActionInfo {
                 name: name.to_string(),
                 title: humanize_action_name(name),

@@ -1,7 +1,7 @@
 # Architecture
 
-Status: `text`, `syntax`, `index`, `core`, `ui`, `editor`, `workspace`, `project_panel` and the
-`gleipnir` binary exist. The rest is the design to build towards.
+Status: `text`, `syntax`, `index`, `core`, `ui`, `editor`, `workspace`, `project_panel`, `search`
+and the `gleipnir` binary exist. The rest is the design to build towards.
 
 ## Decisions
 
@@ -10,7 +10,9 @@ Status: `text`, `syntax`, `index`, `core`, `ui`, `editor`, `workspace`, `project
   so Wayland on a tiling compositor is what will have to work. The code keeps building for it, and
   `script/linux-check` verifies that, but nothing has been run on a real Linux desktop yet.
 - **Repository:** local only for now, so `script/check` stands in for CI.
-- **Shortcuts:** IntelliJ's macOS and Linux keymaps are the defaults, and they'll be rebindable.
+- **Shortcuts:** IntelliJ's macOS and Linux keymaps are the defaults, rebindable in
+  `~/.config/gleipnir/keymap.conf`. Following IntelliJ, `Cmd+O` and `Cmd+Shift+O` are Go to Class and
+  Go to File, so opening a file or folder is in the File menu, with no shortcut.
 
 ## Goals
 
@@ -134,6 +136,15 @@ replace index entries for the same location, as they're more precise.
 
 Double-shift detection is a small state machine over GPUI's modifier events: shift down and up, then
 down again within a time window, with no other key in between.
+
+`core::Project` owns everything the search reads: one file watcher per project, the file list, the
+symbol index and git status. The project tree reads git status and change events from it too, so a
+folder is only ever watched and scanned once. Changes inside ignored top-level folders, like
+`target/`, don't trigger git refreshes, as builds churn through them constantly.
+
+Matching is our own, in `index::fuzzy`: a dynamic program that rewards word starts, camelCase humps
+and consecutive runs, so `usrCtl` finds `UserController`. Searches run on every core and keep only the
+best results, and a newer keystroke cancels an older search still running.
 
 ## Packages and SDKs
 

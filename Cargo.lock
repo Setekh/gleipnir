@@ -1896,6 +1896,7 @@ dependencies = [
  "gleipnir-core",
  "gleipnir-editor",
  "gleipnir-project-panel",
+ "gleipnir-search",
  "gleipnir-syntax",
  "gleipnir-ui",
  "gleipnir-workspace",
@@ -1911,6 +1912,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures",
+ "gleipnir-index",
  "gleipnir-syntax",
  "gleipnir-text",
  "gpui",
@@ -1938,6 +1940,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures",
+ "gleipnir-syntax",
  "ignore",
  "notify",
  "tempfile",
@@ -1958,6 +1961,22 @@ dependencies = [
  "gleipnir-workspace",
  "gpui",
  "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "gleipnir-search"
+version = "0.1.0"
+dependencies = [
+ "gleipnir-core",
+ "gleipnir-editor",
+ "gleipnir-index",
+ "gleipnir-syntax",
+ "gleipnir-test-support",
+ "gleipnir-ui",
+ "gleipnir-workspace",
+ "gpui",
  "serde_json",
  "tempfile",
 ]

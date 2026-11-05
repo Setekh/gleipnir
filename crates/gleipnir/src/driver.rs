@@ -7,6 +7,8 @@
 //!     key <keystrokes>            one or more space-separated keystrokes, like: key cmd-s down
 //!     do <EditorAction>           presses the key this platform binds to an editor action
 //!     action <namespace::Name>    dispatches an action to whatever has focus
+//!     double-shift                taps Shift twice, as real modifier events
+//!     wait-idle                   waits for the project's scanning and indexing to finish
 //!     expect-state <pointer> <v>  checks a value in the state, by JSON pointer; see `dump`
 //!     wait-state <pointer> <v>    waits up to ten seconds for a value, for anything asynchronous
 //!     type <text>                 types text, one keystroke per character. Text in any command
@@ -222,6 +224,37 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
             press(keystroke, window, cx)?;
         }
         "type" => type_text(&unescape(rest), window, cx)?,
+        "double-shift" => {
+            for shift in [true, false, true, false] {
+                let modifiers = gpui::Modifiers {
+                    shift,
+                    ..gpui::Modifiers::none()
+                };
+                let event = gpui::PlatformInput::ModifiersChanged(gpui::ModifiersChangedEvent {
+                    modifiers,
+                    capslock: gpui::Capslock { on: false },
+                });
+                with_window(window, cx, |window, cx| {
+                    window.dispatch_event(event, cx);
+                })?;
+                sleep(Duration::from_millis(30), cx).await;
+            }
+        }
+        "wait-idle" => {
+            let started = Instant::now();
+            loop {
+                let busy = with_workspace(window, cx, |workspace, _, cx| {
+                    workspace.project().is_some_and(|p| p.read(cx).is_busy())
+                })?;
+                if !busy {
+                    break;
+                }
+                if started.elapsed() > Duration::from_secs(60) {
+                    bail!("the project was still busy after a minute");
+                }
+                sleep(Duration::from_millis(20), cx).await;
+            }
+        }
         "wait" => sleep(Duration::from_millis(rest.parse()?), cx).await,
         "wait-parsed" => {
             let started = Instant::now();

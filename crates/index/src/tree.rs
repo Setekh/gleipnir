@@ -97,6 +97,12 @@ impl IgnoreRules {
     }
 }
 
+/// Whether git would ignore a path, by the rules from the project root down to it.
+pub fn is_ignored(root: &Path, path: &Path, is_dir: bool) -> bool {
+    let dir = path.parent().unwrap_or(root);
+    IgnoreRules::for_dir(root, dir).is_ignored(path, is_dir)
+}
+
 fn global_gitignore() -> &'static Gitignore {
     static GLOBAL: OnceLock<Gitignore> = OnceLock::new();
     GLOBAL.get_or_init(|| Gitignore::global().0)

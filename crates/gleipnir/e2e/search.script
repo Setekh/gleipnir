@@ -1,0 +1,53 @@
+# M3: Search Everywhere, driven with real modifier events and the keymap.
+wait-idle
+wait-state /panels/project/rows/0 search
+
+# Double Shift opens it on All.
+double-shift
+wait-state /modal SearchPopup
+type util
+wait 150
+screenshot {shots}/20-search-all.png
+key escape
+expect-state /modal null
+
+# Go to File, with a line number.
+action search::GoToFile
+type util.rs:1
+wait 150
+key enter
+wait-state /panes/0/tabs/0 util.rs
+expect-language Rust
+
+# Go to Symbol finds Odin and Go declarations, which only the tree-sitter index knows about.
+action search::GoToSymbol
+type Point
+wait 150
+screenshot {shots}/21-search-symbols.png
+key enter
+wait-state /modal null
+wait-state /editor/language Go
+# The cursor lands on the name: byte 33 is the P of `type Point`.
+expect-state /editor/selections/0/0 33
+
+# Find Action runs a command on the editor that was focused before.
+action search::GoToFile
+type main.rs
+wait 150
+key enter
+wait-state /editor/language Rust
+wait-state /editor/text fn main() {\n    println!("hello");\n}\n
+action search::FindAction
+type dupl line
+wait 150
+screenshot {shots}/22-search-actions.png
+key enter
+wait-state /modal null
+expect-contains fn main() {\nfn main() {
+
+# Recent files, starting on the previous one.
+action search::RecentFiles
+wait 100
+screenshot {shots}/23-recent.png
+key enter
+wait-state /editor/language Go

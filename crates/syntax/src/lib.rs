@@ -6,8 +6,10 @@
 //! the edits applied, which is close enough for a frame or two, so a large file can't stall typing.
 
 mod highlight;
+mod symbols;
 
 pub use highlight::{HighlightKind, HighlightSpan, highlights, precompile_queries};
+pub use symbols::{Symbol, SymbolKind, extract_symbols};
 
 use gleipnir_text::ops::EditConfig;
 use gleipnir_text::{AppliedEdit, Point as TextPoint, Snapshot};

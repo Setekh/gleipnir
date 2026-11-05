@@ -2,8 +2,8 @@
 
 An IDE written in Rust on [GPUI](https://gpui.rs), for TypeScript, JavaScript, Odin, Rust and Go.
 
-Status: a project-based editor with a file tree, tabs, split panes and multi-cursor editing.
-Search, code intelligence and debugging are next. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+Status: a project-based editor with a file tree, tabs, split panes, multi-cursor editing and
+IntelliJ-style Search Everywhere. Code intelligence and debugging are next. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 for the design and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
 
 ## Building
@@ -30,11 +30,15 @@ searches much harder, and has found real bugs that the default run missed.
 - `crates/gleipnir`: the application, and the end-to-end test driver.
 - `crates/workspace`: the window: panes, tabs, docks, status bar, saved layouts, the keymap file.
 - `crates/project_panel`: the project tree.
+- `crates/search`: Search Everywhere, its tabs, and the double-Shift gesture.
 - `crates/editor`: the editor view: rendering, input, mouse and key bindings.
 - `crates/ui`: theme, icons, text input, context menu and list navigation.
-- `crates/core`: open buffers, file loading and saving, external change detection.
-- `crates/index`: the file tree model, gitignore rules, git status, file watching and file operations.
-- `crates/syntax`: languages, background parsing, highlighting and structural selection.
+- `crates/core`: open buffers, file loading and saving, external change detection, and the project:
+  its files, symbol index and git status, kept current by watching it.
+- `crates/index`: the file tree model, file list, fuzzy matching and search, gitignore rules, git
+  status, file watching and file operations.
+- `crates/syntax`: languages, background parsing, highlighting, structural selection and symbol
+  extraction.
 - `crates/text`: rope buffer, undo, selections, and every editing command as a pure function.
 - `crates/test_support`: helpers shared by the UI tests.
 

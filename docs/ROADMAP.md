@@ -77,6 +77,9 @@ Still open from M2:
 
 Goal: double-shift finds any file, symbol or action.
 
+Status: built and passing on macOS. On the Zed source tree, 4,395 files and 82,544 symbols index in
+about four seconds in the background, and a search over 100,000 paths takes under 10 ms.
+
 | # | Item | Finished when |
 | --- | --- | --- |
 | 3.1 | `index`: file scan respecting `.gitignore`, file watching | Handles a 100k-file repo without blocking the UI |
@@ -85,6 +88,12 @@ Goal: double-shift finds any file, symbol or action.
 | 3.4 | File and action providers, recents | Both searchable and runnable from the popup |
 | 3.5 | Tree-sitter symbol index, all five languages | Finds symbols with no language server running |
 | 3.6 | Direct entry points: go to file, symbol and action; recent files | Each opens the popup on the right tab |
+
+Still open from M3:
+
+- **Symbols come from files on disk,** so unsaved edits show up in search once they're saved.
+- **There's no full-text search** (Find in Files) yet. It's on the list for later.
+- **Symbols from language servers** join the index in M5, as planned in item 5.9.
 
 ## M4: Packages and SDKs
 

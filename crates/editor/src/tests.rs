@@ -648,3 +648,23 @@ fn saving_without_a_path_asks_the_host(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(save);
     assert!(asked.get());
 }
+
+#[gpui::test]
+fn jumping_to_a_line_far_away_centres_it(cx: &mut TestAppContext) {
+    let text = "line\n".repeat(1000);
+    let (editor, cx) = setup(&text, None, cx);
+    cx.simulate_resize(size(px(800.), px(600.)));
+    cx.run_until_parked();
+    editor.update(cx, |e, cx| e.jump_to(500, 2, cx));
+    cx.run_until_parked();
+    let (first, count, head) = editor.read_with(cx, |e, _| {
+        let g = e.geometry.as_ref().unwrap();
+        (g.first_line, g.lines.len(), e.selections().primary().head)
+    });
+    assert_eq!(head, 500 * 5 + 2);
+    let middle = first + count / 2;
+    assert!(
+        middle.abs_diff(500) <= 2,
+        "line 500 should be centred, the screen shows {first}+{count}"
+    );
+}

@@ -21,6 +21,8 @@ fn keys(text: &str) -> String {
 
 fn init(cx: &mut TestAppContext) {
     isolate_state();
+    // A workspace on a folder watches it, from a thread of its own.
+    cx.executor().allow_parking();
     cx.update(|cx| {
         gleipnir_ui::init_theme(cx);
         gleipnir_ui::bind_text_input_keys(cx);
@@ -554,6 +556,24 @@ fn every_command_is_listed_with_a_readable_title_and_its_shortcut(cx: &mut TestA
     assert!(split.shortcut.is_some());
     // Widget internals aren't commands someone would search for.
     assert!(actions.iter().all(|a| !a.name.starts_with("text_input::")));
+}
+
+#[gpui::test]
+fn shortcuts_bound_in_a_context_show_when_focus_is_there(cx: &mut TestAppContext) {
+    let (_dir, root) = project(&[("a.rs", "")]);
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    open(&workspace, root.join("a.rs"), cx);
+    let actions = cx.update(|window, cx| list_actions(window, cx));
+    let duplicate = actions
+        .iter()
+        .find(|a| a.name == "editor::DuplicateLine")
+        .unwrap();
+    let expected = if cfg!(target_os = "macos") {
+        "cmd-d"
+    } else {
+        "ctrl-d"
+    };
+    assert_eq!(duplicate.shortcut.as_deref(), Some(expected));
 }
 
 #[gpui::test]

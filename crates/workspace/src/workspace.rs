@@ -8,7 +8,7 @@ use crate::persistence::{
     self, SavedDock, SavedPane, SavedTab, SavedTree, SavedWorkspace, remember_last_project,
 };
 use anyhow::Result;
-use gleipnir_core::{BufferModel, BufferStore, DiskStatus};
+use gleipnir_core::{BufferModel, BufferStore, DiskStatus, Project};
 use gleipnir_editor::{EditorEvent, EditorState, EditorView};
 use gleipnir_text::SelectionSet;
 use gleipnir_ui::{Icon, Theme};
@@ -55,8 +55,6 @@ pub fn bind_keys(cx: &mut App) {
     #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
-        KeyBinding::new("cmd-o", OpenFile, None),
-        KeyBinding::new("cmd-shift-o", OpenFolder, None),
         KeyBinding::new("cmd-n", NewFile, None),
         KeyBinding::new("cmd-shift-s", SaveAs, None),
         KeyBinding::new("cmd-w", CloseTab, None),
@@ -68,9 +66,6 @@ pub fn bind_keys(cx: &mut App) {
     #[cfg(not(target_os = "macos"))]
     cx.bind_keys([
         KeyBinding::new("ctrl-q", Quit, None),
-        KeyBinding::new("ctrl-o", OpenFile, None),
-        KeyBinding::new("ctrl-shift-o", OpenFolder, None),
-        KeyBinding::new("ctrl-n", NewFile, None),
         KeyBinding::new("ctrl-shift-s", SaveAs, None),
         KeyBinding::new("ctrl-w", CloseTab, None),
         KeyBinding::new("ctrl-\\", SplitRight, None),
@@ -129,10 +124,31 @@ impl gpui::Global for GlobalStore {}
 
 type ExtraAction = Rc<dyn Fn(gpui::Div, &mut Context<Workspace>) -> gpui::Div>;
 
+/// A popup over the workspace, like Search Everywhere. Emits `DismissEvent` to close itself.
+pub trait ModalView: gpui::Render + Focusable + EventEmitter<gpui::DismissEvent> {}
+
+struct ActiveModal {
+    view: gpui::AnyView,
+    type_id: std::any::TypeId,
+    name: &'static str,
+    /// Where focus goes back to when the popup closes.
+    restore_focus: Option<FocusHandle>,
+    _subscription: Subscription,
+}
+
+pub enum EmptyHint {
+    Action(Box<dyn gpui::Action>),
+    Text(&'static str),
+}
+
+/// How many recently opened files and used commands to remember.
+const RECENT_LIMIT: usize = 50;
+
 pub struct Workspace {
     focus_handle: FocusHandle,
     store: Entity<BufferStore>,
     root: Option<PathBuf>,
+    project: Option<Entity<Project>>,
     center: PaneTree<Entity<Pane>>,
     active_pane: Entity<Pane>,
     docks: [Dock; 3],
@@ -149,6 +165,13 @@ pub struct Workspace {
     pane_subscriptions: HashMap<gpui::EntityId, Subscription>,
     last_active_file: Option<PathBuf>,
     closing_confirmed: bool,
+    modal: Option<ActiveModal>,
+    /// Most recent first.
+    recent_files: Vec<PathBuf>,
+    recent_actions: Vec<String>,
+    /// What the empty pane suggests, which features add to: a label, and the action whose shortcut
+    /// to show, or fixed text for gestures that aren't key bindings.
+    empty_hints: Vec<(&'static str, EmptyHint)>,
 }
 
 /// A plain description of the workspace, for tests and the end-to-end driver.
@@ -161,6 +184,18 @@ pub struct WorkspaceSnapshot {
     pub message: Option<String>,
     pub panels: HashMap<String, serde_json::Value>,
     pub actions: usize,
+    /// The open popup's type name, if there is one.
+    pub modal: Option<String>,
+    /// Files and symbols indexed, and whether indexing is still running.
+    pub index: Option<IndexSnapshot>,
+    pub recent_files: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct IndexSnapshot {
+    pub files: usize,
+    pub symbols: usize,
+    pub busy: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -187,10 +222,12 @@ impl Workspace {
         let weak_self = cx.weak_entity();
         let pane = cx.new(|cx| Pane::new(weak_self.clone(), window, cx));
         let root = root.map(|r| std::fs::canonicalize(&r).unwrap_or(r));
+        let project = root.clone().map(|root| cx.new(|cx| Project::new(root, cx)));
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             store,
             root,
+            project,
             center: PaneTree::Pane(pane.clone()),
             active_pane: pane.clone(),
             docks: [
@@ -210,6 +247,10 @@ impl Workspace {
             pane_subscriptions: HashMap::new(),
             last_active_file: None,
             closing_confirmed: false,
+            modal: None,
+            recent_files: Vec::new(),
+            recent_actions: Vec::new(),
+            empty_hints: Vec::new(),
         };
         this.watch_pane(&pane, cx);
         if let Some(root) = &this.root {
@@ -236,6 +277,123 @@ impl Workspace {
 
     pub fn store(&self) -> &Entity<BufferStore> {
         &self.store
+    }
+
+    pub fn project(&self) -> Option<&Entity<Project>> {
+        self.project.as_ref()
+    }
+
+    /// Recently opened files, most recent first, the current one included.
+    pub fn recent_files(&self) -> &[PathBuf] {
+        &self.recent_files
+    }
+
+    /// Commands recently run from search, most recent first.
+    pub fn recent_actions(&self) -> &[String] {
+        &self.recent_actions
+    }
+
+    pub fn note_action_used(&mut self, name: &str, cx: &mut Context<Self>) {
+        self.recent_actions.retain(|a| a != name);
+        self.recent_actions.insert(0, name.to_string());
+        self.recent_actions.truncate(RECENT_LIMIT);
+        self.schedule_save(cx);
+    }
+
+    /// Opens a popup, replacing any that's open. If one of the same type is open, closes it
+    /// instead, so the key that opens a popup also closes it.
+    pub fn toggle_modal<V: ModalView>(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        build: impl FnOnce(&mut Window, &mut Context<V>) -> V,
+    ) -> Option<Entity<V>> {
+        let same_kind = self
+            .modal
+            .as_ref()
+            .is_some_and(|modal| modal.type_id == std::any::TypeId::of::<V>());
+        let restore_focus = match self.modal.take() {
+            Some(previous) => previous.restore_focus,
+            None => window.focused(cx),
+        };
+        if same_kind {
+            if let Some(focus) = restore_focus {
+                window.focus(&focus, cx);
+            }
+            cx.notify();
+            return None;
+        }
+        let view = cx.new(|cx| build(window, cx));
+        let focus = view.read(cx).focus_handle(cx);
+        let subscription = cx.subscribe_in(
+            &view,
+            window,
+            |this, _, _: &gpui::DismissEvent, window, cx| {
+                this.dismiss_modal(window, cx);
+            },
+        );
+        window.focus(&focus, cx);
+        let name = std::any::type_name::<V>();
+        self.modal = Some(ActiveModal {
+            view: view.clone().into(),
+            type_id: std::any::TypeId::of::<V>(),
+            name: name.rsplit("::").next().unwrap_or(name),
+            restore_focus,
+            _subscription: subscription,
+        });
+        cx.notify();
+        Some(view)
+    }
+
+    pub fn active_modal<V: ModalView>(&self) -> Option<Entity<V>> {
+        self.modal.as_ref()?.view.clone().downcast::<V>().ok()
+    }
+
+    /// Closes the popup and puts focus back where it was.
+    pub fn dismiss_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(modal) = self.modal.take() {
+            match modal.restore_focus {
+                Some(focus) => window.focus(&focus, cx),
+                None => self.focus_center(window, cx),
+            }
+            cx.notify();
+        }
+    }
+
+    pub fn has_modal(&self) -> bool {
+        self.modal.is_some()
+    }
+
+    /// Opens a file and puts the cursor at a zero-based line and byte column.
+    pub fn open_path_at(
+        &mut self,
+        path: PathBuf,
+        position: Option<(usize, usize)>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Entity<EditorView>>> {
+        let open = self.open_path(path, window, cx);
+        cx.spawn(async move |_, cx| {
+            let editor = open.await?;
+            if let Some((line, column)) = position {
+                editor.update(cx, |editor, cx| editor.jump_to(line, column, cx));
+            }
+            Ok(editor)
+        })
+    }
+
+    /// Adds a suggestion to the empty pane, shown with the action's current shortcut.
+    pub fn add_empty_hint(&mut self, label: &'static str, hint: EmptyHint) {
+        self.empty_hints.push((label, hint));
+    }
+
+    /// Adds listeners to the workspace's root element, for features that need to see every key or
+    /// modifier change in the window, like the double-shift gesture.
+    pub fn add_root_hook(
+        &mut self,
+        hook: impl Fn(gpui::Div, &mut Context<Workspace>) -> gpui::Div + 'static,
+    ) {
+        self.extra_actions.push(Rc::new(hook));
     }
 
     pub fn panes(&self) -> Vec<Entity<Pane>> {
@@ -416,6 +574,11 @@ impl Workspace {
         let file = self.active_file(cx);
         if file != self.last_active_file {
             self.last_active_file = file.clone();
+            if let Some(path) = &file {
+                self.recent_files.retain(|p| p != path);
+                self.recent_files.insert(0, path.clone());
+                self.recent_files.truncate(RECENT_LIMIT);
+            }
             cx.emit(WorkspaceEvent::ActiveFileChanged(file));
         }
         cx.notify();
@@ -1022,6 +1185,8 @@ impl Workspace {
                 })
                 .collect(),
             panels,
+            recent_files: self.recent_files.clone(),
+            recent_actions: self.recent_actions.clone(),
         }
     }
 
@@ -1034,6 +1199,14 @@ impl Workspace {
         let Some(saved) = persistence::load(&root) else {
             return false;
         };
+        // Only files that still exist are worth offering.
+        self.recent_files = saved
+            .recent_files
+            .iter()
+            .filter(|p| p.is_file())
+            .cloned()
+            .collect();
+        self.recent_actions = saved.recent_actions.clone();
 
         for saved_dock in &saved.docks {
             let dock = self.dock_mut(saved_dock.position);
@@ -1200,6 +1373,21 @@ impl Workspace {
                 .map(|p| (p.id(cx).to_string(), p.debug_state(cx)))
                 .collect(),
             actions: list_actions(window, cx).len(),
+            modal: self.modal.as_ref().map(|modal| modal.name.to_string()),
+            index: self.project.as_ref().map(|project| {
+                let project = project.read(cx);
+                let status = project.status();
+                IndexSnapshot {
+                    files: status.files,
+                    symbols: status.symbols,
+                    busy: project.is_busy(),
+                }
+            }),
+            recent_files: self
+                .recent_files
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
         }
     }
 
@@ -1308,9 +1496,14 @@ impl Workspace {
                     .flex_col()
                     .gap(px(8.))
                     .w(px(280.))
-                    .child(hint("Open file", shortcut(&OpenFile)))
-                    .child(hint("Open folder", shortcut(&OpenFolder)))
-                    .child(hint("New file", shortcut(&NewFile))),
+                    .children(self.empty_hints.iter().map(|(label, keys)| {
+                        let keys = match keys {
+                            EmptyHint::Action(action) => shortcut(action.as_ref()),
+                            EmptyHint::Text(text) => text.to_string(),
+                        };
+                        hint(label, keys)
+                    }))
+                    .child(hint("Open folder", shortcut(&OpenFolder))),
             )
             .into_any_element()
     }
@@ -1750,6 +1943,7 @@ impl Render for Workspace {
         let resizing = self.resize.clone();
 
         let root = div()
+            .relative()
             .track_focus(&self.focus_handle)
             .key_context("Workspace")
             .flex()
@@ -1824,6 +2018,16 @@ impl Render for Workspace {
         let right = self.render_dock(DockPosition::Right, cx);
         let bottom = self.render_dock(DockPosition::Bottom, cx);
         let status = self.render_status_bar(cx);
+        let modal = self.modal.as_ref().map(|modal| {
+            div()
+                .absolute()
+                .top(px(72.))
+                .left_0()
+                .right_0()
+                .flex()
+                .justify_center()
+                .child(modal.view.clone())
+        });
 
         root.child(
             div()
@@ -1854,6 +2058,7 @@ impl Render for Workspace {
                 .children(right_rail),
         )
         .child(status)
+        .children(modal)
     }
 }
 

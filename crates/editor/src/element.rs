@@ -312,7 +312,9 @@ impl Element for EditorElement {
                 let margin =
                     line_height * SCROLL_MARGIN_LINES.min(((viewport_lines - 1.) / 2.).max(0.));
                 let top = line_height * point.line as f32;
-                if top - margin < view.scroll.y {
+                if std::mem::take(&mut view.autoscroll_center) {
+                    view.scroll.y = top - (bounds.size.height - line_height) / 2.;
+                } else if top - margin < view.scroll.y {
                     view.scroll.y = top - margin;
                 } else if top + line_height + margin > view.scroll.y + bounds.size.height {
                     view.scroll.y = top + line_height + margin - bounds.size.height;

@@ -96,6 +96,10 @@ pub struct SavedWorkspace {
     pub docks: Vec<SavedDock>,
     #[serde(default)]
     pub panels: HashMap<String, serde_json::Value>,
+    #[serde(default)]
+    pub recent_files: Vec<PathBuf>,
+    #[serde(default)]
+    pub recent_actions: Vec<String>,
 }
 
 /// A file name for a project's state, readable enough to find by hand.
@@ -195,6 +199,8 @@ mod persistence_tests {
                 active_panel: Some("project".into()),
             }],
             panels: HashMap::new(),
+            recent_files: vec!["a.rs".into()],
+            recent_actions: vec!["editor::Undo".into()],
         };
         let json = serde_json::to_string(&state).unwrap();
         assert_eq!(

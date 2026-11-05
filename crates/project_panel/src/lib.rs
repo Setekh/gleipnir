@@ -1,11 +1,9 @@
 //! The project tree: the panel on the left.
 
 use anyhow::Result;
-use futures::StreamExt as _;
-use gleipnir_core::BufferStore;
+use gleipnir_core::{BufferStore, Project, ProjectEvent};
 use gleipnir_index::{
-    DirEntry, EntryKind, FileTree, GitState, GitStatus, ProjectWatcher, Row, fs_ops, git,
-    read_directory,
+    DirEntry, EntryKind, FileTree, GitState, GitStatus, Row, fs_ops, read_directory,
 };
 use gleipnir_ui::{
     ContextMenu, FileIcon, Icon, ListNav, MenuDismissed, TextInput, Theme, file_icon,
@@ -14,7 +12,7 @@ use gleipnir_workspace::{DockPosition, FocusEditor, OpenFolder, Panel, Workspace
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, ClipboardItem, Context, Entity, FocusHandle,
     Focusable, KeyBinding, KeyContext, MouseButton, MouseDownEvent, Pixels, Point, PromptLevel,
-    Render, SharedString, Subscription, Task, WeakEntity, Window, actions, anchored, deferred, div,
+    Render, SharedString, Subscription, WeakEntity, Window, actions, anchored, deferred, div,
     prelude::*, px, svg, uniform_list,
 };
 use serde::{Deserialize, Serialize};
@@ -92,10 +90,11 @@ pub fn add_to_workspace(
     cx: &mut Context<Workspace>,
 ) {
     let handle = cx.weak_entity();
-    let root = workspace.root().map(Path::to_path_buf);
+    let project = workspace.project().cloned();
     let store = workspace.store().clone();
     let workspace_entity = cx.entity();
-    let panel = cx.new(|cx| ProjectPanel::new(handle, workspace_entity, store, root, window, cx));
+    let panel =
+        cx.new(|cx| ProjectPanel::new(handle, workspace_entity, store, project, window, cx));
     workspace.add_panel(panel.clone(), cx);
     workspace.register_action(|workspace, _: &Toggle, window, cx| {
         workspace.toggle_panel(PANEL_ID, window, cx);
@@ -183,14 +182,10 @@ pub struct ProjectPanel {
     selected: Option<PathBuf>,
     /// A path to select once the folders leading to it have loaded.
     pending_reveal: Option<PathBuf>,
-    git: GitStatus,
-    git_running: bool,
-    git_rerun: bool,
+    project: Option<Entity<Project>>,
     edit: Option<InlineEdit>,
     menu: Option<(Entity<ContextMenu>, Point<Pixels>, Subscription)>,
     trash: TrashFn,
-    _watcher: Option<ProjectWatcher>,
-    _watch_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -199,11 +194,12 @@ impl ProjectPanel {
         workspace: WeakEntity<Workspace>,
         workspace_entity: Entity<Workspace>,
         store: Entity<BufferStore>,
-        root: Option<PathBuf>,
+        project: Option<Entity<Project>>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let subscriptions = vec![cx.subscribe_in(
+        let root = project.as_ref().map(|p| p.read(cx).root().to_path_buf());
+        let mut subscriptions = vec![cx.subscribe_in(
             &workspace_entity,
             window,
             |this, workspace, event, window, cx| match event {
@@ -216,6 +212,13 @@ impl ProjectPanel {
                 }
             },
         )];
+        if let Some(project) = &project {
+            subscriptions.push(cx.subscribe(project, |this, _, event, cx| match event {
+                ProjectEvent::FilesChanged(paths) => this.files_changed(paths, cx),
+                ProjectEvent::GitStatusChanged => cx.notify(),
+                ProjectEvent::FileListChanged | ProjectEvent::SymbolsChanged => {}
+            }));
+        }
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             workspace,
@@ -226,22 +229,14 @@ impl ProjectPanel {
             nav: ListNav::new(),
             selected: None,
             pending_reveal: None,
-            git: GitStatus::default(),
-            git_running: false,
-            git_rerun: false,
+            project,
             edit: None,
             menu: None,
             trash: Arc::new(fs_ops::move_to_trash),
-            _watcher: None,
-            _watch_task: None,
             _subscriptions: subscriptions,
         };
         this.refresh_rows(cx);
         this.load_pending(cx);
-        if let Some(root) = root {
-            this.start_watching(root, cx);
-            this.refresh_git(cx);
-        }
         this
     }
 
@@ -266,41 +261,19 @@ impl ProjectPanel {
         self.rows.iter().any(|row| row.loading)
     }
 
-    fn start_watching(&mut self, root: PathBuf, cx: &mut Context<Self>) {
-        let Ok((watcher, mut changes)) = gleipnir_index::watch(&root) else {
-            return;
-        };
-        self._watcher = Some(watcher);
-        self._watch_task = Some(cx.spawn(async move |this, cx| {
-            while let Some(paths) = changes.next().await {
-                if this
-                    .update(cx, |this, cx| this.files_changed(&paths, cx))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        }));
-    }
-
     /// Re-reads the folders affected by a batch of changes. Folders nobody has opened aren't read,
     /// which is what keeps a build churning through `target/` from costing anything.
     fn files_changed(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
         let Some(tree) = &self.tree else { return };
         let root = tree.root().to_path_buf();
         let mut dirs: Vec<PathBuf> = Vec::new();
-        let mut matters_to_git = false;
         for path in paths {
             let Ok(relative) = path.strip_prefix(&root) else {
                 continue;
             };
             if relative.starts_with(".git") {
-                // Of git's own files, these mean the status changed. Objects and logs don't.
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                matters_to_git |= matches!(name, "index" | "HEAD" | "MERGE_HEAD");
                 continue;
             }
-            matters_to_git |= !self.is_inside_ignored_folder(path);
             if tree.is_loaded(path) {
                 dirs.push(path.clone());
             }
@@ -315,17 +288,6 @@ impl ProjectPanel {
         for dir in dirs {
             self.reload_dir(dir, cx);
         }
-        if matters_to_git {
-            self.refresh_git(cx);
-        }
-    }
-
-    fn is_inside_ignored_folder(&self, path: &Path) -> bool {
-        self.rows.iter().any(|row| {
-            row.entry.ignored
-                && row.entry.kind == EntryKind::Dir
-                && path.starts_with(&row.entry.path)
-        })
     }
 
     /// Reads whichever expanded folders haven't been read yet, off the UI thread.
@@ -365,29 +327,16 @@ impl ProjectPanel {
     }
 
     fn refresh_git(&mut self, cx: &mut Context<Self>) {
-        if self.git_running {
-            self.git_rerun = true;
-            return;
+        if let Some(project) = &self.project {
+            project.update(cx, |project, cx| project.refresh_git(cx));
         }
-        let Some(tree) = &self.tree else { return };
-        let root = tree.root().to_path_buf();
-        self.git_running = true;
-        let read = cx.background_spawn(async move { git::read_status(&root) });
-        cx.spawn(async move |this, cx| {
-            let status = read.await;
-            this.update(cx, |this, cx| {
-                this.git_running = false;
-                if let Ok(status) = status {
-                    this.git = status;
-                }
-                if std::mem::take(&mut this.git_rerun) {
-                    this.refresh_git(cx);
-                }
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+    }
+
+    fn git_status(&self, cx: &App) -> GitStatus {
+        self.project
+            .as_ref()
+            .map(|p| p.read(cx).git().clone())
+            .unwrap_or_default()
     }
 
     /// Rebuilds the visible list, keeping the selection on the same path.
@@ -808,8 +757,10 @@ impl ProjectPanel {
             }
         };
         let is_root = self.selected_row_index() == Some(0);
+        // Shortcuts as they'd apply in the tree, which is where the menu's actions run.
+        let focus = self.focus_handle.clone();
         let hint = |action: &dyn gpui::Action, window: &Window, cx: &App| -> Option<SharedString> {
-            let binding = window.highest_precedence_binding_for_action(action)?;
+            let binding = window.highest_precedence_binding_for_action_in(action, &focus)?;
             let keys: Vec<String> = binding
                 .keystrokes()
                 .iter()
@@ -876,11 +827,11 @@ impl ProjectPanel {
         cx.notify();
     }
 
-    fn row_color(&self, row: &Row, theme: &Theme) -> gpui::Hsla {
+    fn row_color(row: &Row, git: &GitStatus, theme: &Theme) -> gpui::Hsla {
         if row.entry.ignored {
             return theme.text_faint;
         }
-        match self.git.state(&row.entry.path) {
+        match git.state(&row.entry.path) {
             Some(GitState::Added | GitState::Untracked) => theme.git_added,
             Some(GitState::Modified | GitState::Renamed) => theme.git_modified,
             Some(GitState::Deleted) => theme.git_deleted,
@@ -894,6 +845,7 @@ impl ProjectPanel {
         display_index: usize,
         focused: bool,
         theme: &Theme,
+        git: &GitStatus,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let display = &self.display[display_index];
@@ -916,7 +868,7 @@ impl ProjectPanel {
         let selected = self.selected.as_ref() == Some(&row.entry.path);
         let is_dir = row.entry.kind == EntryKind::Dir;
         let is_root = row_index == 0;
-        let color = self.row_color(row, theme);
+        let color = Self::row_color(row, git, theme);
         let path = row.entry.path.clone();
         let name: SharedString = row.entry.name.clone().into();
         let (click_path, menu_path, drag_path, drop_path) =
@@ -1133,6 +1085,7 @@ impl Panel for ProjectPanel {
 
     fn debug_state(&self, cx: &App) -> serde_json::Value {
         let mut state = self.save_state(cx);
+        let git = self.git_status(cx);
         if let Some(object) = state.as_object_mut() {
             object.insert("rows".to_string(), self.visible_names().into());
             object.insert("editing".to_string(), self.edit.is_some().into());
@@ -1141,7 +1094,7 @@ impl Panel for ProjectPanel {
                 self.rows
                     .iter()
                     .filter_map(|row| {
-                        let state = self.git.state(&row.entry.path)?;
+                        let state = git.state(&row.entry.path)?;
                         Some((row.entry.name.clone(), format!("{state:?}").into()))
                     })
                     .collect::<serde_json::Map<_, _>>()
@@ -1166,8 +1119,9 @@ impl Render for ProjectPanel {
             let rows = cx.processor(move |this, range: Range<usize>, window, cx| {
                 let theme = cx.global::<Theme>().clone();
                 let focused = this.focus_handle.contains_focused(window, cx);
+                let git = this.git_status(cx);
                 range
-                    .map(|index| this.render_row(index, focused, &theme, cx))
+                    .map(|index| this.render_row(index, focused, &theme, &git, cx))
                     .collect::<Vec<_>>()
             });
             uniform_list("project-rows", self.display.len(), rows)

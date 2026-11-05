@@ -82,6 +82,8 @@ pub struct EditorView {
     /// Set when the next frame should bring the primary cursor into view. Laying out knows the
     /// viewport and metrics, so that's where it happens.
     pub(crate) autoscroll: bool,
+    /// Set with `autoscroll` when the cursor should land mid-screen, as after a jump.
+    pub(crate) autoscroll_center: bool,
     pub(crate) geometry: Option<Rc<FrameGeometry>>,
     pub(crate) highlights: Option<HighlightCache>,
     pub(crate) cursor_visible: bool,
@@ -116,6 +118,7 @@ impl EditorView {
             selections: SelectionSet::cursor(0),
             scroll: point(px(0.), px(0.)),
             autoscroll: false,
+            autoscroll_center: false,
             geometry: None,
             highlights: None,
             cursor_visible: true,
@@ -139,6 +142,20 @@ impl EditorView {
 
     pub fn set_selections(&mut self, selections: SelectionSet, cx: &mut Context<Self>) {
         self.selections = selections;
+        self.did_move(cx);
+    }
+
+    /// Moves the cursor to a line and column, both zero-based with the column in bytes, and centres
+    /// it on screen. Out-of-range values are clipped.
+    pub fn jump_to(&mut self, line: usize, column: usize, cx: &mut Context<Self>) {
+        let offset = self
+            .buffer
+            .read(cx)
+            .buffer()
+            .point_to_offset(gleipnir_text::Point::new(line, column));
+        self.selections = SelectionSet::cursor(offset);
+        self.autoscroll_center = true;
+        self.expand_stack.clear();
         self.did_move(cx);
     }
 
