@@ -78,6 +78,34 @@ impl BufferStore {
             .collect()
     }
 
+    /// Updates open buffers after a file or folder moved, so their tabs keep working. Everything
+    /// at or under `from` is affected.
+    pub fn paths_moved(&mut self, from: &Path, to: &Path, cx: &mut Context<Self>) {
+        let moved: Vec<(PathBuf, PathBuf)> = self
+            .buffers
+            .keys()
+            .filter_map(|path| {
+                let relative = path.strip_prefix(from).ok()?;
+                // Joining an empty path would add a trailing slash to the file itself.
+                let new = if relative.as_os_str().is_empty() {
+                    to.to_path_buf()
+                } else {
+                    to.join(relative)
+                };
+                Some((path.clone(), new))
+            })
+            .collect();
+        for (old, new) in moved {
+            if let Some(weak) = self.buffers.remove(&old) {
+                if let Some(buffer) = weak.upgrade() {
+                    let path = new.clone();
+                    buffer.update(cx, |buffer, cx| buffer.file_moved(path, cx));
+                }
+                self.buffers.insert(new, weak);
+            }
+        }
+    }
+
     /// Checks every open buffer against its file.
     pub fn check_disk(&mut self, cx: &mut Context<Self>) {
         for buffer in self.open_buffers() {
@@ -530,6 +558,61 @@ mod tests {
 
         buffer.update(cx, |b, cx| b.save(cx)).await.unwrap();
         assert_eq!(fs::read_to_string(&path).unwrap(), "keep me");
+    }
+
+    #[gpui::test]
+    async fn buffers_follow_a_renamed_file_and_keep_their_edits(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = fs::canonicalize(dir.path()).unwrap();
+        let path = dir_path.join("a.txt");
+        fs::write(&path, "text").unwrap();
+        let store = cx.new(|_| BufferStore::new());
+        let buffer = open(&store, &path, cx).await.unwrap();
+        insert(&buffer, " unsaved", cx);
+
+        let new_path = dir_path.join("b.rs");
+        fs::rename(&path, &new_path).unwrap();
+        store.update(cx, |s, cx| s.paths_moved(&path, &new_path, cx));
+
+        buffer.read_with(cx, |b, _| {
+            assert_eq!(b.path(), Some(new_path.as_path()));
+            assert_eq!(b.language(), Some(gleipnir_syntax::Language::Rust));
+            assert_eq!(b.buffer().text(), "text unsaved");
+        });
+        // Opening the new path finds the same buffer.
+        let reopened = open(&store, &new_path, cx).await.unwrap();
+        assert_eq!(reopened.entity_id(), buffer.entity_id());
+        buffer.update(cx, |b, cx| b.save(cx)).await.unwrap();
+        assert_eq!(fs::read_to_string(&new_path).unwrap(), "text unsaved");
+    }
+
+    #[gpui::test]
+    async fn buffers_follow_a_moved_folder(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        let dir_path = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir_all(dir_path.join("old/sub")).unwrap();
+        let inner = dir_path.join("old/sub/a.txt");
+        fs::write(&inner, "x").unwrap();
+        let other = dir_path.join("older.txt");
+        fs::write(&other, "y").unwrap();
+        let store = cx.new(|_| BufferStore::new());
+        let buffer = open(&store, &inner, cx).await.unwrap();
+        let unrelated = open(&store, &other, cx).await.unwrap();
+
+        let (from, to) = (dir_path.join("old"), dir_path.join("new"));
+        fs::rename(&from, &to).unwrap();
+        store.update(cx, |s, cx| s.paths_moved(&from, &to, cx));
+
+        let expected = to.join("sub/a.txt");
+        assert_eq!(
+            buffer.read_with(cx, |b, _| b.path().map(Path::to_path_buf)),
+            Some(expected)
+        );
+        // `older.txt` shares a text prefix with `old`, but isn't inside it.
+        assert_eq!(
+            unrelated.read_with(cx, |b, _| b.path().map(Path::to_path_buf)),
+            Some(other)
+        );
     }
 
     #[gpui::test]

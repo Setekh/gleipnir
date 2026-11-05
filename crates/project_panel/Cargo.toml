@@ -1,0 +1,25 @@
+[package]
+name = "gleipnir-project-panel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gleipnir_project_panel"
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+gleipnir-core.workspace = true
+gleipnir-index.workspace = true
+gleipnir-ui.workspace = true
+gleipnir-workspace.workspace = true
+gpui.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+gleipnir-test-support = { path = "../test_support" }
+gleipnir-editor.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
+tempfile = "3"

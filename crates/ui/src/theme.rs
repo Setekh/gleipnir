@@ -15,6 +15,15 @@ pub struct Theme {
     pub accent: Hsla,
     pub error: Hsla,
     pub warning: Hsla,
+    /// Rows and tabs under the pointer.
+    pub hover: Hsla,
+    /// The selected row when its list has focus, and when it doesn't.
+    pub selection: Hsla,
+    pub selection_inactive: Hsla,
+    pub git_added: Hsla,
+    pub git_modified: Hsla,
+    pub git_deleted: Hsla,
+    pub git_conflicted: Hsla,
 
     pub editor_background: Hsla,
     pub editor_gutter_text: Hsla,
@@ -99,6 +108,13 @@ impl Theme {
             accent: hsla(rgb(0xe0b65c)),
             error: hsla(rgb(0xef6f6c)),
             warning: hsla(rgb(0xe0b65c)),
+            hover: hsla(rgba(0xffffff0d)),
+            selection: hsla(rgba(0x4f7cac66)),
+            selection_inactive: hsla(rgba(0xffffff14)),
+            git_added: hsla(rgb(0x8fc27a)),
+            git_modified: hsla(rgb(0x82b6ee)),
+            git_deleted: hsla(rgb(0xef6f6c)),
+            git_conflicted: hsla(rgb(0xe3a65d)),
 
             editor_background: hsla(rgb(0x14161a)),
             editor_gutter_text: hsla(rgb(0x4a515d)),

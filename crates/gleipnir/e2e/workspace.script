@@ -1,0 +1,50 @@
+# M2: the project tree, tabs, splits and the saved layout. The project is a git repository with a
+# modified file and an untracked one, and a gitignored folder.
+wait-state /panels/project/rows/0 workspace
+expect-state /docks/0/visible true
+wait-state /panels/project/git/src Modified
+screenshot {shots}/10-tree.png
+
+# Walk into src with the keyboard and open a file.
+action project_panel::Toggle
+key down down
+key right
+wait-state /panels/project/rows/2 \s\s\s\slib.rs
+key right
+key enter
+wait-state /panes/0/tabs/0 lib.rs
+expect-language Rust
+type // edited\n
+expect-dirty true
+
+# Split it: the same file on both sides, kept in step.
+action workspace::SplitRight
+expect-state /panes/1/tabs/0 lib.rs
+type more\n
+expect-state /panes/0/tabs/0 lib.rs
+expect-contains // edited\nmore
+screenshot {shots}/11-split.png
+
+# Make a file from the tree, inline.
+action project_panel::Toggle
+action project_panel::NewFile
+type made.rs
+key enter
+wait-state /panes/1/tabs/1 made.rs
+type fn made() {}
+do Save
+wait 100
+expect-file {dir}/src/made.rs fn made() {}
+
+# Close the split's tabs. lib.rs is still open on the left, so closing it here doesn't ask.
+action workspace::CloseTab
+action workspace::CloseTab
+wait-state /panes/1 null
+expect-state /panes/0/tabs/0 lib.rs
+
+# Hide and show the tree.
+action workspace::HideActiveDock
+expect-state /docks/0/visible false
+action project_panel::Toggle
+expect-state /docks/0/visible true
+screenshot {shots}/12-final.png

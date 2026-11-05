@@ -1,7 +1,7 @@
 # Architecture
 
-Status: `text`, `syntax`, `core`, `ui`, `editor` and the `gleipnir` binary exist. The rest is the
-design to build towards.
+Status: `text`, `syntax`, `index`, `core`, `ui`, `editor`, `workspace`, `project_panel` and the
+`gleipnir` binary exist. The rest is the design to build towards.
 
 ## Decisions
 

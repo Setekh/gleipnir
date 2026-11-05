@@ -33,6 +33,15 @@ make_fixtures() {
     printf 'export const View = (p: { name: string }) => <div className="a">{p.name}</div>;\n' > "$dir/view.tsx"
     printf 'export function add(a, b) {\n  return a + b; // sum\n}\n' > "$dir/app.js"
     printf 'package main\n\nimport "fmt"\n\ntype Point struct {\n\tX, Y int\n}\n\nfunc main() {\n\tp := Point{1, 2}\n\tfmt.Println("hi", p.X)\n}\n' > "$dir/app.go"
+    mkdir -p "$dir/src" "$dir/target/debug"
+    printf 'pub fn lib() {}\n' > "$dir/src/lib.rs"
+    printf 'pub fn util() {}\n' > "$dir/src/util.rs"
+    printf 'target/\nbig.rs\n' > "$dir/.gitignore"
+    git -C "$dir" init -q
+    git -C "$dir" -c user.email=e2e@example.com -c user.name=e2e add .
+    git -C "$dir" -c user.email=e2e@example.com -c user.name=e2e commit -q -m fixtures
+    printf 'pub fn lib() { changed() }\n' > "$dir/src/lib.rs"
+    printf '// new\n' > "$dir/src/untracked.rs"
     python3 - "$dir/big.rs" <<'PY'
 import sys
 block = 'fn compute_value(input: &str, count: usize) -> Result<String, Error> {\n    let mut output = String::with_capacity(count);\n    for (index, ch) in input.chars().enumerate() {\n        if index % 2 == 0 { output.push(ch); }\n    }\n    Ok(format!("{output}: {count}"))\n}\n\n'
@@ -40,15 +49,18 @@ open(sys.argv[1], 'w').write(block * (100000 // block.count('\n')))
 PY
 }
 
-scripts=${*:-editing perf}
+scripts=${*:-editing workspace perf}
 failed=0
 for name in $scripts; do
-    dir="$work/$name"
+    # The folder is named after the script, which is what shows as the project's name.
+    dir="$work/$name/$name"
     make_fixtures "$dir"
     script="$work/$name.script"
     sed -e "s|{dir}|$dir|g" -e "s|{shots}|$shots|g" "$root/crates/gleipnir/e2e/$name.script" > "$script"
     echo "== $name"
-    if GLEIPNIR_SCRIPT="$script" "$root/target/$out/gleipnir"; then :; else failed=1; fi
+    # Fresh state and config, so neither a saved layout nor a personal keymap changes the result.
+    if GLEIPNIR_SCRIPT="$script" GLEIPNIR_STATE_DIR="$work/$name/state" \
+        GLEIPNIR_CONFIG_DIR="$work/$name/config" "$root/target/$out/gleipnir" "$dir"; then :; else failed=1; fi
 done
 [ "$failed" = 0 ] && echo "all scripts passed"
 exit "$failed"

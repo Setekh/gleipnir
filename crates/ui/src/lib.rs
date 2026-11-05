@@ -1,11 +1,15 @@
 //! Shared look and widgets. GPUI provides primitives only, so everything a panel needs is here.
 
+pub mod assets;
+pub mod context_menu;
 pub mod list;
 pub mod text_input;
 pub mod theme;
 
 use gpui::{Pixels, ShapedLine};
 
+pub use assets::{Assets, FileIcon, Icon, file_icon};
+pub use context_menu::{ContextMenu, MenuDismissed, bind_keys as bind_context_menu_keys};
 pub use list::ListNav;
 pub use text_input::{TextInput, TextInputEvent, bind_keys as bind_text_input_keys};
 pub use theme::{Theme, init_theme};

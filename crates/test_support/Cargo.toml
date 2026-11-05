@@ -1,0 +1,13 @@
+[package]
+name = "gleipnir-test-support"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "gleipnir_test_support"
+
+[dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile = "3"

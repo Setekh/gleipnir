@@ -1,6 +1,6 @@
 use crate::actions::*;
 use crate::element::{EditorElement, FrameGeometry};
-use gleipnir_core::{BufferEvent, BufferModel};
+use gleipnir_core::{BufferEvent, BufferModel, DiskStatus};
 use gleipnir_syntax::HighlightSpan;
 use gleipnir_text::ops::{self, EditContext, Motion};
 use gleipnir_text::{AppliedEdit, Selection, SelectionSet};
@@ -64,6 +64,11 @@ pub struct EditorState {
 pub enum EditorEvent {
     /// The user asked to save a buffer that has no path yet.
     SaveAsRequested,
+    /// The user asked to save, but the file changed on disk since it was opened, so saving would
+    /// lose those changes. The host should ask what to do.
+    SaveConflict,
+    /// A save failed, with the reason.
+    SaveFailed(String),
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
@@ -135,6 +140,25 @@ impl EditorView {
     pub fn set_selections(&mut self, selections: SelectionSet, cx: &mut Context<Self>) {
         self.selections = selections;
         self.did_move(cx);
+    }
+
+    /// Copies the cursor and scroll position from another view, for a split showing the same place.
+    pub fn copy_position_from(&mut self, other: &EditorView, cx: &mut Context<Self>) {
+        self.selections = other.selections.clone();
+        self.scroll = other.scroll;
+        cx.notify();
+    }
+
+    pub fn scroll_y(&self) -> f32 {
+        self.scroll.y.into()
+    }
+
+    /// Restores a saved position. Offsets are clipped, as the file may have changed since.
+    pub fn restore_position(&mut self, cursor: usize, scroll_y: f32, cx: &mut Context<Self>) {
+        let cursor = self.buffer.read(cx).buffer().clip(cursor);
+        self.selections = SelectionSet::cursor(cursor);
+        self.scroll.y = px(scroll_y);
+        cx.notify();
     }
 
     pub fn state(&self, cx: &App) -> EditorState {
@@ -439,13 +463,25 @@ impl EditorView {
     }
 
     fn on_save(&mut self, _: &Save, _: &mut Window, cx: &mut Context<Self>) {
-        if self.buffer.read(cx).path().is_none() {
+        let model = self.buffer.read(cx);
+        if model.path().is_none() {
             cx.emit(EditorEvent::SaveAsRequested);
             return;
         }
-        self.buffer
-            .update(cx, |buffer, cx| buffer.save(cx))
-            .detach_and_log_err(cx);
+        if model.disk_status() == DiskStatus::Conflict {
+            cx.emit(EditorEvent::SaveConflict);
+            return;
+        }
+        let save = self.buffer.update(cx, |buffer, cx| buffer.save(cx));
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = save.await {
+                this.update(cx, |_, cx| {
+                    cx.emit(EditorEvent::SaveFailed(format!("{error:#}")))
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     /// Handles a mouse press in the text area.

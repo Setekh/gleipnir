@@ -52,6 +52,8 @@ Still open from M1:
 
 Goal: open a folder and work in it, with the layout from the reference screenshot.
 
+Status: built and passing on macOS. See the notes below the table for what's still open.
+
 | # | Item | Finished when |
 | --- | --- | --- |
 | 2.1 | Action registry and keymap, IntelliJ macOS shortcuts as defaults | Actions are listable and rebindable; Linux gets sensible modifier mapping |
@@ -60,6 +62,16 @@ Goal: open a folder and work in it, with the layout from the reference screensho
 | 2.4 | Project panel: lazy tree, keyboard nav, file icons | Opens a large repo instantly; follows external file changes |
 | 2.5 | Project panel: file ops, reveal active file, gitignored and git status colours | Create, rename, delete and move all work, with confirmation for delete |
 | 2.6 | Status bar and breadcrumbs | Shows position, encoding, line ending and indent; breadcrumbs are clickable |
+
+Still open from M2:
+
+- **Tabs can't be dragged** to reorder them or move them between panes. Splitting copies the
+  current tab, and closing removes it, which covers moving one by hand.
+- **The tree selects one entry at a time.** Multi-select, and typing to jump to a name as IntelliJ
+  does, aren't built.
+- **Only the Project panel exists,** so the right and bottom docks are tested with stand-in panels.
+- **Open files outside the project** are still polled every second for external changes. Files
+  inside it are watched.
 
 ## M3: Search Everywhere
 

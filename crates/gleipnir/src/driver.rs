@@ -6,6 +6,9 @@
 //!
 //!     key <keystrokes>            one or more space-separated keystrokes, like: key cmd-s down
 //!     do <EditorAction>           presses the key this platform binds to an editor action
+//!     action <namespace::Name>    dispatches an action to whatever has focus
+//!     expect-state <pointer> <v>  checks a value in the state, by JSON pointer; see `dump`
+//!     wait-state <pointer> <v>    waits up to ten seconds for a value, for anything asynchronous
 //!     type <text>                 types text, one keystroke per character. Text in any command
 //!                                 can use the escapes \n, \t and \s (space, as lines are trimmed)
 //!     wait <milliseconds>
@@ -26,14 +29,14 @@
 //!     type-bench <count>          types and undoes, reporting per-keystroke cost
 //!     quit
 
-use crate::root::Root;
 use anyhow::{Context as _, Result, anyhow, bail};
 use gleipnir_editor::EditorState;
+use gleipnir_workspace::Workspace;
 use gpui::{App, AppContext as _, AsyncApp, Keystroke, Window, WindowHandle};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub fn run(script: PathBuf, window: WindowHandle<Root>, cx: &mut App) {
+pub fn run(script: PathBuf, window: WindowHandle<Workspace>, cx: &mut App) {
     cx.spawn(async move |cx: &mut AsyncApp| {
         let code = match run_script(&script, window, cx).await {
             Ok(()) => {
@@ -50,7 +53,11 @@ pub fn run(script: PathBuf, window: WindowHandle<Root>, cx: &mut App) {
     .detach();
 }
 
-async fn run_script(script: &Path, window: WindowHandle<Root>, cx: &mut AsyncApp) -> Result<()> {
+async fn run_script(
+    script: &Path,
+    window: WindowHandle<Workspace>,
+    cx: &mut AsyncApp,
+) -> Result<()> {
     let source = std::fs::read_to_string(script)
         .with_context(|| format!("can't read {}", script.display()))?;
     sleep(Duration::from_millis(100), cx).await;
@@ -73,7 +80,7 @@ async fn run_script(script: &Path, window: WindowHandle<Root>, cx: &mut AsyncApp
 
 /// Draws a frame now. The platform stops sending frames to a window that's covered or not in
 /// front, and scripts mustn't depend on what else is on the screen.
-fn draw(window: WindowHandle<Root>, cx: &mut AsyncApp) -> Result<()> {
+fn draw(window: WindowHandle<Workspace>, cx: &mut AsyncApp) -> Result<()> {
     with_window(window, cx, |window, cx| {
         window.refresh();
         window.draw(cx).clear(cx);
@@ -83,12 +90,21 @@ fn draw(window: WindowHandle<Root>, cx: &mut AsyncApp) -> Result<()> {
 /// Runs something against the window itself. `WindowHandle::update` would hold the root view for
 /// the duration, and drawing it or dispatching an action to it would then be a double borrow.
 fn with_window<R>(
-    window: WindowHandle<Root>,
+    window: WindowHandle<Workspace>,
     cx: &mut AsyncApp,
     f: impl FnOnce(&mut Window, &mut App) -> R,
 ) -> Result<R> {
     cx.update_window(window.into(), |_, window, cx| f(window, cx))
         .map_err(|e| anyhow!("{e}"))
+}
+
+/// Runs something against the workspace with its window, for operations that need both.
+fn with_workspace<R>(
+    window: WindowHandle<Workspace>,
+    cx: &mut AsyncApp,
+    f: impl FnOnce(&mut Workspace, &mut Window, &mut gpui::Context<Workspace>) -> R,
+) -> Result<R> {
+    window.update(cx, f).map_err(|e| anyhow!("{e}"))
 }
 
 async fn sleep(duration: Duration, cx: &mut AsyncApp) {
@@ -101,20 +117,39 @@ fn unescape(text: &str) -> String {
         .replace("\\s", " ")
 }
 
-fn state(window: WindowHandle<Root>, cx: &mut AsyncApp) -> Result<EditorState> {
+fn state(window: WindowHandle<Workspace>, cx: &mut AsyncApp) -> Result<EditorState> {
     window
-        .update(cx, |root, _, cx| {
-            root.editor()
-                .map(|editor| editor.read(cx).state(cx))
-                .ok_or_else(|| match root.message() {
-                    Some(message) => anyhow!("no editor is open: {message}"),
-                    None => anyhow!("no editor is open"),
-                })
-        })
+        .update(cx, |workspace, _, cx| workspace.editor_state(cx))
         .map_err(|e| anyhow!("{e}"))?
+        .context("no editor is open")
 }
 
-fn press(keystroke: &str, window: WindowHandle<Root>, cx: &mut AsyncApp) -> Result<()> {
+/// The workspace and active editor as JSON, for `dump` and the `-state` commands.
+fn snapshot(window: WindowHandle<Workspace>, cx: &mut AsyncApp) -> Result<serde_json::Value> {
+    window
+        .update(cx, |workspace, window, cx| {
+            let mut value = serde_json::to_value(workspace.snapshot(window, cx))?;
+            value["editor"] = serde_json::to_value(workspace.editor_state(cx))?;
+            Ok::<_, serde_json::Error>(value)
+        })
+        .map_err(|e| anyhow!("{e}"))?
+        .map_err(Into::into)
+}
+
+/// Compares a value at a JSON pointer with text. Numbers and booleans compare by how they print.
+fn state_matches(state: &serde_json::Value, pointer: &str, expected: &str) -> bool {
+    match state.pointer(pointer) {
+        Some(serde_json::Value::String(actual)) => actual == expected,
+        // Not `actual == expected`: a JSON number never equals a string, even "3" and 3.
+        Some(actual) => {
+            let printed = actual.to_string();
+            printed == expected
+        }
+        None => expected == "null",
+    }
+}
+
+fn press(keystroke: &str, window: WindowHandle<Workspace>, cx: &mut AsyncApp) -> Result<()> {
     // Parsing wants a static string, as keymaps are normally compiled in. This is a test tool
     // running one short script, so leaking these is fine.
     let leaked: &'static str = Box::leak(keystroke.to_string().into_boxed_str());
@@ -124,7 +159,7 @@ fn press(keystroke: &str, window: WindowHandle<Root>, cx: &mut AsyncApp) -> Resu
     })
 }
 
-fn type_text(text: &str, window: WindowHandle<Root>, cx: &mut AsyncApp) -> Result<()> {
+fn type_text(text: &str, window: WindowHandle<Workspace>, cx: &mut AsyncApp) -> Result<()> {
     for c in text.chars() {
         match c {
             '\n' => press("enter", window, cx)?,
@@ -156,7 +191,7 @@ fn report(label: &str, mut times: Vec<Duration>) {
 }
 
 #[cfg(feature = "capture")]
-fn screenshot(path: &str, window: WindowHandle<Root>, cx: &mut AsyncApp) -> Result<()> {
+fn screenshot(path: &str, window: WindowHandle<Workspace>, cx: &mut AsyncApp) -> Result<()> {
     let image = with_window(window, cx, |window, _| window.render_to_image())?;
     match image {
         Ok(image) => image.save(path)?,
@@ -167,12 +202,12 @@ fn screenshot(path: &str, window: WindowHandle<Root>, cx: &mut AsyncApp) -> Resu
 }
 
 #[cfg(not(feature = "capture"))]
-fn screenshot(_: &str, _: WindowHandle<Root>, _: &mut AsyncApp) -> Result<()> {
+fn screenshot(_: &str, _: WindowHandle<Workspace>, _: &mut AsyncApp) -> Result<()> {
     println!("screenshot skipped: build with --features capture");
     Ok(())
 }
 
-async fn run_command(line: &str, window: WindowHandle<Root>, cx: &mut AsyncApp) -> Result<()> {
+async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut AsyncApp) -> Result<()> {
     let (command, rest) = line.split_once(' ').unwrap_or((line, ""));
     match command {
         "key" => {
@@ -199,10 +234,43 @@ async fn run_command(line: &str, window: WindowHandle<Root>, cx: &mut AsyncApp) 
         }
         "open" => {
             let path = PathBuf::from(rest);
-            window
-                .update(cx, |root, window, cx| root.open(path, window, cx))
-                .map_err(|e| anyhow!("{e}"))?;
-            sleep(Duration::from_millis(100), cx).await;
+            let open = with_workspace(window, cx, |workspace, window, cx| {
+                workspace.open_path(path, window, cx)
+            })?;
+            open.await?;
+        }
+        "action" => {
+            let name = rest.to_string();
+            with_window(window, cx, move |window, cx| -> Result<()> {
+                let action = cx
+                    .build_action(&name, None)
+                    .map_err(|_| anyhow!("no action called {name}"))?;
+                window.dispatch_action(action, cx);
+                Ok(())
+            })??;
+        }
+        "expect-state" => {
+            let (pointer, expected) = rest.split_once(' ').unwrap_or((rest, ""));
+            let state = snapshot(window, cx)?;
+            if !state_matches(&state, pointer, &unescape(expected)) {
+                bail!("{pointer} is {:?}", state.pointer(pointer));
+            }
+        }
+        "wait-state" => {
+            let (pointer, expected) = rest.split_once(' ').unwrap_or((rest, ""));
+            let expected = unescape(expected);
+            let started = Instant::now();
+            loop {
+                let state = snapshot(window, cx)?;
+                if state_matches(&state, pointer, &expected) {
+                    break;
+                }
+                if started.elapsed() > Duration::from_secs(10) {
+                    bail!("{pointer} stayed {:?}", state.pointer(pointer));
+                }
+                sleep(Duration::from_millis(10), cx).await;
+                draw(window, cx)?;
+            }
         }
         "expect-text" => {
             let actual = state(window, cx)?.text;
@@ -268,14 +336,14 @@ async fn run_command(line: &str, window: WindowHandle<Root>, cx: &mut AsyncApp) 
             std::fs::write(path, unescape(text))?;
         }
         "dump" => {
-            let json = serde_json::to_string_pretty(&state(window, cx)?)?;
+            let json = serde_json::to_string_pretty(&snapshot(window, cx)?)?;
             std::fs::write(rest, json)?;
         }
         "screenshot" => screenshot(rest, window, cx)?,
         "scroll-bench" => {
             let frames: usize = rest.parse()?;
             let editor = window
-                .update(cx, |root, _, _| root.editor().cloned())
+                .update(cx, |workspace, _, cx| workspace.active_editor(cx))
                 .map_err(|e| anyhow!("{e}"))?
                 .context("no editor is open")?;
             cx.update(|cx| editor.update(cx, |e, _| e.start_measuring()));

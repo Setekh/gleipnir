@@ -220,6 +220,14 @@ impl BufferModel {
         self.save(cx)
     }
 
+    /// Points the buffer at a file's new location after a rename or move, keeping its contents and
+    /// any unsaved edits.
+    pub fn file_moved(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        self.set_path(path, cx);
+        cx.emit(BufferEvent::DiskStatusChanged);
+        cx.notify();
+    }
+
     fn set_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         let language = Language::from_path(&path);
         if language != self.language() {

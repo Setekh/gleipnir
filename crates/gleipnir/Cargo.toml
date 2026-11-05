@@ -13,8 +13,10 @@ capture = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
 anyhow.workspace = true
 gleipnir-core.workspace = true
 gleipnir-editor.workspace = true
+gleipnir-project-panel.workspace = true
 gleipnir-syntax.workspace = true
 gleipnir-ui.workspace = true
+gleipnir-workspace.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
