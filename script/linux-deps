@@ -1,0 +1,8 @@
+#!/bin/sh
+# Installs what building on Arch Linux needs. Used by CI and script/linux-check. On Omarchy, most of
+# this is already present.
+set -eu
+pacman -Sy --noconfirm --needed \
+    base-devel clang cmake git pkgconf python \
+    alsa-lib fontconfig freetype2 libxcb libxkbcommon libxkbcommon-x11 openssl vulkan-icd-loader \
+    wayland wayland-protocols

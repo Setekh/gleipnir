@@ -1,0 +1,16 @@
+[package]
+name = "gleipnir-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gleipnir_ui"
+
+[dependencies]
+gleipnir-syntax.workspace = true
+gleipnir-text.workspace = true
+gpui.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }

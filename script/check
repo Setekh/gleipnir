@@ -1,0 +1,7 @@
+#!/bin/sh
+# Everything that should pass before a commit. The repository is local for now, so this stands in
+# for CI: the workflow in .github only runs once there's a remote.
+set -eu
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace

@@ -1,0 +1,21 @@
+[package]
+name = "gleipnir"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[features]
+# Lets the test driver's `screenshot` command read rendered frames back, which GPUI only supports
+# with its test support compiled in. Not for normal builds.
+capture = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
+
+[dependencies]
+anyhow.workspace = true
+gleipnir-core.workspace = true
+gleipnir-editor.workspace = true
+gleipnir-syntax.workspace = true
+gleipnir-ui.workspace = true
+gpui.workspace = true
+gpui_platform.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"], optional = true }
+serde_json.workspace = true

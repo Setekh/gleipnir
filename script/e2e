@@ -1,0 +1,54 @@
+#!/bin/sh
+# Runs the end-to-end scripts against the real application. Needs a display.
+#   script/e2e              all scripts, in the dev profile
+#   script/e2e perf         one script
+#   PROFILE=release script/e2e perf
+set -eu
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+profile=${PROFILE:-dev}
+shots=${SHOTS:-$root/target/e2e-shots}
+mkdir -p "$shots"
+
+flag=""
+out=debug
+if [ "$profile" = release ]; then flag="--release"; out=release; fi
+
+# Screenshots need GPUI's test support, which only works where the renderer can read frames back.
+features=""
+if [ "$(uname)" = Darwin ]; then features="--features capture"; fi
+# shellcheck disable=SC2086
+cargo build -p gleipnir $flag $features
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+make_fixtures() {
+    dir=$1
+    mkdir -p "$dir"
+    printf 'fn main() {\n    println!("hello");\n}\n' > "$dir/main.rs"
+    printf 'count := 1\nnotCount := count\nprint(count)\n' > "$dir/rename.go"
+    printf 'package main\n\nimport "core:fmt"\n\nPoint :: struct {\n\tx, y: f32,\n}\n\nmain :: proc() {\n\tcount := 3 // tabs align\n\tfor i in 0..<count {\n\t\tfmt.println("hello", i)\n\t}\n}\n' > "$dir/app.odin"
+    printf 'interface User {\n  id: number;\n  name: string;\n}\n\nexport function greet(user: User): string {\n  return `hi ${user.name}`;\n}\n' > "$dir/app.ts"
+    printf 'export const View = (p: { name: string }) => <div className="a">{p.name}</div>;\n' > "$dir/view.tsx"
+    printf 'export function add(a, b) {\n  return a + b; // sum\n}\n' > "$dir/app.js"
+    printf 'package main\n\nimport "fmt"\n\ntype Point struct {\n\tX, Y int\n}\n\nfunc main() {\n\tp := Point{1, 2}\n\tfmt.Println("hi", p.X)\n}\n' > "$dir/app.go"
+    python3 - "$dir/big.rs" <<'PY'
+import sys
+block = 'fn compute_value(input: &str, count: usize) -> Result<String, Error> {\n    let mut output = String::with_capacity(count);\n    for (index, ch) in input.chars().enumerate() {\n        if index % 2 == 0 { output.push(ch); }\n    }\n    Ok(format!("{output}: {count}"))\n}\n\n'
+open(sys.argv[1], 'w').write(block * (100000 // block.count('\n')))
+PY
+}
+
+scripts=${*:-editing perf}
+failed=0
+for name in $scripts; do
+    dir="$work/$name"
+    make_fixtures "$dir"
+    script="$work/$name.script"
+    sed -e "s|{dir}|$dir|g" -e "s|{shots}|$shots|g" "$root/crates/gleipnir/e2e/$name.script" > "$script"
+    echo "== $name"
+    if GLEIPNIR_SCRIPT="$script" "$root/target/$out/gleipnir"; then :; else failed=1; fi
+done
+[ "$failed" = 0 ] && echo "all scripts passed"
+exit "$failed"

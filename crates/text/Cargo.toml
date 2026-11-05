@@ -1,0 +1,17 @@
+[package]
+name = "gleipnir-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gleipnir_text"
+
+[dependencies]
+# Default features would also break lines on \r, form feed and Unicode separators. Language
+# servers and tree-sitter disagree about those, so only \n ends a line here.
+ropey = { version = "1.6", default-features = false, features = ["simd"] }
+unicode-segmentation = "1.12"
+
+[dev-dependencies]
+proptest = "1"

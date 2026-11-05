@@ -1,0 +1,101 @@
+# The M1 goal: edit a real file with multiple cursors, and save it. {dir} is a temp directory.
+open {dir}/main.rs
+expect-language Rust
+expect-text fn main() {\n    println!("hello");\n}\n
+expect-dirty false
+wait-parsed
+expect-highlights
+screenshot {shots}/01-opened.png
+
+# Typing, with auto-closing and indentation.
+do MoveDocEnd
+type struct Point {\n
+type x: i32,
+expect-contains struct Point {\n    x: i32,\n}
+expect-dirty true
+wait-parsed
+screenshot {shots}/02-typed.png
+
+# Undo goes back to the saved state, which reads as clean.
+do Undo
+do Undo
+do Undo
+expect-dirty false
+expect-text fn main() {\n    println!("hello");\n}\n
+do Redo
+do Redo
+do Redo
+expect-contains x: i32,
+do Save
+wait 100
+expect-dirty false
+expect-file {dir}/main.rs fn main() {\n    println!("hello");\n}\nstruct Point {\n    x: i32,\n}
+
+# Multiple cursors: add two below and type on all three lines at once.
+do MoveDocStart
+do AddCursorBelow
+do AddCursorBelow
+expect-cursors 3
+type //\s
+expect-cursors 3
+expect-contains // fn main() {\n//     println!("hello");\n// }
+screenshot {shots}/03-multicursor.png
+key escape
+expect-cursors 1
+do Undo
+expect-contains fn main() {\n    println!("hello");
+
+# Next-occurrence: rename by selecting each match.
+open {dir}/rename.go
+expect-language Go
+wait-parsed
+expect-highlights
+do AddNextOccurrence
+do AddNextOccurrence
+do AddNextOccurrence
+expect-cursors 3
+screenshot {shots}/04-occurrences.png
+type renamed
+expect-text renamed := 1\nnotCount := renamed\nprint(renamed)\n
+do Save
+wait 100
+expect-file {dir}/rename.go renamed := 1\nnotCount := renamed\nprint(renamed)\n
+
+# A file changed outside the app is picked up when there are no unsaved edits...
+write-file {dir}/rename.go changed := 2\n
+wait 1500
+expect-text changed := 2\n
+expect-dirty false
+
+# ...and flagged when there are, keeping both sides safe.
+type mine
+expect-dirty true
+write-file {dir}/rename.go theirs\n
+wait 1500
+expect-disk Conflict
+expect-contains mine
+
+# Each language opens, parses and highlights.
+open {dir}/app.odin
+expect-language Odin
+wait-parsed
+expect-highlights
+screenshot {shots}/05-odin.png
+open {dir}/app.ts
+expect-language TypeScript
+wait-parsed
+expect-highlights
+screenshot {shots}/06-typescript.png
+open {dir}/view.tsx
+expect-language TSX
+wait-parsed
+expect-highlights
+open {dir}/app.js
+expect-language JavaScript
+wait-parsed
+expect-highlights
+open {dir}/app.go
+expect-language Go
+wait-parsed
+expect-highlights
+screenshot {shots}/07-go.png

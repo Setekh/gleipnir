@@ -1,0 +1,19 @@
+[package]
+name = "gleipnir-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gleipnir_core"
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+gleipnir-syntax.workspace = true
+gleipnir-text.workspace = true
+gpui.workspace = true
+
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+tempfile = "3"

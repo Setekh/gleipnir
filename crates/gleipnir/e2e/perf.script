@@ -1,0 +1,12 @@
+# Measures the budgets from the roadmap on a 100k-line file. Prints results rather than asserting,
+# since they depend on the machine and the build profile.
+open {dir}/big.rs
+wait-parsed
+expect-highlights
+do MoveDocStart
+scroll-bench 300
+do MoveDocEnd
+wait-parsed
+type-bench 100
+wait-parsed
+screenshot {shots}/08-big-file.png

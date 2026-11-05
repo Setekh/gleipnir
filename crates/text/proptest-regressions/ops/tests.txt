@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0416cdd8e4fca869e3e81348e3d6ef741cd8b48596880759d2e4386cc8e84393 # shrinks to original = "😀😀\" \n😀", ops = [Motion(Down(1), true), MoveLines(false)]
+cc 38dc1ec88cf675dfa3a165f4af4168ac9b2af7c1885bcf0d1f4553b5957afe8d # shrinks to original = "é{é{é", ops = [AllOccurrences, Backspace, Paste("😀", true)]
