@@ -1,0 +1,46 @@
+# Rust. rust-analyzer comes from rustup, and debugging uses LLDB.
+[package]
+id = "rust"
+name = "Rust"
+version = "0.1.0"
+
+[[language]]
+name = "Rust"
+grammar = "rust"
+extensions = ["rs"]
+line_comment = "//"
+tab_size = 4
+hard_tabs = false
+# No single quotes: Rust lifetimes make auto-closing them more annoying than useful.
+pairs = ["()", "[]", "{}", "\"\""]
+
+[server]
+tool = "rust-analyzer"
+
+[debugger]
+tool = "lldb-dap"
+transport = "stdio"
+
+[tool.rust-analyzer]
+binary = "rust-analyzer"
+sdk_paths = ["bin/rust-analyzer"]
+install = { kind = "rustup-component", component = "rust-analyzer" }
+
+[tool.lldb-dap]
+binary = "lldb-dap"
+system_paths = [
+    "/Applications/Xcode.app/Contents/Developer/usr/bin/lldb-dap",
+    "/Library/Developer/CommandLineTools/usr/bin/lldb-dap",
+    "/opt/homebrew/opt/llvm/bin/lldb-dap",
+    "/usr/local/opt/llvm/bin/lldb-dap",
+]
+install = { kind = "manual", hint = "Install Xcode's command line tools, or LLVM" }
+
+[sdk]
+kind = "rust"
+name = "Rust toolchain"
+binary = "bin/cargo"
+version_args = ["--version"]
+# Rustup's own directory first: its `cargo` honours a project's rust-toolchain.toml.
+detect = ["env:CARGO_HOME", "dir:~/.cargo", "path:cargo", "glob:~/.rustup/toolchains/*"]
+env = { PATH = "{sdk}/bin:{PATH}" }

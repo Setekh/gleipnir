@@ -1,4 +1,5 @@
 use anyhow::{Context as _, Result};
+use gleipnir_packages::registry;
 use gleipnir_syntax::{Language, Syntax};
 use gleipnir_text::ops::{EditConfig, EditContext};
 use gleipnir_text::{AppliedEdit, Buffer, SelectionSet, Snapshot};
@@ -58,11 +59,13 @@ impl BufferModel {
         mtime: Option<SystemTime>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let language = path.as_deref().and_then(Language::from_path);
+        let entry = path
+            .as_deref()
+            .and_then(|p| registry().language_for_path(p));
         let mut this = Self {
             buffer: Buffer::new(text),
-            syntax: language.map(Syntax::new),
-            edit_config: language.map(Language::edit_config).unwrap_or_default(),
+            syntax: entry.map(|e| Syntax::new(e.grammar)),
+            edit_config: entry.map(|e| e.edit_config.clone()).unwrap_or_default(),
             path,
             mtime,
             disk_status: DiskStatus::InSync,
@@ -229,10 +232,10 @@ impl BufferModel {
     }
 
     fn set_path(&mut self, path: PathBuf, cx: &mut Context<Self>) {
-        let language = Language::from_path(&path);
-        if language != self.language() {
-            self.syntax = language.map(Syntax::new);
-            self.edit_config = language.map(Language::edit_config).unwrap_or_default();
+        let entry = registry().language_for_path(&path);
+        if entry.map(|e| e.grammar) != self.language() {
+            self.syntax = entry.map(|e| Syntax::new(e.grammar));
+            self.edit_config = entry.map(|e| e.edit_config.clone()).unwrap_or_default();
             self.schedule_parse(cx);
         }
         self.path = Some(path);

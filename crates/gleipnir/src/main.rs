@@ -48,6 +48,9 @@ fn absolute(path: &std::path::Path) -> PathBuf {
 fn main() {
     let target = launch_target(std::env::args_os().nth(1).map(PathBuf::from));
     let script = std::env::var_os("GLEIPNIR_SCRIPT").map(PathBuf::from);
+    // Asking the login shell for its environment takes about a second, so start it now. An app
+    // started from the Dock has a bare PATH without it, and wouldn't find any tools.
+    gleipnir_packages::env::warm_up();
 
     gpui_platform::application()
         .with_assets(gleipnir_ui::Assets)
@@ -59,6 +62,7 @@ fn main() {
             gleipnir_workspace::bind_keys(cx);
             gleipnir_project_panel::bind_keys(cx);
             gleipnir_search::bind_keys(cx);
+            gleipnir_settings_ui::bind_keys(cx);
             set_menus(cx);
 
             // Loaded last, so that it overrides the defaults.
@@ -86,6 +90,7 @@ fn main() {
             cx.set_global(WorkspaceInit(Rc::new(|workspace, window, cx| {
                 gleipnir_project_panel::add_to_workspace(workspace, window, cx);
                 gleipnir_search::add_to_workspace(workspace, window, cx);
+                gleipnir_settings_ui::add_to_workspace(workspace, window, cx);
             })));
 
             let window = open_project_window(target.root.clone(), false, cx);
@@ -128,6 +133,8 @@ fn set_menus(cx: &mut App) {
                 MenuItem::separator(),
                 MenuItem::action("Save", gleipnir_editor::Save),
                 MenuItem::action("Save As…", SaveAs),
+                MenuItem::separator(),
+                MenuItem::action("Languages & SDKs…", gleipnir_settings_ui::OpenLanguages),
             ],
             disabled: false,
         },

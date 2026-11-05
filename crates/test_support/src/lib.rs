@@ -12,7 +12,11 @@ pub fn isolate_state() {
     let dir = DIR.get_or_init(|| tempfile::tempdir().expect("a temp dir for state"));
     // SAFETY: every test calls this before starting anything that reads the environment, and the
     // value never changes after the first call.
-    unsafe { std::env::set_var("GLEIPNIR_STATE_DIR", dir.path()) };
+    unsafe {
+        std::env::set_var("GLEIPNIR_STATE_DIR", dir.path());
+        // Asking the login shell for its environment takes a second and depends on the machine.
+        std::env::set_var("GLEIPNIR_NO_SHELL_ENV", "1");
+    }
 }
 
 /// A project folder on disk. Paths ending in `/` are folders, others are files with the given text.

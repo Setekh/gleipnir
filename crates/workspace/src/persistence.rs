@@ -9,31 +9,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-/// Where layouts and other machine-managed state live. `GLEIPNIR_STATE_DIR` overrides it.
-pub fn state_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("GLEIPNIR_STATE_DIR") {
-        return PathBuf::from(dir);
-    }
-    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
-    if cfg!(target_os = "macos") {
-        home.join("Library/Application Support/Gleipnir")
-    } else {
-        std::env::var_os("XDG_STATE_HOME")
-            .map_or_else(|| home.join(".local/state"), PathBuf::from)
-            .join("gleipnir")
-    }
-}
-
-/// Where files people edit by hand live, like the keymap. `GLEIPNIR_CONFIG_DIR` overrides it.
-pub fn config_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("GLEIPNIR_CONFIG_DIR") {
-        return PathBuf::from(dir);
-    }
-    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from);
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map_or_else(|| home.join(".config"), PathBuf::from)
-        .join("gleipnir")
-}
+pub use gleipnir_packages::{config_dir, state_dir};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SavedTab {
@@ -100,6 +76,9 @@ pub struct SavedWorkspace {
     pub recent_files: Vec<PathBuf>,
     #[serde(default)]
     pub recent_actions: Vec<String>,
+    /// The SDK chosen for each kind, by its root folder.
+    #[serde(default)]
+    pub sdks: std::collections::BTreeMap<String, PathBuf>,
 }
 
 /// A file name for a project's state, readable enough to find by hand.
@@ -201,6 +180,7 @@ mod persistence_tests {
             panels: HashMap::new(),
             recent_files: vec!["a.rs".into()],
             recent_actions: vec!["editor::Undo".into()],
+            sdks: std::collections::BTreeMap::from([("go".to_string(), PathBuf::from("/go"))]),
         };
         let json = serde_json::to_string(&state).unwrap();
         assert_eq!(

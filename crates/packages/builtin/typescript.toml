@@ -1,0 +1,77 @@
+# TypeScript and JavaScript, which share a language server, a debugger and Node.
+[package]
+id = "typescript"
+name = "TypeScript and JavaScript"
+version = "0.1.0"
+
+[[language]]
+name = "TypeScript"
+grammar = "typescript"
+extensions = ["ts", "mts", "cts"]
+line_comment = "//"
+tab_size = 2
+hard_tabs = false
+pairs = ["()", "[]", "{}", "\"\"", "''", "``"]
+
+[[language]]
+name = "TSX"
+grammar = "tsx"
+extensions = ["tsx"]
+line_comment = "//"
+tab_size = 2
+hard_tabs = false
+pairs = ["()", "[]", "{}", "\"\"", "''", "``"]
+
+[[language]]
+name = "JavaScript"
+grammar = "javascript"
+extensions = ["js", "mjs", "cjs", "jsx"]
+line_comment = "//"
+tab_size = 2
+hard_tabs = false
+pairs = ["()", "[]", "{}", "\"\"", "''", "``"]
+
+[server]
+tool = "typescript-language-server"
+args = ["--stdio"]
+
+[debugger]
+tool = "js-debug"
+# js-debug is a Node program, so it's started with the project's Node.
+runtime = "sdk"
+args = ["{port}", "127.0.0.1"]
+transport = "tcp"
+
+[tool.typescript-language-server]
+binary = "typescript-language-server"
+# A project's own copy wins, as it matches the project's TypeScript.
+project_paths = ["node_modules/.bin/typescript-language-server"]
+# TypeScript 7 is the native rewrite, which has no tsserver for this server to drive, so stay on 6.
+install = { kind = "npm", packages = ["typescript-language-server@6.0.3", "typescript@6.0.3"] }
+
+[tool.js-debug]
+binary = "dapDebugServer.js"
+
+[tool.js-debug.install]
+kind = "download"
+version = "v1.140.0"
+binary = "js-debug/src/dapDebugServer.js"
+assets = [
+    { platform = "any", format = "tar.gz", url = "https://github.com/microsoft/vscode-js-debug/releases/download/v1.140.0/js-debug-dap-v1.140.0.tar.gz", sha256 = "27dab92937ec1ab35821ae955aac867544fe06a1b6307229049f2d789af10968" },
+]
+
+[sdk]
+kind = "node"
+name = "Node.js"
+binary = "bin/node"
+version_args = ["--version"]
+detect = [
+    "path:node",
+    "glob:~/.nvm/versions/node/*",
+    "glob:~/.local/share/fnm/node-versions/*/installation",
+    "glob:~/.volta/tools/image/node/*",
+    "dir:/opt/homebrew/opt/node",
+    "dir:/usr/local",
+    "dir:/usr",
+]
+env = { PATH = "{sdk}/bin:{PATH}" }

@@ -99,6 +99,9 @@ Still open from M3:
 
 Goal: open a project on a clean machine and get working tools with minimal setup.
 
+Status: built and passing on macOS. Every installable tool has been installed for real, with its
+checksum verified: gopls, delve, ols, js-debug and typescript-language-server.
+
 | # | Item | Finished when |
 | --- | --- | --- |
 | 4.1 | Manifest format, registry, five built-in packages | Language settings are read from manifests, not code; bad manifests give clear errors |
@@ -107,6 +110,15 @@ Goal: open a project on a clean machine and get working tools with minimal setup
 | 4.4 | Tool resolver | Tests for each level of the resolution order; the UI can report why a tool was chosen |
 | 4.5 | Tool installer: pinned, checksummed, with confirmation | Installs gopls and a TS server; rejects a bad checksum |
 | 4.6 | Settings UI: SDKs and packages | Add, remove and select SDKs per project; see and install tools |
+
+Still open from M4:
+
+- **Run targets and debug launches** come from each language's adapter, and are tested against
+  sample projects, but nothing runs or debugs them until M6.
+- **Third-party packages** aren't loaded yet. The registry reads manifests like any other, so this is
+  a matter of where to find them, which is stage 2 in the architecture.
+- **Tools aren't updated** when a manifest's pinned version changes. The new version installs
+  alongside, and the old one stays until removed by hand.
 
 ## M5: Code intelligence
 

@@ -11,10 +11,8 @@ mod symbols;
 pub use highlight::{HighlightKind, HighlightSpan, highlights, precompile_queries};
 pub use symbols::{Symbol, SymbolKind, extract_symbols};
 
-use gleipnir_text::ops::EditConfig;
 use gleipnir_text::{AppliedEdit, Point as TextPoint, Snapshot};
 use std::ops::Range;
-use std::path::Path;
 use tree_sitter::{InputEdit, Language as Grammar, Parser, Point, Tree};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -37,19 +35,6 @@ impl Language {
         Language::JavaScript,
     ];
 
-    pub fn from_path(path: &Path) -> Option<Self> {
-        match path.extension()?.to_str()? {
-            "rs" => Some(Self::Rust),
-            "go" => Some(Self::Go),
-            "odin" => Some(Self::Odin),
-            "ts" | "mts" | "cts" => Some(Self::TypeScript),
-            "tsx" => Some(Self::Tsx),
-            // The JavaScript grammar includes JSX.
-            "js" | "mjs" | "cjs" | "jsx" => Some(Self::JavaScript),
-            _ => None,
-        }
-    }
-
     pub fn name(self) -> &'static str {
         match self {
             Self::Rust => "Rust",
@@ -69,33 +54,6 @@ impl Language {
             Self::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Self::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Self::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
-        }
-    }
-
-    /// Editing behaviour for this language. Will move to package manifests in M4.
-    pub fn edit_config(self) -> EditConfig {
-        let brackets = [('(', ')'), ('[', ']'), ('{', '}'), ('"', '"')];
-        let mut pairs = brackets.to_vec();
-        // Rust lifetimes make auto-closing single quotes more annoying than useful.
-        if self != Self::Rust {
-            pairs.push(('\'', '\''));
-        }
-        // Backticks are Go's raw strings, and JavaScript's template strings.
-        if matches!(
-            self,
-            Self::Go | Self::TypeScript | Self::Tsx | Self::JavaScript
-        ) {
-            pairs.push(('`', '`'));
-        }
-        EditConfig {
-            tab_size: if matches!(self, Self::TypeScript | Self::Tsx | Self::JavaScript) {
-                2
-            } else {
-                4
-            },
-            hard_tabs: matches!(self, Self::Go | Self::Odin),
-            line_comment: Some("//".to_string()),
-            pairs,
         }
     }
 }

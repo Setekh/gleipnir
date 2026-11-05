@@ -8,6 +8,7 @@ license.workspace = true
 name = "gleipnir_ui"
 
 [dependencies]
+gleipnir-packages.workspace = true
 gleipnir-syntax.workspace = true
 gleipnir-text.workspace = true
 gpui.workspace = true

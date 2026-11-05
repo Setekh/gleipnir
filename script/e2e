@@ -49,7 +49,7 @@ open(sys.argv[1], 'w').write(block * (100000 // block.count('\n')))
 PY
 }
 
-scripts=${*:-editing workspace search perf}
+scripts=${*:-editing workspace search toolchains perf}
 failed=0
 for name in $scripts; do
     # The folder is named after the script, which is what shows as the project's name.

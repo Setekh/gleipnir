@@ -8,7 +8,7 @@ use crate::persistence::{
     self, SavedDock, SavedPane, SavedTab, SavedTree, SavedWorkspace, remember_last_project,
 };
 use anyhow::Result;
-use gleipnir_core::{BufferModel, BufferStore, DiskStatus, Project};
+use gleipnir_core::{BufferModel, BufferStore, DiskStatus, Project, Toolchains};
 use gleipnir_editor::{EditorEvent, EditorState, EditorView};
 use gleipnir_text::SelectionSet;
 use gleipnir_ui::{Icon, Theme};
@@ -149,6 +149,7 @@ pub struct Workspace {
     store: Entity<BufferStore>,
     root: Option<PathBuf>,
     project: Option<Entity<Project>>,
+    toolchains: Entity<Toolchains>,
     center: PaneTree<Entity<Pane>>,
     active_pane: Entity<Pane>,
     docks: [Dock; 3],
@@ -188,7 +189,17 @@ pub struct WorkspaceSnapshot {
     pub modal: Option<String>,
     /// Files and symbols indexed, and whether indexing is still running.
     pub index: Option<IndexSnapshot>,
+    /// Each package's chosen SDK and where its tools were found, by package id.
+    pub toolchains: std::collections::BTreeMap<String, ToolchainSnapshot>,
     pub recent_files: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ToolchainSnapshot {
+    pub sdk: Option<String>,
+    pub sdk_version: Option<String>,
+    /// Tool name to where it was found, or null.
+    pub tools: std::collections::BTreeMap<String, Option<String>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -223,11 +234,16 @@ impl Workspace {
         let pane = cx.new(|cx| Pane::new(weak_self.clone(), window, cx));
         let root = root.map(|r| std::fs::canonicalize(&r).unwrap_or(r));
         let project = root.clone().map(|root| cx.new(|cx| Project::new(root, cx)));
+        let toolchains = cx.new(|cx| Toolchains::new(root.clone(), cx));
+        // A changed SDK choice is part of the project's saved state.
+        cx.observe(&toolchains, |this, _, cx| this.schedule_save(cx))
+            .detach();
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             store,
             root,
             project,
+            toolchains,
             center: PaneTree::Pane(pane.clone()),
             active_pane: pane.clone(),
             docks: [
@@ -281,6 +297,10 @@ impl Workspace {
 
     pub fn project(&self) -> Option<&Entity<Project>> {
         self.project.as_ref()
+    }
+
+    pub fn toolchains(&self) -> &Entity<Toolchains> {
+        &self.toolchains
     }
 
     /// Recently opened files, most recent first, the current one included.
@@ -1187,6 +1207,7 @@ impl Workspace {
             panels,
             recent_files: self.recent_files.clone(),
             recent_actions: self.recent_actions.clone(),
+            sdks: self.toolchains.read(cx).choices().clone(),
         }
     }
 
@@ -1207,6 +1228,8 @@ impl Workspace {
             .cloned()
             .collect();
         self.recent_actions = saved.recent_actions.clone();
+        let sdks = saved.sdks.clone();
+        self.toolchains.update(cx, |t, cx| t.set_choices(sdks, cx));
 
         for saved_dock in &saved.docks {
             let dock = self.dock_mut(saved_dock.position);
@@ -1383,6 +1406,29 @@ impl Workspace {
                     busy: project.is_busy(),
                 }
             }),
+            toolchains: self
+                .toolchains
+                .read(cx)
+                .packages()
+                .iter()
+                .map(|p| {
+                    let snapshot = ToolchainSnapshot {
+                        sdk: p.chosen.as_ref().map(|s| s.root.display().to_string()),
+                        sdk_version: p.chosen.as_ref().and_then(|s| s.version.clone()),
+                        tools: p
+                            .tools
+                            .iter()
+                            .map(|t| {
+                                (
+                                    t.name.clone(),
+                                    t.resolution.path().map(|p| p.display().to_string()),
+                                )
+                            })
+                            .collect(),
+                    };
+                    (p.package_id.clone(), snapshot)
+                })
+                .collect(),
             recent_files: self
                 .recent_files
                 .iter()

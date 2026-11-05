@@ -1,0 +1,10 @@
+# M4: toolchains, as seen by the real app. The runner starts it with the process's environment,
+# which `script/e2e toolchains` replaces with a bare one, as the Dock would give.
+wait-idle
+action settings::OpenLanguages
+wait-state /modal LanguageSettings
+wait 3000
+screenshot {shots}/30-languages.png
+dump {shots}/30-languages.json
+key escape
+wait-state /modal null

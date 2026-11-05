@@ -76,39 +76,6 @@ fn every_language_highlights_its_sample() {
 }
 
 #[test]
-fn languages_are_detected_from_file_extensions() {
-    for (path, expected) in [
-        ("a/main.rs", Some(Language::Rust)),
-        ("main.go", Some(Language::Go)),
-        ("main.odin", Some(Language::Odin)),
-        ("a.ts", Some(Language::TypeScript)),
-        ("a.mts", Some(Language::TypeScript)),
-        ("a.tsx", Some(Language::Tsx)),
-        ("a.js", Some(Language::JavaScript)),
-        ("a.jsx", Some(Language::JavaScript)),
-        ("README.md", None),
-        ("Makefile", None),
-    ] {
-        assert_eq!(Language::from_path(Path::new(path)), expected, "{path}");
-    }
-}
-
-#[test]
-fn go_and_odin_use_tabs_and_others_use_spaces() {
-    assert!(Language::Go.edit_config().hard_tabs);
-    assert!(Language::Odin.edit_config().hard_tabs);
-    assert!(!Language::Rust.edit_config().hard_tabs);
-    assert!(!Language::TypeScript.edit_config().hard_tabs);
-}
-
-#[test]
-fn rust_does_not_auto_close_single_quotes() {
-    let has_quote = |l: Language| l.edit_config().pairs.iter().any(|(o, _)| *o == '\'');
-    assert!(!has_quote(Language::Rust));
-    assert!(has_quote(Language::Go));
-}
-
-#[test]
 fn rust_highlights_by_role() {
     let s = "// note\nstruct Point;\nfn run(a: i32) -> i32 { let v = \"s\"; helper!(); 7 }";
     let k = |needle| kind_of(Language::Rust, s, needle);

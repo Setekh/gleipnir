@@ -78,7 +78,10 @@ pub enum FileIcon {
 
 pub fn file_icon(path: &Path) -> FileIcon {
     let color = |hex: u32| -> Hsla { rgb(hex).into() };
-    match Language::from_path(path) {
+    match gleipnir_packages::registry()
+        .language_for_path(path)
+        .map(|l| l.grammar)
+    {
         Some(Language::Rust) => FileIcon::Badge("Rs", color(0xe3a65d)),
         Some(Language::Go) => FileIcon::Badge("Go", color(0x72d3c2)),
         Some(Language::Odin) => FileIcon::Badge("Od", color(0x82b6ee)),

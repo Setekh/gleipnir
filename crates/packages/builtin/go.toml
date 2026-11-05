@@ -1,0 +1,47 @@
+# Go, with gopls and Delve.
+[package]
+id = "go"
+name = "Go"
+version = "0.1.0"
+
+[[language]]
+name = "Go"
+grammar = "go"
+extensions = ["go"]
+line_comment = "//"
+tab_size = 4
+hard_tabs = true
+pairs = ["()", "[]", "{}", "\"\"", "''", "``"]
+
+[server]
+tool = "gopls"
+args = ["serve"]
+
+[debugger]
+tool = "dlv"
+args = ["dap", "--listen=127.0.0.1:{port}"]
+transport = "tcp"
+
+[tool.gopls]
+binary = "gopls"
+install = { kind = "go-install", module = "golang.org/x/tools/gopls", version = "v0.24.0" }
+
+[tool.dlv]
+binary = "dlv"
+install = { kind = "go-install", module = "github.com/go-delve/delve/cmd/dlv", version = "v1.27.2" }
+
+[sdk]
+kind = "go"
+name = "Go SDK"
+binary = "bin/go"
+version_args = ["version"]
+detect = [
+    "env:GOROOT",
+    "path:go",
+    "dir:/usr/local/go",
+    "glob:/opt/homebrew/Cellar/go/*/libexec",
+    "glob:/usr/local/Cellar/go/*/libexec",
+    "dir:/usr/lib/go",
+    "glob:~/sdk/go*",
+]
+env = { GOROOT = "{sdk}", PATH = "{sdk}/bin:{PATH}" }

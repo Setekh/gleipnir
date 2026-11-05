@@ -6,7 +6,8 @@ use futures::StreamExt as _;
 use gleipnir_index::{
     FileChanges, FileList, GitStatus, ProjectWatcher, SymbolEntry, git, is_ignored, scan_files,
 };
-use gleipnir_syntax::{Language, Symbol, extract_symbols};
+use gleipnir_packages::registry;
+use gleipnir_syntax::{Symbol, extract_symbols};
 use gpui::{AppContext as _, Context, EventEmitter, Task};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -333,7 +334,7 @@ impl Project {
 }
 
 fn is_indexable(relative: &str) -> bool {
-    Language::from_path(Path::new(relative)).is_some()
+    registry().language_for_path(Path::new(relative)).is_some()
 }
 
 /// Extracts symbols from files in parallel. `None` means the file is gone, or too big to bother.
@@ -371,7 +372,7 @@ fn index_symbols(
 
 fn symbols_for(root: &Path, relative: &str) -> Option<Vec<Symbol>> {
     let path = root.join(relative);
-    let language = Language::from_path(&path)?;
+    let language = registry().language_for_path(&path)?.grammar;
     let metadata = std::fs::metadata(&path).ok()?;
     if metadata.len() > MAX_SYMBOL_FILE_SIZE {
         return None;

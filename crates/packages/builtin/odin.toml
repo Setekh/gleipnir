@@ -1,0 +1,54 @@
+# Odin, with ols. Debugging uses LLDB, as Odin builds native binaries with standard debug info.
+[package]
+id = "odin"
+name = "Odin"
+version = "0.1.0"
+
+[[language]]
+name = "Odin"
+grammar = "odin"
+extensions = ["odin"]
+line_comment = "//"
+tab_size = 4
+hard_tabs = true
+pairs = ["()", "[]", "{}", "\"\"", "''", "``"]
+
+[server]
+tool = "ols"
+
+[debugger]
+tool = "lldb-dap"
+transport = "stdio"
+
+[tool.ols]
+binary = "ols"
+sdk_paths = ["ols"]
+
+[tool.ols.install]
+kind = "download"
+version = "dev-2026-10"
+binary = "ols-{arch}-{os}"
+assets = [
+    { platform = "macos-aarch64", format = "zip", url = "https://github.com/DanielGavin/ols/releases/download/dev-2026-10/ols-arm64-darwin.zip", sha256 = "cc2ce88586c3e3c791a237f9bad9d8db0697b2c0ca25c510b97f98950269258d" },
+    { platform = "macos-x86_64", format = "zip", url = "https://github.com/DanielGavin/ols/releases/download/dev-2026-10/ols-x86_64-darwin.zip", sha256 = "cfe705105f9bcabcf20a97f2d5f487fa0c9fc7b87af1ff2a58ca8b246110276e" },
+    { platform = "linux-aarch64", format = "zip", url = "https://github.com/DanielGavin/ols/releases/download/dev-2026-10/ols-arm64-unknown-linux-gnu.zip", sha256 = "37d8b437954b6ccbae93ea248427db403b89fc2cb54aef0aa664c91a6ed3ccbb" },
+    { platform = "linux-x86_64", format = "zip", url = "https://github.com/DanielGavin/ols/releases/download/dev-2026-10/ols-x86_64-unknown-linux-gnu.zip", sha256 = "1ee224fcd7b0818acf2e2160e5d4e380d89261d9d96328c9b0a1cb8cc193bb7f" },
+]
+
+[tool.lldb-dap]
+binary = "lldb-dap"
+system_paths = [
+    "/Applications/Xcode.app/Contents/Developer/usr/bin/lldb-dap",
+    "/Library/Developer/CommandLineTools/usr/bin/lldb-dap",
+    "/opt/homebrew/opt/llvm/bin/lldb-dap",
+    "/usr/local/opt/llvm/bin/lldb-dap",
+]
+install = { kind = "manual", hint = "Install Xcode's command line tools, or LLVM" }
+
+[sdk]
+kind = "odin"
+name = "Odin compiler"
+binary = "odin"
+version_args = ["version"]
+detect = ["env:ODIN_ROOT", "path:odin", "dir:~/Odin", "dir:~/odin", "dir:/opt/odin", "dir:/usr/local/odin"]
+env = { ODIN_ROOT = "{sdk}", PATH = "{sdk}:{PATH}" }

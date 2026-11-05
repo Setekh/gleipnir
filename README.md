@@ -3,7 +3,8 @@
 An IDE written in Rust on [GPUI](https://gpui.rs), for TypeScript, JavaScript, Odin, Rust and Go.
 
 Status: a project-based editor with a file tree, tabs, split panes, multi-cursor editing and
-IntelliJ-style Search Everywhere. Code intelligence and debugging are next. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+IntelliJ-style Search Everywhere, and per-project SDKs with managed tool installs. Code intelligence
+and debugging are next. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 for the design and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
 
 ## Building
@@ -31,6 +32,9 @@ searches much harder, and has found real bugs that the default run missed.
 - `crates/workspace`: the window: panes, tabs, docks, status bar, saved layouts, the keymap file.
 - `crates/project_panel`: the project tree.
 - `crates/search`: Search Everywhere, its tabs, and the double-Shift gesture.
+- `crates/settings_ui`: Languages & SDKs, for choosing SDKs and installing tools.
+- `crates/packages`: language manifests (in `builtin/`), SDK detection, tool resolution and
+  installation, and each language's run and debug adapter.
 - `crates/editor`: the editor view: rendering, input, mouse and key bindings.
 - `crates/ui`: theme, icons, text input, context menu and list navigation.
 - `crates/core`: open buffers, file loading and saving, external change detection, and the project:
@@ -50,8 +54,11 @@ Key bindings can be changed in `~/.config/gleipnir/keymap.conf`, one per line:
     cmd-k = editor::DuplicateLine
     ctrl-j = editor::MoveDown in Editor
 
-Mistakes are reported in the status bar, and don't stop the rest of the file from loading. Each
-project's layout is saved outside the project, in `~/Library/Application Support/Gleipnir` on macOS
+Mistakes are reported in the status bar, and don't stop the rest of the file from loading.
+
+Languages & SDKs (`Cmd+;`) shows each language's SDK and tools. Tools Gleipnir installs go into its
+state folder, never system-wide, and only after you confirm. Each project's layout is saved outside
+the project, in `~/Library/Application Support/Gleipnir` on macOS
 and `~/.local/state/gleipnir` on Linux.
 
 ## Build notes

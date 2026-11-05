@@ -1,7 +1,8 @@
 # Architecture
 
-Status: `text`, `syntax`, `index`, `core`, `ui`, `editor`, `workspace`, `project_panel`, `search`
-and the `gleipnir` binary exist. The rest is the design to build towards.
+Status: `text`, `syntax`, `index`, `packages`, `core`, `ui`, `editor`, `workspace`,
+`project_panel`, `search`, `settings_ui` and the `gleipnir` binary exist. The rest is the design to
+build towards.
 
 ## Decisions
 
@@ -219,20 +220,10 @@ would need a wasmtime version compatible with that, or a tree-sitter upgrade.
 
 ### SDKs
 
-Detected candidates are stored in user settings, and each project picks one per language:
-
-```toml
-# ~/.config/gleipnir/sdks.toml
-[[sdk]]
-kind = "odin"
-name = "Odin dev"
-path = "~/Odin"
-
-# <project>/.gleipnir/project.toml
-[sdk]
-go = "1.26"
-odin = "Odin dev"
-```
+SDKs added by hand, and tools pointed at by hand, are remembered for every project in the state
+folder's `toolchains.json`. Each project's choice of SDK is part of its saved layout, outside the
+project like the rest. With no choice made, the default follows the user's shell: an SDK named by an
+environment variable like `GOROOT`, then the one on `PATH`, then the newest installed.
 
 The SDK's environment is applied to everything spawned for that project: language servers, debuggers,
 builds and run targets. That keeps a project's IDE features and builds on the same toolchain.
@@ -240,9 +231,15 @@ builds and run targets. That keeps a project's IDE features and builds on the sa
 A tool resolves in this order, and the UI shows which one won and why:
 
 1. An explicit path in settings
-2. The project's SDK
-3. A package-managed install, in `~/.local/share/gleipnir/packages`
-4. `PATH`, including the login shell's `PATH`, captured once at startup
+2. The project's own copy, like `node_modules/.bin`, which matches the project's versions
+3. The project's SDK
+4. A Gleipnir-managed install, in the state folder's `tools/<name>/<version>`
+5. A fixed system location, like `lldb-dap` inside Xcode
+6. `PATH`, including the login shell's `PATH`, captured once at startup
+
+The built-in manifests live in `crates/packages/builtin`. Each pins its tools' versions:
+TypeScript is held at 6, as TypeScript 7 is the native rewrite and has no `tsserver` for
+typescript-language-server to drive.
 
 Downloads are pinned by version and verified by checksum per OS and architecture, and nothing is
 installed without confirmation. A missing tool never blocks editing: the affected features are
