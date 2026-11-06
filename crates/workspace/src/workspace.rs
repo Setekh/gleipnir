@@ -8,7 +8,7 @@ use crate::persistence::{
     self, SavedDock, SavedPane, SavedTab, SavedTree, SavedWorkspace, remember_last_project,
 };
 use anyhow::Result;
-use gleipnir_core::{BufferModel, BufferStore, DiskStatus, Project, Toolchains};
+use gleipnir_core::{BufferModel, BufferStore, DiskStatus, LanguageServers, Project, Toolchains};
 use gleipnir_editor::{EditorEvent, EditorState, EditorView};
 use gleipnir_text::SelectionSet;
 use gleipnir_ui::{Icon, Theme};
@@ -43,6 +43,8 @@ actions!(
         FocusPreviousPane,
         FocusEditor,
         HideActiveDock,
+        NavigateBack,
+        NavigateForward,
     ]
 );
 
@@ -62,6 +64,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-[", PreviousTab, None),
         KeyBinding::new("cmd-\\", SplitRight, None),
         KeyBinding::new("cmd-shift-\\", SplitDown, None),
+        KeyBinding::new("cmd-[", NavigateBack, None),
+        KeyBinding::new("cmd-]", NavigateForward, None),
     ]);
     #[cfg(not(target_os = "macos"))]
     cx.bind_keys([
@@ -70,6 +74,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-w", CloseTab, None),
         KeyBinding::new("ctrl-\\", SplitRight, None),
         KeyBinding::new("ctrl-shift-\\", SplitDown, None),
+        KeyBinding::new("ctrl-alt-left", NavigateBack, None),
+        KeyBinding::new("ctrl-alt-right", NavigateForward, None),
     ]);
     cx.bind_keys([
         KeyBinding::new("ctrl-tab", NextTab, None),
@@ -123,6 +129,26 @@ pub struct GlobalStore(pub Entity<BufferStore>);
 impl gpui::Global for GlobalStore {}
 
 type ExtraAction = Rc<dyn Fn(gpui::Div, &mut Context<Workspace>) -> gpui::Div>;
+type EditorHook = Rc<
+    dyn Fn(
+        &mut Workspace,
+        &Entity<EditorView>,
+        &mut Window,
+        &mut Context<Workspace>,
+    ) -> Vec<Subscription>,
+>;
+type StatusItem = Rc<dyn Fn(&mut Workspace, &mut Context<Workspace>) -> Option<AnyElement>>;
+
+/// A place to go back to: a file, and a line and byte column in it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NavEntry {
+    pub path: PathBuf,
+    pub line: usize,
+    pub column: usize,
+}
+
+/// How many places back navigation remembers.
+const NAV_LIMIT: usize = 100;
 
 /// A popup over the workspace, like Search Everywhere. Emits `DismissEvent` to close itself.
 pub trait ModalView: gpui::Render + Focusable + EventEmitter<gpui::DismissEvent> {}
@@ -150,6 +176,7 @@ pub struct Workspace {
     root: Option<PathBuf>,
     project: Option<Entity<Project>>,
     toolchains: Entity<Toolchains>,
+    language_servers: Entity<LanguageServers>,
     center: PaneTree<Entity<Pane>>,
     active_pane: Entity<Pane>,
     docks: [Dock; 3],
@@ -173,6 +200,12 @@ pub struct Workspace {
     /// What the empty pane suggests, which features add to: a label, and the action whose shortcut
     /// to show, or fixed text for gestures that aren't key bindings.
     empty_hints: Vec<(&'static str, EmptyHint)>,
+    /// Run on every editor as it's created, by features that attach to editors.
+    editor_hooks: Vec<EditorHook>,
+    /// Extra things on the right of the status bar, before the cursor position.
+    status_items: Vec<StatusItem>,
+    nav_back: Vec<NavEntry>,
+    nav_forward: Vec<NavEntry>,
 }
 
 /// A plain description of the workspace, for tests and the end-to-end driver.
@@ -192,6 +225,8 @@ pub struct WorkspaceSnapshot {
     /// Each package's chosen SDK and where its tools were found, by package id.
     pub toolchains: std::collections::BTreeMap<String, ToolchainSnapshot>,
     pub recent_files: Vec<String>,
+    /// Each started language server's state, by package id.
+    pub language_servers: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -238,12 +273,16 @@ impl Workspace {
         // A changed SDK choice is part of the project's saved state.
         cx.observe(&toolchains, |this, _, cx| this.schedule_save(cx))
             .detach();
+        // Servers start lazily, when a file of theirs is registered by whatever shows code insight.
+        let language_servers =
+            cx.new(|cx| LanguageServers::new(root.clone(), toolchains.clone(), cx));
         let mut this = Self {
             focus_handle: cx.focus_handle(),
             store,
             root,
             project,
             toolchains,
+            language_servers,
             center: PaneTree::Pane(pane.clone()),
             active_pane: pane.clone(),
             docks: [
@@ -267,6 +306,10 @@ impl Workspace {
             recent_files: Vec::new(),
             recent_actions: Vec::new(),
             empty_hints: Vec::new(),
+            editor_hooks: Vec::new(),
+            status_items: Vec::new(),
+            nav_back: Vec::new(),
+            nav_forward: Vec::new(),
         };
         this.watch_pane(&pane, cx);
         if let Some(root) = &this.root {
@@ -297,6 +340,15 @@ impl Workspace {
 
     pub fn project(&self) -> Option<&Entity<Project>> {
         self.project.as_ref()
+    }
+
+    pub fn language_servers(&self) -> &Entity<LanguageServers> {
+        &self.language_servers
+    }
+
+    /// Swaps in another hub, for tests that use fake servers. Only before any file is open.
+    pub fn set_language_servers(&mut self, servers: Entity<LanguageServers>) {
+        self.language_servers = servers;
     }
 
     pub fn toolchains(&self) -> &Entity<Toolchains> {
@@ -392,6 +444,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Task<Result<Entity<EditorView>>> {
+        self.record_position(cx);
         let open = self.open_path(path, window, cx);
         cx.spawn(async move |_, cx| {
             let editor = open.await?;
@@ -400,6 +453,88 @@ impl Workspace {
             }
             Ok(editor)
         })
+    }
+
+    /// Remembers where the cursor is, so Navigate Back can return to it after a jump.
+    pub fn record_position(&mut self, cx: &App) {
+        let Some(entry) = self.current_position(cx) else {
+            return;
+        };
+        if self.nav_back.last() != Some(&entry) {
+            self.nav_back.push(entry);
+            if self.nav_back.len() > NAV_LIMIT {
+                self.nav_back.remove(0);
+            }
+        }
+        self.nav_forward.clear();
+    }
+
+    fn current_position(&self, cx: &App) -> Option<NavEntry> {
+        let editor = self.active_editor(cx)?;
+        let view = editor.read(cx);
+        let model = view.buffer().read(cx);
+        let point = model
+            .buffer()
+            .offset_to_point(view.selections().primary().head);
+        Some(NavEntry {
+            path: model.path()?.to_path_buf(),
+            line: point.line,
+            column: point.col,
+        })
+    }
+
+    pub fn navigation_history(&self) -> (&[NavEntry], &[NavEntry]) {
+        (&self.nav_back, &self.nav_forward)
+    }
+
+    fn navigate(&mut self, back: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let here = self.current_position(cx);
+        let (from, to) = if back {
+            (&mut self.nav_back, &mut self.nav_forward)
+        } else {
+            (&mut self.nav_forward, &mut self.nav_back)
+        };
+        // Skip entries that are where we already are.
+        let target = loop {
+            match from.pop() {
+                Some(entry) if Some(&entry) == here.as_ref() => continue,
+                other => break other,
+            }
+        };
+        let Some(target) = target else { return };
+        to.extend(here);
+        let open = self.open_path(target.path.clone(), window, cx);
+        cx.spawn(async move |_, cx| {
+            if let Ok(editor) = open.await {
+                editor.update(cx, |editor, cx| {
+                    editor.jump_to(target.line, target.column, cx)
+                });
+            }
+        })
+        .detach();
+    }
+
+    /// Runs on every editor the workspace creates, now and later. The hook's subscriptions live as
+    /// long as the editor's tab.
+    pub fn add_editor_hook(
+        &mut self,
+        hook: impl Fn(
+            &mut Workspace,
+            &Entity<EditorView>,
+            &mut Window,
+            &mut Context<Workspace>,
+        ) -> Vec<Subscription>
+        + 'static,
+    ) {
+        self.editor_hooks.push(Rc::new(hook));
+    }
+
+    /// Adds something to the status bar, such as a language server's state.
+    pub fn add_status_item(
+        &mut self,
+        item: impl Fn(&mut Workspace, &mut Context<Workspace>) -> Option<AnyElement> + 'static,
+    ) {
+        self.status_items.push(Rc::new(item));
     }
 
     /// Adds a suggestion to the empty pane, shown with the action's current shortcut.
@@ -639,7 +774,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> (Entity<EditorView>, Vec<Subscription>) {
         let editor = cx.new(|cx| EditorView::new(buffer.clone(), window, cx));
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(
                 &editor,
                 window,
@@ -649,6 +784,8 @@ impl Workspace {
                         this.resolve_save_conflict(editor.clone(), window, cx)
                     }
                     EditorEvent::SaveFailed(message) => this.show_error(message.clone(), cx),
+                    // Features that know where things are defined subscribe to this themselves.
+                    EditorEvent::GoToDefinition { .. } => {}
                 },
             ),
             cx.observe_in(&buffer, window, |this, _, window, cx| {
@@ -658,6 +795,9 @@ impl Workspace {
             // The status bar shows the cursor position, which only the view knows about.
             cx.observe(&editor, |_, _, cx| cx.notify()),
         ];
+        for hook in self.editor_hooks.clone() {
+            subscriptions.extend(hook(self, &editor, window, cx));
+        }
         (editor, subscriptions)
     }
 
@@ -1434,6 +1574,25 @@ impl Workspace {
                 .iter()
                 .map(|p| p.display().to_string())
                 .collect(),
+            language_servers: self
+                .language_servers
+                .read(cx)
+                .statuses()
+                .map(|(id, status)| {
+                    let status = match status {
+                        gleipnir_core::ServerStatus::Starting => "starting".to_string(),
+                        gleipnir_core::ServerStatus::Running { busy: None } => {
+                            "running".to_string()
+                        }
+                        gleipnir_core::ServerStatus::Running { busy: Some(task) } => {
+                            format!("busy: {task}")
+                        }
+                        gleipnir_core::ServerStatus::Missing(why) => format!("missing: {why}"),
+                        gleipnir_core::ServerStatus::Failed(why) => format!("failed: {why}"),
+                    };
+                    (id.to_string(), status)
+                })
+                .collect(),
         }
     }
 
@@ -1817,8 +1976,14 @@ impl Workspace {
             .collect()
     }
 
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_status_bar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.global::<Theme>().clone();
+        let items: Vec<AnyElement> = self
+            .status_items
+            .clone()
+            .iter()
+            .filter_map(|item| item(self, cx))
+            .collect();
         let editor = self.active_editor(cx);
         let right = editor.as_ref().map(|editor| {
             let view = editor.read(cx);
@@ -1879,7 +2044,12 @@ impl Workspace {
             .child(
                 div()
                     .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(16.))
                     .text_color(theme.text_muted)
+                    .children(items)
                     .children(right),
             )
             .into_any_element()
@@ -2047,6 +2217,14 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &FocusEditor, window, cx| {
                 this.focus_center(window, cx);
             }))
+            .on_action(
+                cx.listener(|this, _: &NavigateBack, window, cx| this.navigate(true, window, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &NavigateForward, window, cx| {
+                    this.navigate(false, window, cx)
+                }),
+            )
             .on_mouse_move(cx.listener(Self::on_mouse_move))
             .on_mouse_up(
                 MouseButton::Left,

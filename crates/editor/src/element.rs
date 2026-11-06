@@ -1,6 +1,7 @@
 //! Lays out and paints the visible part of the document.
 
 use crate::view::{EditorView, HighlightCache};
+use gleipnir_core::Severity;
 use gleipnir_syntax::highlights;
 use gleipnir_text::{Buffer, TabMap, byte_col_at_display, display_column};
 use gleipnir_ui::Theme;
@@ -11,6 +12,7 @@ use gpui::{
     ScrollEvent, ShapedLine, SharedString, Size, Style, TextRun, UnderlineStyle, Window, fill,
     font, point, px, relative, size,
 };
+use std::ops::Range;
 use std::rc::Rc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -26,7 +28,7 @@ const SCROLL_MARGIN_COLUMNS: f32 = 4.0;
 
 /// The first installed font from a preference list. Fonts differ by platform, and looking one up
 /// that doesn't exist falls back to something proportional, which an editor can't work with.
-fn editor_font(window: &Window) -> Font {
+pub(crate) fn editor_font(window: &Window) -> Font {
     static FAMILY: OnceLock<String> = OnceLock::new();
     let family = FAMILY.get_or_init(|| {
         let available = window.text_system().all_font_names();
@@ -75,7 +77,7 @@ impl FrameGeometry {
         (relative.max(0.) as usize).min(self.line_count.saturating_sub(1))
     }
 
-    fn line_top(&self, line: usize) -> Pixels {
+    pub(crate) fn line_top(&self, line: usize) -> Pixels {
         self.bounds.top() + self.line_height * line as f32 - self.scroll.y
     }
 
@@ -567,7 +569,12 @@ impl Element for EditorElement {
                 height: bounds.size.height,
             },
         );
-        let text_hitbox_cursor = CursorStyle::IBeam;
+        let link = self.view.read(cx).semantics.link.clone();
+        let text_hitbox_cursor = if link.is_some() {
+            CursorStyle::PointingHand
+        } else {
+            CursorStyle::IBeam
+        };
         window.set_cursor_style(text_hitbox_cursor, &prepainted.hitbox);
 
         window.with_content_mask(
@@ -586,6 +593,7 @@ impl Element for EditorElement {
                         .paint(origin, line_height, gpui::TextAlign::Left, None, window, cx)
                         .ok();
                 }
+                paint_diagnostics(&self.view, &geometry, link, &theme, window, cx);
                 if focused && cursor_visible {
                     for cursor in &prepainted.cursors {
                         window.paint_quad(fill(*cursor, theme.editor_cursor));
@@ -594,18 +602,22 @@ impl Element for EditorElement {
             },
         );
 
-        for (x, number, top) in &prepainted.gutter_numbers {
-            number
-                .paint(
-                    point(*x, *top),
-                    line_height,
-                    gpui::TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                )
-                .ok();
-        }
+        // Clipped, as a partly scrolled-off line would otherwise draw over whatever's above.
+        window.with_content_mask(Some(ContentMask { bounds }), |window| {
+            paint_gutter_marks(&self.view, &geometry, bounds, &theme, window, cx);
+            for (x, number, top) in &prepainted.gutter_numbers {
+                number
+                    .paint(
+                        point(*x, *top),
+                        line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .ok();
+            }
+        });
 
         // Mouse handling. Registered per frame, and independent of what's under the pointer once a
         // drag has started, so that dragging can leave the editor and keep selecting.
@@ -633,12 +645,26 @@ impl Element for EditorElement {
 
         let view = self.view.clone();
         let hit_geometry = geometry.clone();
-        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+        let hover_hitbox = prepainted.hitbox.clone();
+        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble {
                 return;
             }
             view.update(cx, |view, cx| {
                 if view.drag.is_none() {
+                    let over_text = hover_hitbox.is_hovered(window)
+                        && event.position.x >= hit_geometry.text_origin_x;
+                    let buffer = view.buffer.read(cx).buffer();
+                    let offset = over_text
+                        .then(|| hit_geometry.offset_at(event.position, buffer))
+                        // Past the end of a line isn't over anything.
+                        .filter(|o| {
+                            hit_geometry
+                                .bounds_for_offset(*o, buffer)
+                                .is_some_and(|b| b.right() > event.position.x)
+                        });
+                    let secondary = event.modifiers.secondary(cx);
+                    view.mouse_over(offset, event.position, secondary, cx);
                     return;
                 }
                 if !event.dragging() {
@@ -650,6 +676,23 @@ impl Element for EditorElement {
                 let offset = hit_geometry.offset_at(event.position, buffer);
                 let display = hit_geometry.display_position_at(event.position);
                 view.mouse_dragged(offset, display, cx);
+            });
+        });
+
+        let view = self.view.clone();
+        let hover_hitbox = prepainted.hitbox.clone();
+        let hit_geometry = geometry.clone();
+        window.on_modifiers_changed(move |event: &gpui::ModifiersChangedEvent, window, cx| {
+            let position = window.mouse_position();
+            view.update(cx, |view, cx| {
+                if view.drag.is_some() {
+                    return;
+                }
+                let over_text =
+                    hover_hitbox.is_hovered(window) && position.x >= hit_geometry.text_origin_x;
+                let buffer = view.buffer.read(cx).buffer();
+                let offset = over_text.then(|| hit_geometry.offset_at(position, buffer));
+                view.update_link(offset, event.modifiers.secondary(cx), cx);
             });
         });
 
@@ -672,6 +715,138 @@ impl Element for EditorElement {
 
         let elapsed = prepainted.started.elapsed();
         self.view.update(cx, |view, _| record_frame(view, elapsed));
+    }
+}
+
+/// The x span of `range` on one line, clipped to what's on screen.
+fn span_on_line(
+    geometry: &FrameGeometry,
+    buffer: &gleipnir_text::Buffer,
+    line: usize,
+    range: &Range<usize>,
+) -> Option<(Pixels, Pixels, Pixels)> {
+    let line_start = buffer.line_start(line);
+    let line_end = buffer.line_end(line);
+    let start = range.start.max(line_start);
+    let end = range.end.min(line_end);
+    if start > end {
+        return None;
+    }
+    let left = geometry.bounds_for_offset(start, buffer)?;
+    let right = if end > start {
+        geometry.bounds_for_offset(end, buffer)?.left()
+    } else {
+        left.left() + geometry.char_width
+    };
+    Some((
+        left.left(),
+        right.max(left.left() + geometry.char_width / 2.),
+        left.top(),
+    ))
+}
+
+fn severity_color(severity: Severity, theme: &Theme) -> Hsla {
+    match severity {
+        Severity::Error => theme.error,
+        Severity::Warning => theme.warning,
+        Severity::Information | Severity::Hint => theme.text_faint,
+    }
+}
+
+fn paint_diagnostics(
+    view: &Entity<EditorView>,
+    geometry: &FrameGeometry,
+    link: Option<Range<usize>>,
+    theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let model = view.read(cx).buffer.read(cx);
+    let buffer = model.buffer();
+    let last_line = geometry.first_line + geometry.lines.len();
+    let visible = buffer.line_start(geometry.first_line)
+        ..buffer.line_end(last_line.saturating_sub(1).max(geometry.first_line));
+    let mut underlines = Vec::new();
+    for diagnostic in model.diagnostics().iter().rev() {
+        if diagnostic.range.end < visible.start || diagnostic.range.start > visible.end {
+            continue;
+        }
+        let first = buffer
+            .offset_to_point(diagnostic.range.start)
+            .line
+            .max(geometry.first_line);
+        let last = buffer
+            .offset_to_point(diagnostic.range.end)
+            .line
+            .min(last_line.saturating_sub(1));
+        for line in first..=last {
+            if let Some((left, right, top)) =
+                span_on_line(geometry, buffer, line, &diagnostic.range)
+            {
+                let style = UnderlineStyle {
+                    thickness: px(1.),
+                    color: Some(severity_color(diagnostic.severity, theme)),
+                    wavy: diagnostic.severity <= Severity::Warning,
+                };
+                underlines.push((
+                    point(left, top + geometry.line_height - px(3.)),
+                    right - left,
+                    style,
+                ));
+            }
+        }
+    }
+    if let Some(link) = link {
+        let line = buffer.offset_to_point(link.start).line;
+        if let Some((left, right, top)) = span_on_line(geometry, buffer, line, &link) {
+            let style = UnderlineStyle {
+                thickness: px(1.),
+                color: Some(theme.accent),
+                wavy: false,
+            };
+            underlines.push((
+                point(left, top + geometry.line_height - px(2.)),
+                right - left,
+                style,
+            ));
+        }
+    }
+    for (origin, width, style) in underlines {
+        window.paint_underline(origin, width, &style);
+    }
+}
+
+/// A bar at the gutter's edge on lines with problems, in the color of the worst one.
+fn paint_gutter_marks(
+    view: &Entity<EditorView>,
+    geometry: &FrameGeometry,
+    bounds: Bounds<Pixels>,
+    theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let model = view.read(cx).buffer.read(cx);
+    let buffer = model.buffer();
+    let mut worst: Vec<Option<Severity>> = vec![None; geometry.lines.len()];
+    for diagnostic in model.diagnostics() {
+        let line = buffer.offset_to_point(diagnostic.range.start).line;
+        if let Some(slot) = line
+            .checked_sub(geometry.first_line)
+            .and_then(|i| worst.get_mut(i))
+        {
+            *slot = Some(slot.map_or(diagnostic.severity, |s| s.min(diagnostic.severity)));
+        }
+    }
+    for (index, severity) in worst.into_iter().enumerate() {
+        let Some(severity) = severity else { continue };
+        let top = geometry.line_top(geometry.first_line + index);
+        window.paint_quad(fill(
+            Bounds::new(
+                point(bounds.left() + px(3.), top + px(3.)),
+                size(px(3.), geometry.line_height - px(6.)),
+            ),
+            severity_color(severity, theme),
+        ));
     }
 }
 

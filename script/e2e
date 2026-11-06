@@ -49,12 +49,38 @@ open(sys.argv[1], 'w').write(block * (100000 // block.count('\n')))
 PY
 }
 
+# Real projects for real language servers: a crate, a Go module, a TypeScript project and Odin.
+make_code_fixtures() {
+    dir=$1
+    mkdir -p "$dir/src" "$dir/web"
+    printf '[package]\nname = "shapes_demo"\nversion = "0.1.0"\nedition = "2021"\n' > "$dir/Cargo.toml"
+    printf 'mod shapes;\n\nfn main() {\n    let a = shapes::area(2.0);\n    let b = shapes::area(3.0);\n    println!("{a} {b}");\n}\n' > "$dir/src/main.rs"
+    printf 'pub fn area(r: f64) -> f64 {\n    r * r\n}\n\npub trait Shape {\n    fn size(&self) -> f64;\n}\n\npub struct Square(pub f64);\n\nimpl Shape for Square {\n    fn size(&self) -> f64 {\n        self.0 * self.0\n    }\n}\n\npub struct Circle(pub f64);\n\nimpl Shape for Circle {\n    fn size(&self) -> f64 {\n        area(self.0) * 3.14\n    }\n}\n' > "$dir/src/shapes.rs"
+    printf 'module demo\n\ngo 1.22\n' > "$dir/go.mod"
+    printf 'package main\n\nimport "fmt"\n\nfunc double(n int) int {\n\treturn n * 2\n}\n\nfunc main() {\n\tfmt.Println(double(2), double(3))\n}\n' > "$dir/main.go"
+    printf '{ "compilerOptions": { "strict": true, "target": "es2022", "module": "nodenext" } }\n' > "$dir/web/tsconfig.json"
+    printf 'export interface User {\n  name: string;\n}\n\nexport function greet(user: User): string {\n  return "hi " + user.name;\n}\n' > "$dir/web/util.ts"
+    printf 'import { greet } from "./util.js";\n\nconsole.log(greet({ name: "a" }));\n' > "$dir/web/app.ts"
+    mkdir -p "$dir/odin"
+    printf 'package demo\n\nimport "core:fmt"\n\ndouble :: proc(n: int) -> int {\n\treturn n * 2\n}\n\nmain :: proc() {\n\tfmt.println(double(2))\n}\n' > "$dir/odin/main.odin"
+}
+
+# `code` drives real language servers, so it only runs when asked for. Servers that Gleipnir
+# installs itself are looked for in E2E_TOOLS, a managed tools folder from an earlier install.
 scripts=${*:-editing workspace search toolchains perf}
 failed=0
 for name in $scripts; do
     # The folder is named after the script, which is what shows as the project's name.
     dir="$work/$name/$name"
-    make_fixtures "$dir"
+    if [ "$name" = code ]; then
+        make_code_fixtures "$dir"
+        if [ -n "${E2E_TOOLS:-}" ]; then
+            mkdir -p "$work/$name/state"
+            ln -s "$E2E_TOOLS" "$work/$name/state/tools"
+        fi
+    else
+        make_fixtures "$dir"
+    fi
     script="$work/$name.script"
     sed -e "s|{dir}|$dir|g" -e "s|{shots}|$shots|g" "$root/crates/gleipnir/e2e/$name.script" > "$script"
     echo "== $name"

@@ -28,6 +28,12 @@ impl BufferStore {
         }
     }
 
+    /// The buffer open for a file, if there is one, without opening it.
+    pub fn get(&self, path: &Path) -> Option<Entity<BufferModel>> {
+        let path = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        self.buffers.get(&path).and_then(WeakEntity::upgrade)
+    }
+
     /// Opens a file, or returns the buffer already open for it. The path is canonicalized first,
     /// so a symlink and its target, or two spellings of a path, share one buffer.
     pub fn open(

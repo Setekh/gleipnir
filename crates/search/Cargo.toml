@@ -10,6 +10,7 @@ name = "gleipnir_search"
 [dependencies]
 gleipnir-core.workspace = true
 gleipnir-index.workspace = true
+gleipnir-lsp.workspace = true
 gleipnir-syntax.workspace = true
 gleipnir-ui.workspace = true
 gleipnir-workspace.workspace = true

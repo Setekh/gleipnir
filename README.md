@@ -2,9 +2,10 @@
 
 An IDE written in Rust on [GPUI](https://gpui.rs), for TypeScript, JavaScript, Odin, Rust and Go.
 
-Status: a project-based editor with a file tree, tabs, split panes, multi-cursor editing and
-IntelliJ-style Search Everywhere, and per-project SDKs with managed tool installs. Code intelligence
-and debugging are next. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+Status: a project-based editor with a file tree, tabs, split panes, multi-cursor editing,
+IntelliJ-style Search Everywhere, per-project SDKs with managed tool installs, and code intelligence
+from language servers: completion, documentation, go to declaration and implementations, usages,
+problems, rename, quick fixes and reformatting. Debugging is next. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 for the design and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
 
 ## Building
@@ -21,6 +22,7 @@ also need Xcode. On Arch or Omarchy, `sudo script/linux-deps` installs the syste
     cargo test --workspace      # unit, property and headless UI tests
     script/e2e                  # drives the real app; needs a display
     PROFILE=release script/e2e perf
+    E2E_TOOLS=~/path/to/state/tools script/e2e code   # with real language servers installed
     script/linux-check          # builds and tests on Arch in Docker, from any machine
 
 Property tests run 256 cases by default. `PROPTEST_CASES=20000 cargo test -p gleipnir-text --release`
@@ -33,12 +35,17 @@ searches much harder, and has found real bugs that the default run missed.
 - `crates/project_panel`: the project tree.
 - `crates/search`: Search Everywhere, its tabs, and the double-Shift gesture.
 - `crates/settings_ui`: Languages & SDKs, for choosing SDKs and installing tools.
+- `crates/code_nav`: code intelligence from language servers: the editor's completion and
+  documentation, navigation, the Find and Problems panels, rename, intentions and reformatting.
+- `crates/lsp`: the language server client: framing, requests with cancellation, and the
+  capabilities we advertise.
 - `crates/packages`: language manifests (in `builtin/`), SDK detection, tool resolution and
   installation, and each language's run and debug adapter.
 - `crates/editor`: the editor view: rendering, input, mouse and key bindings.
 - `crates/ui`: theme, icons, text input, context menu and list navigation.
-- `crates/core`: open buffers, file loading and saving, external change detection, and the project:
-  its files, symbol index and git status, kept current by watching it.
+- `crates/core`: open buffers, file loading and saving, external change detection, the project
+  (its files, symbol index and git status, kept current by watching it), and the language servers:
+  starting and restarting them, document sync, diagnostics and requests.
 - `crates/index`: the file tree model, file list, fuzzy matching and search, gitignore rules, git
   status, file watching and file operations.
 - `crates/syntax`: languages, background parsing, highlighting, structural selection and symbol

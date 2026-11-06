@@ -53,6 +53,14 @@ pub struct ServerSpec {
     pub tool: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// The server says when it's finished loading the project, with rust-analyzer's
+    /// `experimental/serverStatus`, so it counts as busy until then. Without this, the gaps
+    /// between its progress reports look like it's ready when it can't answer yet.
+    #[serde(default)]
+    pub reports_ready: bool,
+    /// Sent as `initializationOptions`, for servers that are configured that way.
+    #[serde(default)]
+    pub initialization_options: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]

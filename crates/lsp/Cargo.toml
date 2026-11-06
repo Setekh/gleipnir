@@ -1,0 +1,19 @@
+[package]
+name = "gleipnir-lsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gleipnir_lsp"
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+lsp-types = "0.97"
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+gleipnir-packages.workspace = true
+tempfile = "3"

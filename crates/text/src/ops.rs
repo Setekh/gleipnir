@@ -184,6 +184,36 @@ impl EditContext<'_> {
         lines
     }
 
+    /// Applies edits that came from elsewhere, like a completion or a language server, as one undo
+    /// step. Ranges are in the document as it is now, and mustn't overlap. Selections follow the
+    /// edits, except that `cursor`, if given, is where the primary cursor ends up, in the document
+    /// as it will be after the edits.
+    pub fn apply_edits(
+        &mut self,
+        edits: Vec<TextEdit>,
+        cursor: Option<usize>,
+        grouping: UndoGrouping,
+    ) -> Vec<AppliedEdit> {
+        let mut edits = edits;
+        edits.sort_by_key(|e| e.range.start);
+        let mut after = self.selections.clone();
+        after.update(|s| {
+            Selection::new(
+                map_offset_through_edits(s.anchor, &edits, Bias::Left),
+                map_offset_through_edits(s.head, &edits, Bias::Right),
+            )
+        });
+        if let Some(cursor) = cursor {
+            after = SelectionSet::cursor(cursor);
+        }
+        let applied = self
+            .buffer
+            .apply_edits(edits, self.selections, &after, grouping, self.now);
+        after.clip(self.buffer);
+        *self.selections = after;
+        applied
+    }
+
     /// Inserts text at every selection, as for an IME commit or multi-character input.
     pub fn insert(&mut self, text: &str, grouping: UndoGrouping) -> Vec<AppliedEdit> {
         let plans = self

@@ -58,7 +58,7 @@ and can be tested without a window.
 ```text
 gleipnir                 binary: startup, wiring, keymap defaults
    |
-   +-- project_panel   search_everywhere   code_nav_ui   debugger_ui   settings_ui
+   +-- project_panel   search   code_nav   debugger_ui   settings_ui
    |        (each feature contributes panels and actions to the workspace)
    |
 workspace                window layout, docks, tool rail, split panes, tabs, action registry
@@ -67,7 +67,7 @@ editor                   EditorView, rendering, input, multi-cursor commands
    |
 ui                       theme, text input, virtual list, tree, popover, context menu
    |
-core                     GPUI entities around the services below: BufferStore, LspHub, DebugHub
+core                     GPUI entities around the services below: BufferStore, LanguageServers, DebugHub
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 packages    manifests, package registry, SDK registry, tool resolution and installation
 lsp         JSON-RPC transport and typed LSP client
@@ -254,19 +254,40 @@ disabled and the status bar offers to install it.
 
 ## Code intelligence
 
-`LspHub` runs one server per (language, project root) and owns document sync, using incremental
-changes and UTF-16 positions. Results reach the UI as our own types, not `lsp-types`, so features
-don't depend on the wire format.
+`LanguageServers` (in `core`, owned by the workspace) runs one server per package and project,
+starting it when a file of its language is first registered. It owns document sync: incremental
+changes from each edit's UTF-16 ranges, or the whole text for servers that ask for that. Edits reach
+it through buffer events, which arrive after the update that made them, so every request first
+catches its document up: if the server's copy is behind, the whole text goes first, and the edit
+events it already covered are skipped by version. That's what lets the editor ask for completion in
+the same keystroke that typed the character.
+
+A server is *busy* while it reports `$/progress`, and, for servers whose manifest says
+`reports_ready` (rust-analyzer), until it says it's quiescent. Without that, the gaps between its
+loading steps look like readiness, and early requests get empty answers. When an answer is empty
+while the server is busy, the status bar says so instead of "not found". Servers configured through
+`initializationOptions` get them from their manifest; TypeScript uses that to keep tsserver's
+syntax-only server from answering navigation before the project has loaded.
+
+The editor knows nothing of LSP. It asks a `SemanticsProvider` for completions, documentation,
+parameter info and trigger characters, in its own types, and emits `GoToDefinition` on Cmd+click.
+`code_nav` implements the provider over `LanguageServers`, and adds everything else through
+workspace hooks: an editor hook to attach the provider and register each buffer, actions, the Find
+and Problems panels, the status bar item, and a picker popup for choices.
 
 Go-to behaviour:
 
-- **Cmd+B / Cmd+click on a reference:** go to the definition.
-- **The same on a definition:** show its usages, as IntelliJ does.
-- **Several results:** show a chooser popup. **One result:** jump straight there.
-- **Every jump:** recorded in a back/forward history shared across files.
+- **Cmd+B / Cmd+click on a reference:** go to the declaration.
+- **The same on a declaration:** show its usages, as IntelliJ does.
+- **Several results:** a chooser popup. **One result:** jump straight there.
+- **Every jump:** recorded in the workspace's back/forward history (Cmd+[ and Cmd+]).
 
-Not every server supports every request. The UI checks advertised capabilities and disables what's
-unavailable, instead of failing silently.
+Edits from rename and quick fixes arrive as a `WorkspaceEdit`. Files open in the editor are edited
+there and left for the user to save, as with their own typing. Files that weren't open are opened,
+edited and saved, as nothing would show they'd changed otherwise.
+
+Not every server supports every request. Actions check advertised capabilities first and say when
+a server can't do something, such as implementations under ols.
 
 ## Debugging
 

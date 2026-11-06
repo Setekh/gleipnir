@@ -16,6 +16,7 @@ pairs = ["()", "[]", "{}", "\"\""]
 
 [server]
 tool = "rust-analyzer"
+reports_ready = true
 
 [debugger]
 tool = "lldb-dap"

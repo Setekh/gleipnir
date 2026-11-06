@@ -668,3 +668,5 @@ fn jumping_to_a_line_far_away_centres_it(cx: &mut TestAppContext) {
         "line 500 should be centred, the screen shows {first}+{count}"
     );
 }
+
+mod semantics;

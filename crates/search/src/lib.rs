@@ -190,6 +190,97 @@ fn open(workspace: &mut Workspace, tab: Tab, window: &mut Window, cx: &mut Conte
     });
 }
 
+fn item_key(item: &Item) -> String {
+    match item {
+        Item::Header(label) => format!("header {label}"),
+        Item::File { absolute, .. } => format!("file {}", absolute.display()),
+        Item::Symbol(hit) => format!(
+            "symbol {} {} {}",
+            hit.entry.path, hit.entry.symbol.line, hit.entry.symbol.name
+        ),
+        Item::Action { entry, .. } => format!("action {}", entry.info.name),
+    }
+}
+
+fn symbol_kind(kind: gleipnir_lsp::lsp_types::SymbolKind) -> Option<SymbolKind> {
+    use gleipnir_lsp::lsp_types::SymbolKind as K;
+    Some(match kind {
+        K::CLASS | K::STRUCT | K::OBJECT | K::TYPE_PARAMETER => SymbolKind::Class,
+        K::INTERFACE => SymbolKind::Interface,
+        K::ENUM => SymbolKind::Enum,
+        K::FUNCTION | K::CONSTRUCTOR | K::OPERATOR => SymbolKind::Function,
+        K::METHOD => SymbolKind::Method,
+        K::CONSTANT => SymbolKind::Constant,
+        K::VARIABLE | K::FIELD | K::PROPERTY => SymbolKind::Variable,
+        K::MODULE | K::NAMESPACE | K::PACKAGE => SymbolKind::Module,
+        K::ENUM_MEMBER => SymbolKind::EnumMember,
+        _ => return None,
+    })
+}
+
+/// Adds what language servers found and the index didn't, matched the same way as the rest.
+/// Returns whether anything was added.
+fn merge_server_symbols(
+    found: &mut Found,
+    hits: Vec<gleipnir_core::SymbolHit>,
+    text: &str,
+    root: Option<&Path>,
+    tab: Tab,
+) -> bool {
+    let pattern = fuzzy::Pattern::new(text);
+    let mut added = false;
+    for hit in hits {
+        let Some(kind) = symbol_kind(hit.kind) else {
+            continue;
+        };
+        let Some(matched) = fuzzy::fuzzy_match(&pattern, &hit.name) else {
+            continue;
+        };
+        let path: Arc<str> = root
+            .and_then(|r| hit.location.path.strip_prefix(r).ok())
+            .unwrap_or(&hit.location.path)
+            .to_string_lossy()
+            .into();
+        let line = hit.location.start.line;
+        let list = if kind.is_type() && tab != Tab::Symbols {
+            &mut found.classes
+        } else {
+            &mut found.symbols
+        };
+        if list.len() >= RESULT_LIMIT
+            || found
+                .classes
+                .iter()
+                .chain(found.symbols.iter())
+                .any(|h| h.entry.path == path && h.entry.symbol.line == line)
+        {
+            continue;
+        }
+        let list = if kind.is_type() && tab != Tab::Symbols {
+            &mut found.classes
+        } else {
+            &mut found.symbols
+        };
+        list.push(SymbolHit {
+            entry: gleipnir_index::SymbolEntry {
+                path,
+                symbol: gleipnir_syntax::Symbol {
+                    name: hit.name,
+                    kind,
+                    container: hit.container,
+                    line,
+                    // Servers count UTF-16 units; for the identifiers this is used on, that's bytes.
+                    column: hit.location.start.character,
+                },
+            },
+            score: matched.score,
+            positions: matched.positions,
+        });
+        added = true;
+    }
+    added
+}
+
 #[derive(Clone, Debug)]
 struct ActionEntry {
     info: ActionInfo,
@@ -234,6 +325,7 @@ impl Item {
 }
 
 /// Results from the background part of a search.
+#[derive(Clone)]
 struct Found {
     files: Vec<FileHit>,
     classes: Vec<SymbolHit>,
@@ -439,12 +531,51 @@ impl SearchPopup {
                 symbols,
             }
         });
+        // Language servers know about more than the index, like dependencies, but answer slower:
+        // their results are added when they come.
+        let from_servers = (wants_classes || wants_symbols)
+            .then(|| self.workspace.upgrade())
+            .flatten()
+            .map(|w| {
+                w.read(cx)
+                    .language_servers()
+                    .read(cx)
+                    .workspace_symbols(&text, cx)
+            });
+        let root = self.root(cx);
         self._search = Some(cx.spawn(async move |this, cx| {
-            let found = work.await;
+            let mut found = work.await;
+            let shown = this.update(cx, |this, cx| {
+                if this.generation == generation {
+                    let items = this.build_items(found.clone(), &text, cx);
+                    this.show(items, cx);
+                    true
+                } else {
+                    false
+                }
+            });
+            let (Ok(true), Some(from_servers)) = (shown, from_servers) else {
+                return;
+            };
+            let hits = from_servers.await;
+            if !merge_server_symbols(&mut found, hits, &text, root.as_deref(), tab) {
+                return;
+            }
             this.update(cx, |this, cx| {
                 if this.generation == generation {
+                    let selected = this
+                        .nav
+                        .selected()
+                        .and_then(|i| this.items.get(i))
+                        .map(item_key);
                     let items = this.build_items(found, &text, cx);
                     this.show(items, cx);
+                    // Keep the selection on what it was, as results arriving shouldn't move it.
+                    if let Some(index) =
+                        selected.and_then(|key| this.items.iter().position(|i| item_key(i) == key))
+                    {
+                        this.nav.select(index);
+                    }
                 }
             })
             .ok();

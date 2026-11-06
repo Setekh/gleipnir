@@ -525,6 +525,53 @@ fn undo_restores_all_text_and_all_selections() {
 }
 
 #[test]
+fn external_edits_apply_as_one_step_and_selections_follow() {
+    let (mut buffer, mut selections) = parse("use a;\nfn f() { x| }");
+    let config = config();
+    let mut cx = EditContext {
+        buffer: &mut buffer,
+        selections: &mut selections,
+        config: &config,
+        now: Instant::now(),
+    };
+    // A completion's own edit, and an import added at the top, in one go.
+    let typed = "use a;\nfn f() { ".len();
+    cx.apply_edits(
+        vec![
+            TextEdit::new(typed..typed + 1, "xyz()"),
+            TextEdit::new(0..0, "use b;\n"),
+        ],
+        None,
+        UndoGrouping::Distinct,
+    );
+    assert_eq!(
+        render(&buffer, &selections),
+        "use b;\nuse a;\nfn f() { xyz()| }"
+    );
+    buffer.undo().unwrap();
+    assert_eq!(buffer.text(), "use a;\nfn f() { x }");
+}
+
+#[test]
+fn external_edits_can_place_the_cursor() {
+    let (mut buffer, mut selections) = parse("f|");
+    let config = config();
+    let mut cx = EditContext {
+        buffer: &mut buffer,
+        selections: &mut selections,
+        config: &config,
+        now: Instant::now(),
+    };
+    // A snippet `foo($1)` puts the cursor inside the parentheses.
+    cx.apply_edits(
+        vec![TextEdit::new(0..1, "foo()")],
+        Some(4),
+        UndoGrouping::Distinct,
+    );
+    assert_eq!(render(&buffer, &selections), "foo(|)");
+}
+
+#[test]
 fn left_and_right_move_by_grapheme_and_cross_lines() {
     assert_eq!(motion("a|b", Motion::Left, false), "|ab");
     assert_eq!(motion("a|b", Motion::Right, false), "ab|");

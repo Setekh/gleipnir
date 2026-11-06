@@ -11,6 +11,7 @@ name = "gleipnir_core"
 anyhow.workspace = true
 futures.workspace = true
 gleipnir-index.workspace = true
+gleipnir-lsp.workspace = true
 gleipnir-packages.workspace = true
 gleipnir-syntax.workspace = true
 gleipnir-text.workspace = true
@@ -19,5 +20,6 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+proptest = "1"
 gpui = { workspace = true, features = ["test-support"] }
 tempfile = "3"

@@ -3,6 +3,7 @@
 pub mod assets;
 pub mod context_menu;
 pub mod list;
+pub mod markdown;
 pub mod text_input;
 pub mod theme;
 

@@ -124,11 +124,16 @@ Still open from M4:
 
 Goal: daily-driver code understanding. **After this, Gleipnir can be used to develop itself.**
 
+Status: built and passing on macOS, against fakes in tests and the real servers end to end:
+`E2E_TOOLS=<managed tools folder> script/e2e code` drives rust-analyzer, gopls,
+typescript-language-server and ols through navigation, usages, completion, parameter info,
+diagnostics, rename and reformat.
+
 | # | Item | Finished when |
 | --- | --- | --- |
 | 5.1 | **Capability survey first:** each server against a sample project | A table of what each server really supports, which may change this plan |
 | 5.2 | `lsp` client, tested with a fake server | Handles crashes, restarts, cancellation and server-to-client requests |
-| 5.3 | `LspHub`, incremental document sync | After random edits, the server's view of the document matches ours |
+| 5.3 | `LanguageServers` hub, incremental document sync | After random edits, the server's view of the document matches ours |
 | 5.4 | Diagnostics: underlines, gutter, Problems panel | Errors appear and clear as you type in all five languages |
 | 5.5 | Go to definition and implementation, Cmd+click, chooser, back/forward | Works per the survey in every language |
 | 5.6 | Find Usages panel, grouped by file with preview | Results update the editor on selection; Cmd+B on a definition shows usages |
@@ -136,6 +141,28 @@ Goal: daily-driver code understanding. **After this, Gleipnir can be used to dev
 | 5.8 | Hover and signature help | Shows docs and the active parameter |
 | 5.9 | File structure popup, LSP symbols in Search Everywhere | LSP results replace index entries without duplicates |
 | 5.10 | Rename, code actions, format | Multi-file rename applies as one operation |
+
+Shortcuts, IntelliJ's macOS ones: Cmd+B declaration or usages, Cmd+Alt+B implementations, Cmd+Shift+B
+type declaration, Alt+F7 Find Usages, Cmd+Alt+F7 Show Usages, Cmd+F12 file structure, Cmd+6
+Problems, F2 and Shift+F2 next and previous problem, Shift+F6 rename, Alt+Enter intentions,
+Cmd+Alt+L reformat, Ctrl+Space completion, F1 quick documentation, Cmd+P parameter info, Cmd+[ and
+Cmd+] back and forward.
+
+Still open from M5:
+
+- **Find Usages doesn't preview**: moving through results doesn't show them in the editor; Enter or
+  a click opens one.
+- **Rename across files isn't one undo step.** Each open file undoes its own part; files that weren't
+  open are saved, and only version control takes those back.
+- **Files changed outside the editor** aren't reported to servers (`didChangeWatchedFiles`), so after
+  a branch switch a server may answer from old text until restarted (Code > Restart Language Server).
+- **Not built yet:** highlighting the usages of the name under the cursor, inlay hints and semantic
+  highlighting.
+- **Symbols from servers in Search Everywhere** land on the right line, but the column can be off
+  on lines with non-ASCII text before the name, as servers count UTF-16 units.
+- **rust-analyzer reports type errors on save**, from `cargo check`, as it does everywhere; only its
+  own diagnostics show while typing.
+- **JavaScript** shares the TypeScript server and has unit coverage, but no end-to-end script yet.
 
 ## M6: Debugger
 

@@ -59,6 +59,14 @@ pub struct EditorState {
     pub visible_lines: Option<(usize, usize)>,
     pub highlight_spans: usize,
     pub parse_pending: bool,
+    /// The primary cursor's zero-based line and byte column.
+    pub cursor: (usize, usize),
+    /// What the completion menu lists, if it's open.
+    pub completions: Vec<String>,
+    pub hover: Option<String>,
+    pub signature: Option<String>,
+    /// Each as `line:column severity: message`, one-based.
+    pub diagnostics: Vec<String>,
 }
 
 pub enum EditorEvent {
@@ -69,6 +77,8 @@ pub enum EditorEvent {
     SaveConflict,
     /// A save failed, with the reason.
     SaveFailed(String),
+    /// A Cmd+click, or Ctrl+click on Linux, on a name: go to where it's defined.
+    GoToDefinition { offset: usize },
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
@@ -96,6 +106,7 @@ pub struct EditorView {
     /// Durations of recent frames, when measuring.
     pub(crate) frame_times: Option<Vec<Duration>>,
     blink: Option<Task<()>>,
+    pub(crate) semantics: crate::semantics::SemanticsState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -128,6 +139,7 @@ impl EditorView {
             occurrence_whole_word: false,
             frame_times: None,
             blink: None,
+            semantics: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -196,6 +208,27 @@ impl EditorView {
                 .map(|g| (g.first_line, g.first_line + g.lines.len())),
             highlight_spans: self.highlights.as_ref().map_or(0, |h| h.spans.len()),
             parse_pending: model.is_parse_pending(),
+            cursor: {
+                let point = buffer.offset_to_point(self.selections.primary().head);
+                (point.line, point.col)
+            },
+            completions: self.completion_labels(),
+            hover: self.hover_text(),
+            signature: self.signature_label(),
+            diagnostics: model
+                .diagnostics()
+                .iter()
+                .map(|d| {
+                    let point = buffer.offset_to_point(d.range.start);
+                    format!(
+                        "{}:{} {:?}: {}",
+                        point.line + 1,
+                        point.col + 1,
+                        d.severity,
+                        d.message
+                    )
+                })
+                .collect(),
         }
     }
 
@@ -220,7 +253,7 @@ impl EditorView {
         event: &BufferEvent,
         cx: &mut Context<Self>,
     ) {
-        if let BufferEvent::Edited { edits, origin } = event {
+        if let BufferEvent::Edited { edits, origin, .. } = event {
             // The view that made the edit has already placed its selections.
             if *origin != Some(cx.entity_id()) {
                 self.selections.transform(edits);
@@ -250,7 +283,10 @@ impl EditorView {
 
     /// Anything that moves the cursor: keep it visible, make it solid, and end the undo group so
     /// that typing here doesn't merge with typing somewhere else.
-    fn did_move(&mut self, cx: &mut Context<Self>) {
+    pub(crate) fn did_move(&mut self, cx: &mut Context<Self>) {
+        self.semantics.completion = None;
+        self.semantics.hover = None;
+        self.check_signature(cx);
         self.autoscroll = true;
         self.buffer
             .update(cx, |buffer, _| buffer.break_undo_group());
@@ -324,6 +360,30 @@ impl EditorView {
         command: impl FnOnce(&mut EditContext) -> Vec<AppliedEdit>,
     ) {
         self.command(cx, |edit| ((), command(edit)));
+    }
+
+    fn key_context(&self, cx: &App) -> gpui::KeyContext {
+        let mut context = gpui::KeyContext::new_with_defaults(cx.platform_info().os);
+        context.add("Editor");
+        if self.semantics.completion.is_some() {
+            context.add("showing_completions");
+        }
+        if self.has_popups() {
+            context.add("showing_popups");
+        }
+        context
+    }
+
+    /// Applies edits from a completion, placing the cursor, as one undo step.
+    pub(crate) fn edit_for_semantics(
+        &mut self,
+        edits: Vec<gleipnir_text::TextEdit>,
+        cursor: usize,
+        cx: &mut Context<Self>,
+    ) {
+        self.edit(cx, |edit| {
+            edit.apply_edits(edits, Some(cursor), gleipnir_text::UndoGrouping::Distinct)
+        });
     }
 
     fn on_undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
@@ -467,6 +527,9 @@ impl EditorView {
 
     /// Escape: back to one cursor, then to no selection.
     fn on_collapse(&mut self, _: &CollapseSelections, _: &mut Window, cx: &mut Context<Self>) {
+        if self.close_popups(cx) {
+            return;
+        }
         if self.selections.len() > 1 {
             self.selections.collapse_to_primary();
         } else if self.selections.has_non_empty() {
@@ -517,6 +580,12 @@ impl EditorView {
         let buffer = model.buffer();
         let tab_size = model.edit_config().tab_size;
 
+        if modifiers.secondary(cx) && click_count == 1 && !modifiers.shift && !modifiers.alt {
+            self.selections = SelectionSet::cursor(offset);
+            self.did_move(cx);
+            self.link_clicked(offset, cx);
+            return;
+        }
         if modifiers.alt && modifiers.shift {
             // Add a cursor, as a drag from here can select more alongside what's there.
             let base = self.selections.clone();
@@ -727,7 +796,10 @@ impl EntityInputHandler for EditorView {
 
         let mut chars = text.chars();
         match (chars.next(), chars.next()) {
-            (Some(c), None) => self.edit(cx, |edit| edit.type_char(c)),
+            (Some(c), None) => {
+                self.edit(cx, |edit| edit.type_char(c));
+                self.after_typing(c, cx);
+            }
             (None, _) => {}
             _ => self.edit(cx, |edit| {
                 edit.insert(text, gleipnir_text::UndoGrouping::Typing)
@@ -793,7 +865,8 @@ impl EntityInputHandler for EditorView {
 }
 
 impl Render for EditorView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let popups = self.render_popups(window, cx);
         macro_rules! motions {
             ($el:expr, $($action:ident => ($motion:expr, $extend:expr)),* $(,)?) => {
                 $el$(.on_action(cx.listener(|this, _: &$action, _, cx| {
@@ -804,13 +877,14 @@ impl Render for EditorView {
         macro_rules! edits {
             ($el:expr, $($action:ident => $method:ident $(($($arg:expr),*))?),* $(,)?) => {
                 $el$(.on_action(cx.listener(|this, _: &$action, _, cx| {
-                    this.edit(cx, |edit| edit.$method($($($arg),*)?))
+                    this.edit(cx, |edit| edit.$method($($($arg),*)?));
+                    this.after_deleting(cx);
                 })))*
             };
         }
 
         let root = div()
-            .key_context("Editor")
+            .key_context(self.key_context(cx))
             .track_focus(&self.focus_handle)
             .size_full()
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| {
@@ -835,7 +909,43 @@ impl Render for EditorView {
             .on_action(cx.listener(Self::on_remove_last_occurrence))
             .on_action(cx.listener(Self::on_select_all_occurrences))
             .on_action(cx.listener(Self::on_collapse))
-            .on_action(cx.listener(Self::on_save));
+            .on_action(cx.listener(Self::on_save))
+            .on_action(
+                cx.listener(|this, _: &ShowCompletions, _, cx| this.request_completions(None, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ConfirmCompletion, _, cx| this.confirm_completion(cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectNextCompletion, _, cx| this.move_completion(1, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectPreviousCompletion, _, cx| {
+                    this.move_completion(-1, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectNextCompletionPage, _, cx| {
+                    this.move_completion(8, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &SelectPreviousCompletionPage, _, cx| {
+                    this.move_completion(-8, cx)
+                }),
+            )
+            .on_action(cx.listener(|this, _: &DismissPopups, _, cx| {
+                this.close_popups(cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowHover, _, cx| {
+                let head = this.selections.primary().head;
+                this.request_hover(head, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ShowSignatureHelp, _, cx| this.request_signature(cx)))
+            .on_action(cx.listener(|this, _: &NextProblem, _, cx| this.go_to_problem(true, cx)))
+            .on_action(
+                cx.listener(|this, _: &PreviousProblem, _, cx| this.go_to_problem(false, cx)),
+            );
 
         let root = motions!(root,
             MoveLeft => (Motion::Left, false),
@@ -879,5 +989,6 @@ impl Render for EditorView {
             cx.listener(|this, _, _, _| this.mouse_up()),
         )
         .child(EditorElement::new(cx.entity()))
+        .children(popups)
     }
 }

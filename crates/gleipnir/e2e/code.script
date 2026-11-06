@@ -1,0 +1,113 @@
+# Code insight with real language servers. Needs rust-analyzer, gopls, typescript-language-server
+# and ols; run with: E2E_TOOLS=<managed tools folder> script/e2e code
+wait-timeout 120
+
+# Rust, with rust-analyzer.
+open {dir}/src/main.rs
+wait-state /language_servers/rust running
+cursor 4:22
+action code_nav::GoToDeclarationOrUsages
+wait-match /editor/path src/shapes.rs
+expect-state /editor/cursor/0 0
+expect-state /editor/cursor/1 7
+action workspace::NavigateBack
+wait-match /editor/path src/main.rs
+expect-state /editor/cursor/0 3
+
+# On the declaration itself, Cmd+B lists usages.
+open {dir}/src/shapes.rs
+cursor 1:9
+action code_nav::FindUsages
+wait-state /panels/usages/searching false
+dump {shots}/code-rust-usages.json
+screenshot {shots}/code-rust-usages.png
+
+# Implementations of the trait method.
+cursor 6:8
+action code_nav::GoToImplementation
+wait-state /modal Picker
+screenshot {shots}/code-rust-implementations.png
+key enter
+wait-state /modal null
+dump {shots}/code-rust-impl.json
+
+# Hover.
+cursor 21:9
+action editor::ShowHover
+wait-match /editor/hover fn area
+screenshot {shots}/code-rust-hover.png
+key escape
+
+# Completion with a snippet: the parameter is selected, and Parameter Info shows.
+open {dir}/src/main.rs
+cursor 6:25
+key enter
+type let\sc\s=\sshapes::ar
+wait-match /editor/completions area
+screenshot {shots}/code-rust-completion.png
+key enter
+wait-match /editor/text let c = shapes::area(
+wait-match /editor/signature r: f64
+screenshot {shots}/code-rust-signature.png
+type 4.0
+key end
+type ;
+wait-match /editor/text let c = shapes::area(4.0);
+
+# A type error shows once saved, as rust-analyzer runs cargo check then, and in Problems.
+key enter
+type let\sd:\si32\s=\s"x";
+do Save
+wait-match /editor/diagnostics Error
+action code_nav::ShowProblems
+wait-match /panels/problems/problems src/main.rs:8
+screenshot {shots}/code-rust-problems.png
+action editor::NextProblem
+wait-state /editor/cursor/0 7
+
+# Rename across files: the open one is edited, the other saved.
+open {dir}/src/shapes.rs
+cursor 1:9
+key shift-f6
+wait-state /modal RenameModal
+type surface
+key enter
+wait-match /message Renamed area to surface
+expect-contains pub fn surface(r: f64)
+
+# Reformat.
+cursor 2:1
+type \s\s\s
+action code_nav::Reformat
+wait-match /editor/text {\n    r * r\n}
+
+# Go, with gopls.
+open {dir}/main.go
+wait-state /language_servers/go running
+cursor 10:15
+action code_nav::GoToDeclarationOrUsages
+wait-state /editor/cursor/0 4
+expect-state /editor/cursor/1 5
+action code_nav::FindUsages
+wait-state /panels/usages/searching false
+wait-match /panels/usages/usages main.go:10
+screenshot {shots}/code-go-usages.png
+
+# TypeScript, with typescript-language-server.
+open {dir}/web/app.ts
+wait-state /language_servers/typescript running
+cursor 3:14
+action editor::ShowHover
+wait-match /editor/hover greet(user: User): string
+screenshot {shots}/code-ts-hover.png
+key escape
+action code_nav::GoToDeclarationOrUsages
+wait-match /editor/path web/util.ts
+expect-state /editor/cursor/0 4
+
+# Odin, with ols.
+open {dir}/odin/main.odin
+wait-state /language_servers/odin running
+cursor 10:15
+action code_nav::GoToDeclarationOrUsages
+wait-state /editor/cursor/0 4

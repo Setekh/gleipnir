@@ -11,6 +11,7 @@ capture = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
 
 [dependencies]
 anyhow.workspace = true
+gleipnir-code-nav.workspace = true
 gleipnir-core.workspace = true
 gleipnir-editor.workspace = true
 gleipnir-project-panel.workspace = true

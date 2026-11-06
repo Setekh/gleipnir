@@ -13,6 +13,8 @@ pub enum Icon {
     File,
     Close,
     Tree,
+    Search,
+    Problems,
 }
 
 impl Icon {
@@ -24,6 +26,8 @@ impl Icon {
             Self::File => "icons/file.svg",
             Self::Close => "icons/close.svg",
             Self::Tree => "icons/tree.svg",
+            Self::Search => "icons/search.svg",
+            Self::Problems => "icons/problems.svg",
         }
     }
 }
@@ -47,6 +51,14 @@ const FILES: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/close.svg"),
     ),
     ("icons/tree.svg", include_bytes!("../assets/icons/tree.svg")),
+    (
+        "icons/search.svg",
+        include_bytes!("../assets/icons/search.svg"),
+    ),
+    (
+        "icons/problems.svg",
+        include_bytes!("../assets/icons/problems.svg"),
+    ),
 ];
 
 pub struct Assets;

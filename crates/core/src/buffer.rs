@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result};
 use gleipnir_packages::registry;
 use gleipnir_syntax::{Language, Syntax};
 use gleipnir_text::ops::{EditConfig, EditContext};
-use gleipnir_text::{AppliedEdit, Buffer, SelectionSet, Snapshot};
+use gleipnir_text::{AppliedEdit, Bias, Buffer, SelectionSet, Snapshot};
 use gpui::{AppContext as _, Context, EntityId, EventEmitter, Task};
 use std::fs;
 use std::io::Write as _;
@@ -28,9 +28,29 @@ pub enum BufferEvent {
     Edited {
         edits: Arc<Vec<AppliedEdit>>,
         origin: Option<EntityId>,
+        /// The buffer's version once these edits are applied.
+        version: u64,
     },
     Saved,
     DiskStatusChanged,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Severity {
+    Error,
+    Warning,
+    Information,
+    Hint,
+}
+
+/// A problem a language server reported, positioned in this buffer. Ranges follow edits made
+/// after it was reported, until the server sends fresh ones.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub range: std::ops::Range<usize>,
+    pub severity: Severity,
+    pub message: String,
+    pub source: Option<String>,
 }
 
 /// One open document, shared by every view showing it.
@@ -44,6 +64,7 @@ pub struct BufferModel {
     disk_status: DiskStatus,
     parsing: bool,
     checking_disk: bool,
+    diagnostics: Vec<Diagnostic>,
 }
 
 impl EventEmitter<BufferEvent> for BufferModel {}
@@ -71,6 +92,7 @@ impl BufferModel {
             disk_status: DiskStatus::InSync,
             parsing: false,
             checking_disk: false,
+            diagnostics: Vec::new(),
         };
         this.schedule_parse(cx);
         this
@@ -102,6 +124,36 @@ impl BufferModel {
 
     pub fn snapshot(&self) -> Snapshot {
         self.buffer.snapshot()
+    }
+
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    /// Replaces the diagnostics, sorted by position, most severe first where they start together.
+    pub fn set_diagnostics(&mut self, mut diagnostics: Vec<Diagnostic>, cx: &mut Context<Self>) {
+        diagnostics.sort_by_key(|d| (d.range.start, d.severity, d.range.end));
+        self.diagnostics = diagnostics;
+        cx.notify();
+    }
+
+    /// Applies edits that don't come from a view, like a rename in another file, as one undo step.
+    pub fn apply_external_edits(
+        &mut self,
+        edits: Vec<gleipnir_text::TextEdit>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut selections = gleipnir_text::SelectionSet::cursor(0);
+        let applied = {
+            let mut edit_cx = EditContext {
+                buffer: &mut self.buffer,
+                selections: &mut selections,
+                config: &self.edit_config,
+                now: Instant::now(),
+            };
+            edit_cx.apply_edits(edits, None, gleipnir_text::UndoGrouping::Distinct)
+        };
+        self.did_edit(applied, None, cx);
     }
 
     pub fn break_undo_group(&mut self) {
@@ -152,10 +204,21 @@ impl BufferModel {
         if let Some(syntax) = &mut self.syntax {
             syntax.edit(&applied, self.buffer.version());
         }
+        for diagnostic in &mut self.diagnostics {
+            for edit in &applied {
+                let range = &mut diagnostic.range;
+                // Text typed at either edge isn't part of the problem: the start moves along with
+                // the text after it, and the end stays with the text before it.
+                range.start = gleipnir_text::transform_offset(range.start, edit, Bias::Right);
+                range.end =
+                    gleipnir_text::transform_offset(range.end, edit, Bias::Left).max(range.start);
+            }
+        }
         self.schedule_parse(cx);
         cx.emit(BufferEvent::Edited {
             edits: Arc::new(applied),
             origin,
+            version: self.buffer.version(),
         });
         cx.notify();
     }
@@ -308,6 +371,7 @@ impl BufferModel {
         cx.emit(BufferEvent::Edited {
             edits: Arc::new(vec![edit]),
             origin: None,
+            version: self.buffer.version(),
         });
         cx.notify();
     }

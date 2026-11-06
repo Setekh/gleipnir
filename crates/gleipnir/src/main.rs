@@ -63,6 +63,7 @@ fn main() {
             gleipnir_project_panel::bind_keys(cx);
             gleipnir_search::bind_keys(cx);
             gleipnir_settings_ui::bind_keys(cx);
+            gleipnir_code_nav::bind_keys(cx);
             set_menus(cx);
 
             // Loaded last, so that it overrides the defaults.
@@ -91,6 +92,7 @@ fn main() {
                 gleipnir_project_panel::add_to_workspace(workspace, window, cx);
                 gleipnir_search::add_to_workspace(workspace, window, cx);
                 gleipnir_settings_ui::add_to_workspace(workspace, window, cx);
+                gleipnir_code_nav::add_to_workspace(workspace, window, cx);
             })));
 
             let window = open_project_window(target.root.clone(), false, cx);
@@ -147,6 +149,39 @@ fn set_menus(cx: &mut App) {
                 MenuItem::action("Go to Symbol…", gleipnir_search::GoToSymbol),
                 MenuItem::action("Find Action…", gleipnir_search::FindAction),
                 MenuItem::action("Recent Files", gleipnir_search::RecentFiles),
+                MenuItem::separator(),
+                MenuItem::action("Back", gleipnir_workspace::NavigateBack),
+                MenuItem::action("Forward", gleipnir_workspace::NavigateForward),
+                MenuItem::separator(),
+                MenuItem::action(
+                    "Declaration or Usages",
+                    gleipnir_code_nav::GoToDeclarationOrUsages,
+                ),
+                MenuItem::action("Implementation(s)", gleipnir_code_nav::GoToImplementation),
+                MenuItem::action("Type Declaration", gleipnir_code_nav::GoToTypeDeclaration),
+                MenuItem::action("File Structure", gleipnir_code_nav::FileStructure),
+                MenuItem::action("Next Problem", gleipnir_editor::NextProblem),
+                MenuItem::action("Previous Problem", gleipnir_editor::PreviousProblem),
+            ],
+            disabled: false,
+        },
+        Menu {
+            name: "Code".into(),
+            items: vec![
+                MenuItem::action("Completion", gleipnir_editor::ShowCompletions),
+                MenuItem::action("Quick Documentation", gleipnir_editor::ShowHover),
+                MenuItem::action("Parameter Info", gleipnir_editor::ShowSignatureHelp),
+                MenuItem::action("Show Intentions", gleipnir_code_nav::ShowIntentions),
+                MenuItem::separator(),
+                MenuItem::action("Find Usages", gleipnir_code_nav::FindUsages),
+                MenuItem::action("Show Usages", gleipnir_code_nav::ShowUsages),
+                MenuItem::action("Rename…", gleipnir_code_nav::Rename),
+                MenuItem::action("Reformat Code", gleipnir_code_nav::Reformat),
+                MenuItem::separator(),
+                MenuItem::action(
+                    "Restart Language Server",
+                    gleipnir_code_nav::RestartLanguageServer,
+                ),
             ],
             disabled: false,
         },
@@ -154,6 +189,7 @@ fn set_menus(cx: &mut App) {
             name: "View".into(),
             items: vec![
                 MenuItem::action("Project", gleipnir_project_panel::Toggle),
+                MenuItem::action("Problems", gleipnir_code_nav::ShowProblems),
                 MenuItem::separator(),
                 MenuItem::action("Split Right", SplitRight),
                 MenuItem::action("Split Down", SplitDown),

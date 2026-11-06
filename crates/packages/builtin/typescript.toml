@@ -35,6 +35,11 @@ pairs = ["()", "[]", "{}", "\"\"", "''", "``"]
 tool = "typescript-language-server"
 args = ["--stdio"]
 
+# Without this, a syntax-only server answers first while the project loads, and going to a
+# declaration lands on the import instead of the declaration.
+[server.initialization_options.tsserver]
+useSyntaxServer = "never"
+
 [debugger]
 tool = "js-debug"
 # js-debug is a Node program, so it's started with the project's Node.

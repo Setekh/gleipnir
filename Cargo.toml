@@ -14,9 +14,11 @@ gpui = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb11
 # need Apple's Metal Toolchain.
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "654efae441bc8eb117d0042bb28cd7cf3570bdc9", features = ["font-kit", "runtime_shaders", "wayland", "x11"] }
 
+gleipnir-code-nav = { path = "crates/code_nav" }
 gleipnir-core = { path = "crates/core" }
 gleipnir-editor = { path = "crates/editor" }
 gleipnir-index = { path = "crates/index" }
+gleipnir-lsp = { path = "crates/lsp" }
 gleipnir-packages = { path = "crates/packages" }
 gleipnir-project-panel = { path = "crates/project_panel" }
 gleipnir-search = { path = "crates/search" }

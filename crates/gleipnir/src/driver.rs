@@ -10,7 +10,12 @@
 //!     double-shift                taps Shift twice, as real modifier events
 //!     wait-idle                   waits for the project's scanning and indexing to finish
 //!     expect-state <pointer> <v>  checks a value in the state, by JSON pointer; see `dump`
-//!     wait-state <pointer> <v>    waits up to ten seconds for a value, for anything asynchronous
+//!     wait-state <pointer> <v>    waits for a value, for anything asynchronous: ten seconds, or
+//!                                 as set by `wait-timeout`
+//!     wait-match <pointer> <text> waits for a string containing the text, or a list with an
+//!                                 item containing it
+//!     wait-timeout <seconds>      how long `wait-state` waits, as language servers can be slow
+//!     cursor <line>:<column>      moves the cursor, one-based, as editors show positions
 //!     type <text>                 types text, one keystroke per character. Text in any command
 //!                                 can use the escapes \n, \t and \s (space, as lines are trimmed)
 //!     wait <milliseconds>
@@ -36,7 +41,11 @@ use gleipnir_editor::EditorState;
 use gleipnir_workspace::Workspace;
 use gpui::{App, AppContext as _, AsyncApp, Keystroke, Window, WindowHandle};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
+
+/// How long `wait-state` waits, in seconds.
+static WAIT_SECONDS: AtomicU64 = AtomicU64::new(10);
 
 pub fn run(script: PathBuf, window: WindowHandle<Workspace>, cx: &mut App) {
     cx.spawn(async move |cx: &mut AsyncApp| {
@@ -256,6 +265,16 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
             }
         }
         "wait" => sleep(Duration::from_millis(rest.parse()?), cx).await,
+        "wait-timeout" => WAIT_SECONDS.store(rest.parse()?, Ordering::Relaxed),
+        "cursor" => {
+            let (line, column) = rest.split_once(':').context("expected line:column")?;
+            let (line, column): (usize, usize) = (line.parse()?, column.parse()?);
+            with_workspace(window, cx, |workspace, _, cx| {
+                if let Some(editor) = workspace.active_editor(cx) {
+                    editor.update(cx, |editor, cx| editor.jump_to(line - 1, column - 1, cx));
+                }
+            })?;
+        }
         "wait-parsed" => {
             let started = Instant::now();
             while state(window, cx)?.parse_pending {
@@ -298,8 +317,34 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
                 if state_matches(&state, pointer, &expected) {
                     break;
                 }
-                if started.elapsed() > Duration::from_secs(10) {
+                if started.elapsed() > Duration::from_secs(WAIT_SECONDS.load(Ordering::Relaxed)) {
                     bail!("{pointer} stayed {:?}", state.pointer(pointer));
+                }
+                sleep(Duration::from_millis(10), cx).await;
+                draw(window, cx)?;
+            }
+        }
+        "wait-match" => {
+            let (pointer, expected) = rest.split_once(' ').unwrap_or((rest, ""));
+            let expected = unescape(expected);
+            let contains = |value: &serde_json::Value| match value {
+                serde_json::Value::String(s) => s.contains(&expected),
+                serde_json::Value::Array(items) => items
+                    .iter()
+                    .any(|i| i.as_str().is_some_and(|s| s.contains(&expected))),
+                _ => false,
+            };
+            let started = Instant::now();
+            loop {
+                let state = snapshot(window, cx)?;
+                if state.pointer(pointer).is_some_and(contains) {
+                    break;
+                }
+                if started.elapsed() > Duration::from_secs(WAIT_SECONDS.load(Ordering::Relaxed)) {
+                    bail!(
+                        "{pointer} never contained {expected:?}: {:?}",
+                        state.pointer(pointer)
+                    );
                 }
                 sleep(Duration::from_millis(10), cx).await;
                 draw(window, cx)?;

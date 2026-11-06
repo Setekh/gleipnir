@@ -10,6 +10,7 @@ name = "gleipnir_editor"
 [dependencies]
 anyhow.workspace = true
 gleipnir-core.workspace = true
+gleipnir-index.workspace = true
 gleipnir-syntax.workspace = true
 gleipnir-text.workspace = true
 gleipnir-ui.workspace = true

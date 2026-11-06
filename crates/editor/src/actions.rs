@@ -54,6 +54,17 @@ actions!(
         SelectAllOccurrences,
         CollapseSelections,
         Save,
+        ShowCompletions,
+        ConfirmCompletion,
+        SelectNextCompletion,
+        SelectPreviousCompletion,
+        SelectNextCompletionPage,
+        SelectPreviousCompletionPage,
+        DismissPopups,
+        ShowHover,
+        ShowSignatureHelp,
+        NextProblem,
+        PreviousProblem,
     ]
 );
 
@@ -234,4 +245,5 @@ pub fn bind_keys(cx: &mut App) {
         .map(|(keys, action)| binding(keys, action))
         .collect();
     cx.bind_keys(bindings);
+    crate::semantics::popup_bindings(cx);
 }
