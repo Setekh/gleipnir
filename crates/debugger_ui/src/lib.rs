@@ -2,14 +2,16 @@
 //! widget in the status bar, breakpoints and Run icons in the gutter, the breakpoint, Evaluate and
 //! View Breakpoints popups, and IntelliJ's shortcuts for all of it.
 
-mod console;
+pub mod console;
 mod decorations;
 mod modals;
 mod panels;
 mod variables;
 
 pub use decorations::DebugDecorations;
-pub use modals::{BreakpointEditor, BreakpointList, EvaluateModal};
+pub use modals::{
+    BreakpointEditor, BreakpointList, EvaluateModal, RunSettingsModal, SetValueModal,
+};
 pub use panels::{DEBUG_PANEL, DebugPanel, RUN_PANEL, RunPanel};
 
 use gleipnir_code_nav::{Picker, PickerItem};
@@ -49,6 +51,8 @@ actions!(
         RemoveAllBreakpoints,
         ShowRunPanel,
         ShowDebugPanel,
+        EditConfiguration,
+        AttachToProcess,
     ]
 );
 
@@ -75,6 +79,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-shift-f8", ViewBreakpoints, None),
         KeyBinding::new("cmd-4", ShowRunPanel, None),
         KeyBinding::new("cmd-5", ShowDebugPanel, None),
+        KeyBinding::new("alt-shift-f5", AttachToProcess, None),
     ]);
     #[cfg(not(target_os = "macos"))]
     cx.bind_keys([
@@ -95,6 +100,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-shift-f8", ViewBreakpoints, None),
         KeyBinding::new("alt-4", ShowRunPanel, None),
         KeyBinding::new("alt-5", ShowDebugPanel, None),
+        KeyBinding::new("ctrl-alt-f5", AttachToProcess, None),
     ]);
 }
 
@@ -199,6 +205,11 @@ pub fn add_with_debugger(
     workspace
         .register_action(|w, _: &EvaluateExpression, window, cx| modals::evaluate(w, window, cx));
     workspace
+        .register_action(|w, _: &AttachToProcess, window, cx| attach_to_process(w, window, cx));
+    workspace.register_action(|w, _: &EditConfiguration, window, cx| {
+        modals::edit_configuration(w, window, cx)
+    });
+    workspace
         .register_action(|w, _: &ShowRunPanel, window, cx| w.toggle_panel(RUN_PANEL, window, cx));
     workspace.register_action(|w, _: &ShowDebugPanel, window, cx| {
         w.toggle_panel(DEBUG_PANEL, window, cx)
@@ -238,6 +249,7 @@ fn attach(
     let provider = Rc::new(DebugDecorations::new(debugger.clone(), buffer.downgrade()));
     editor.update(cx, |editor, cx| editor.set_decorations(provider, cx));
 
+    let buffer_text = buffer.clone();
     let path_of = move |cx: &App| buffer.read(cx).path().map(Path::to_path_buf);
     let path_of = Rc::new(path_of);
     let debugger_for_events = debugger.clone();
@@ -247,8 +259,13 @@ fn attach(
             EditorEvent::GutterClicked { line } => {
                 debugger_for_events.update(cx, |d, cx| d.toggle_breakpoint(&path, *line as u32, cx))
             }
-            EditorEvent::RunClicked { .. } => {
-                let target = debugger_for_events.read(cx).target_for_file(&path);
+            EditorEvent::RunClicked { line } => {
+                // A test on that line, or else what the file runs.
+                let text = buffer_text.read(cx).buffer().text();
+                let d = debugger_for_events.read(cx);
+                let target = d
+                    .test_at(&path, &text, *line)
+                    .or_else(|| d.target_for_file(&path));
                 if let Some(target) = target {
                     run_or_debug_menu(workspace, target, window, cx);
                 }
@@ -388,6 +405,72 @@ fn choose_and_start(
                         d.start(target, debug, cx);
                     }
                     None => d.select_target(&target.name, cx),
+                });
+            },
+            cx,
+        )
+    });
+}
+
+/// Run > Attach to Process: a process, then which debugger to attach with.
+fn attach_to_process(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let Some(debugger) = debugger(workspace, cx) else {
+        return;
+    };
+    let processes = gleipnir_core::list_processes();
+    let items = processes
+        .iter()
+        .map(|p| PickerItem {
+            label: p.name.clone(),
+            detail: format!("{}   {}", p.pid, p.command),
+            indent: 0,
+        })
+        .collect();
+    let weak = cx.weak_entity();
+    workspace.toggle_modal(window, cx, move |_, cx| {
+        Picker::new(
+            "Attach to Process",
+            items,
+            0,
+            move |index, window, cx| {
+                let process = processes[index].clone();
+                // Debuggers that can attach, with the likeliest first.
+                let mut choices: Vec<(&str, &str)> = vec![
+                    ("rust", "LLDB: Rust, Odin, C, C++"),
+                    ("go", "Delve: Go"),
+                    ("typescript", "js-debug: Node.js"),
+                ];
+                if process.name.contains("node") {
+                    choices.rotate_left(2);
+                }
+                let items = choices
+                    .iter()
+                    .map(|(_, label)| PickerItem {
+                        label: label.to_string(),
+                        ..Default::default()
+                    })
+                    .collect();
+                let Some(workspace) = weak.upgrade() else {
+                    return;
+                };
+                // Opened after this picker has gone.
+                window.defer(cx, move |window, cx| {
+                    let _ = workspace.update(cx, |workspace, cx| {
+                        workspace.toggle_modal(window, cx, move |_, cx| {
+                            Picker::new(
+                                format!("Attach to {} with", process.name),
+                                items,
+                                0,
+                                move |index, _, cx| {
+                                    let package = choices[index].0;
+                                    debugger.update(cx, |d, cx| {
+                                        d.attach(package, process.pid, &process.name, cx);
+                                    });
+                                },
+                                cx,
+                            )
+                        })
+                    });
                 });
             },
             cx,

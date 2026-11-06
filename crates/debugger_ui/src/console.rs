@@ -24,8 +24,9 @@ pub struct ConsoleView {
     scroll: UniformListScrollHandle,
     /// Lines last shown, to follow new output.
     shown: usize,
-    /// Where expressions are typed, for debug sessions.
+    /// Where input for the program is typed, and in a debug session, expressions while stopped.
     input: Option<Entity<TextInput>>,
+    evaluates: bool,
     focus_handle: FocusHandle,
     _subscription: Subscription,
 }
@@ -38,9 +39,17 @@ impl ConsoleView {
             launch: None,
             scroll: UniformListScrollHandle::new(),
             shown: 0,
-            input: evaluates.then(|| {
-                cx.new(|cx| TextInput::new("Evaluate an expression in the stopped frame", cx))
-            }),
+            input: Some(cx.new(|cx| {
+                TextInput::new(
+                    if evaluates {
+                        "Input to the program, or an expression to evaluate while stopped"
+                    } else {
+                        "Input to the program"
+                    },
+                    cx,
+                )
+            })),
+            evaluates,
             focus_handle: cx.focus_handle(),
             _subscription: subscription,
         }
@@ -58,15 +67,37 @@ impl ConsoleView {
         self.input.as_ref()
     }
 
+    /// Types a line and presses Enter, for tests and the driver.
+    pub fn enter(&mut self, text: &str, cx: &mut Context<Self>) {
+        if let Some(input) = &self.input {
+            input.update(cx, |input, cx| input.set_text(text, cx));
+        }
+        self.submit(cx);
+    }
+
     fn submit(&mut self, cx: &mut Context<Self>) {
         let Some(input) = &self.input else { return };
-        let expression = input.read(cx).text().trim().to_string();
-        if expression.is_empty() {
+        // Input goes as typed, spaces and all, and an empty line is an answer too.
+        let expression = input.read(cx).text();
+        let Some(id) = self.launch else { return };
+        let evaluates = self.evaluates;
+        let stopped = {
+            let d = self.debugger.read(cx);
+            d.is_paused() && d.active_debug_launch().map(|l| l.id) == Some(id)
+        };
+        if evaluates && stopped && expression.trim().is_empty() {
             return;
         }
         input.update(cx, |input, cx| input.set_text("", cx));
-        self.debugger
-            .update(cx, |d, cx| d.evaluate_in_console(&expression, cx));
+        self.debugger.update(cx, |d, cx| {
+            if evaluates && stopped {
+                d.evaluate_in_console(expression.trim(), cx);
+            } else if d.accepts_input(id) {
+                d.send_input(id, &expression, cx);
+            } else if evaluates {
+                d.evaluate_in_console(expression.trim(), cx);
+            }
+        });
     }
 
     fn line_count(&self, cx: &App) -> usize {

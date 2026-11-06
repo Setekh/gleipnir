@@ -173,6 +173,46 @@ fn pump(
                         block_on(s::start(&child, &request, &breakpoints)).unwrap();
                     });
                 }
+                Incoming::Request {
+                    seq,
+                    command,
+                    arguments,
+                } if command == "runInTerminal" => {
+                    // As the IDE does: start the program with pipes, and pass its output on.
+                    let args: Vec<String> =
+                        serde_json::from_value(arguments["args"].clone()).unwrap();
+                    let mut process = Command::new(&args[0]);
+                    process
+                        .args(&args[1..])
+                        .stdin(std::process::Stdio::piped())
+                        .stdout(std::process::Stdio::piped())
+                        .stderr(std::process::Stdio::piped());
+                    if let Some(cwd) = arguments["cwd"].as_str() {
+                        process.current_dir(cwd);
+                    }
+                    for (key, value) in arguments["env"].as_object().into_iter().flatten() {
+                        match value.as_str() {
+                            Some(value) => process.env(key, value),
+                            None => process.env_remove(key),
+                        };
+                    }
+                    let mut child = process.spawn().unwrap();
+                    adapter.respond(
+                        seq,
+                        &command,
+                        Ok(serde_json::json!({ "processId": child.id() })),
+                    );
+                    let stdout = child.stdout.take().unwrap();
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        use std::io::Read as _;
+                        let mut stdout = stdout;
+                        let mut text = String::new();
+                        stdout.read_to_string(&mut text).ok();
+                        tx.send(Message::Output(text)).ok();
+                        child.wait().ok();
+                    });
+                }
                 Incoming::Request { seq, command, .. } => {
                     adapter.respond(seq, &command, Err("not supported".into()))
                 }
@@ -191,6 +231,10 @@ struct Expect {
     line: u32,
     local: &'static str,
     value: &'static str,
+    /// Another expression, and text its value must contain.
+    also: Option<(&'static str, &'static str)>,
+    /// Whether the local can be changed, which a JavaScript `const` can't.
+    settable: bool,
 }
 
 /// Debugs a target: stop at the breakpoint, check the frame and a local, step over, check the line
@@ -200,9 +244,10 @@ fn debug(project: &Project, package_id: &str, target: RunTarget, expect: Expect)
         return String::new();
     };
     build(&target, &tools.env);
-    let launch = adapter_for(package_id)
-        .unwrap()
-        .debug_launch(&target)
+    let adapter_impl = adapter_for(package_id).unwrap();
+    let mut launch = adapter_impl.debug_launch(&target).unwrap();
+    adapter_impl
+        .prepare_debug_launch(&target, &mut launch, &tools.env)
         .unwrap();
     let source = project.root.join(expect.file);
     let breakpoints = vec![FileBreakpoints {
@@ -261,6 +306,25 @@ fn debug(project: &Project, package_id: &str, target: RunTarget, expect: Expect)
     assert_eq!(local.value, expect.value, "{local:?}");
     let evaluated = block_on(s::evaluate(&session, expect.local, Some(top.id), "watch")).unwrap();
     assert_eq!(evaluated.result, expect.value);
+    if expect.settable {
+        let changed = block_on(s::set_variable(
+            &session,
+            scopes[0].variables_reference,
+            expect.local,
+            "42",
+        ));
+        assert_eq!(changed.unwrap_or_else(|e| panic!("{e}")), "42");
+        let now = block_on(s::evaluate(&session, expect.local, Some(top.id), "watch")).unwrap();
+        assert_eq!(now.result, "42");
+    }
+    if let Some((expression, contains)) = expect.also {
+        let value = block_on(s::evaluate(&session, expression, Some(top.id), "watch")).unwrap();
+        assert!(
+            value.result.contains(contains),
+            "{expression} is {:?}",
+            value.result
+        );
+    }
 
     block_on(s::resume(&session, thread, Step::Over)).unwrap();
     let (session, stopped) = next_stop(&mut output);
@@ -298,7 +362,7 @@ fn rust_through_lldb_dap() {
         ),
         (
             "src/main.rs",
-            "struct Point { x: i32, y: i32 }\n\nfn main() {\n    let count = 3;\n    let point = Point { x: 1, y: 2 };\n    let total = count + point.x + point.y;\n    println!(\"total {total}\");\n}\n",
+            "struct Point { x: i32, y: i32 }\n\nfn main() {\n    let count = 3;\n    let point = Point { x: 1, y: 2 };\n    let total = count + point.x + point.y;\n    let name = String::from(\"gleipnir\");\n    let size = name.len() + total as usize;\n    println!(\"total {total} {name} {size}\");\n}\n",
         ),
     ]);
     let target = adapter_for("rust")
@@ -311,9 +375,12 @@ fn rust_through_lldb_dap() {
         target,
         Expect {
             file: "src/main.rs",
-            line: 6,
+            line: 8,
             local: "count",
             value: "3",
+            // With the toolchain's formatters, a String reads as its text.
+            also: Some(("name", "gleipnir")),
+            settable: true,
         },
     );
     eprintln!("rust output: {output:?}");
@@ -341,6 +408,8 @@ fn go_through_delve() {
             line: 10,
             local: "count",
             value: "3",
+            also: None,
+            settable: true,
         },
     );
     eprintln!("go output: {output:?}");
@@ -373,6 +442,8 @@ fn odin_through_lldb_dap() {
             line: 10,
             local: "count",
             value: "3",
+            also: None,
+            settable: true,
         },
     );
     eprintln!("odin output: {output:?}");
@@ -396,6 +467,8 @@ fn javascript_through_js_debug() {
             line: 4,
             local: "count",
             value: "3",
+            also: None,
+            settable: false,
         },
     );
     if !output.is_empty() {
@@ -417,6 +490,8 @@ fn typescript_run_directly_by_node() {
             line: 6,
             local: "count",
             value: "3",
+            also: None,
+            settable: false,
         },
     );
 }
@@ -451,6 +526,8 @@ fn typescript_compiled_with_source_maps() {
             line: 6,
             local: "count",
             value: "3",
+            also: None,
+            settable: false,
         },
     );
 }
@@ -471,4 +548,112 @@ fn tsc() -> Option<PathBuf> {
         .map(|e| e.path().join("node_modules/.bin/tsc"))
         .find(|p| p.exists())
         .or_else(|| which("tsc"))
+}
+
+#[test]
+fn node_attaches_by_process_id_through_js_debug() {
+    let project = project(&[("idle.js", "setInterval(() => {}, 100);\n")]);
+    let Some(tools) = tools("typescript", &project.root) else {
+        return;
+    };
+    let Some(node) = tools.env.which("node") else {
+        eprintln!("skipped: no node");
+        return;
+    };
+    let mut program = Command::new(node)
+        .arg(project.root.join("idle.js"))
+        .spawn()
+        .unwrap();
+    // Until Node is up, the signal js-debug sends to open its inspector would end it instead.
+    std::thread::sleep(Duration::from_millis(700));
+    let arguments = adapter_for("typescript")
+        .unwrap()
+        .attach_arguments(program.id())
+        .unwrap();
+    let (adapter, incoming) = DebugAdapter::start("typescript", &tools.command).unwrap();
+    let (tx, rx) = mpsc::channel();
+    pump(
+        adapter.clone(),
+        incoming,
+        tools.adapter_id.clone(),
+        Vec::new(),
+        tx,
+    );
+    let request = LaunchRequest {
+        adapter_id: tools.adapter_id.clone(),
+        request: "attach".into(),
+        arguments,
+    };
+    let started = block_on(s::start(&adapter, &request, &[]));
+    program.kill().ok();
+    program.wait().ok();
+    started.unwrap_or_else(|e| panic!("{e}\n{}", adapter.output()));
+    drop(rx);
+}
+
+#[test]
+fn a_go_test_debugs_through_delve() {
+    let project = project(&[
+        ("go.mod", "module sample\n\ngo 1.21\n"),
+        (
+            "calc/calc.go",
+            "package calc\n\nfunc Double(n int) int {\n\treturn n * 2\n}\n",
+        ),
+        (
+            "calc/calc_test.go",
+            "package calc\n\nimport \"testing\"\n\nfunc TestDouble(t *testing.T) {\n\tcount := 3\n\tgot := Double(count)\n\tif got != 6 {\n\t\tt.Fatal(got)\n\t}\n}\n",
+        ),
+    ]);
+    let file = project.root.join("calc/calc_test.go");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let target = adapter_for("go")
+        .unwrap()
+        .test_at(&project.root, &file, &text, 4)
+        .expect("the test");
+    debug(
+        &project,
+        "go",
+        target,
+        Expect {
+            file: "calc/calc_test.go",
+            line: 7,
+            local: "count",
+            value: "3",
+            also: None,
+            settable: false,
+        },
+    );
+}
+
+#[test]
+fn a_rust_test_debugs_through_lldb_dap() {
+    let project = project(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"calc\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        ),
+        (
+            "src/lib.rs",
+            "pub fn double(n: i32) -> i32 {\n    n * 2\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn doubles() {\n        let count = 3;\n        let got = super::double(count);\n        assert_eq!(got, 6);\n    }\n}\n",
+        ),
+    ]);
+    let file = project.root.join("src/lib.rs");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let target = adapter_for("rust")
+        .unwrap()
+        .test_at(&project.root, &file, &text, 7)
+        .expect("the test");
+    debug(
+        &project,
+        "rust",
+        target,
+        Expect {
+            file: "src/lib.rs",
+            line: 10,
+            local: "count",
+            value: "3",
+            also: None,
+            settable: false,
+        },
+    );
 }

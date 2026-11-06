@@ -252,7 +252,10 @@ fn opening_a_file_starts_its_server_once_and_opens_the_document(cx: &mut TestApp
         servers.register_buffer(&first, cx);
         servers.register_buffer(&second, cx);
     });
-    wait(cx, |_| server_text(&s, &b).is_some());
+    // Documents waiting for a server open in no particular order once it's ready.
+    wait(cx, |_| {
+        server_text(&s, &a).is_some() && server_text(&s, &b).is_some()
+    });
     assert_eq!(server_text(&s, &a).as_deref(), Some("fn a() {}"));
     assert_eq!(
         s.state.lock().unwrap().initialized,

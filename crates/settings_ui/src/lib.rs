@@ -11,7 +11,7 @@ use gpui::{
 };
 use std::path::PathBuf;
 
-actions!(settings, [OpenLanguages, Close]);
+actions!(settings, [OpenLanguages, Close, InstallPackage]);
 
 pub fn bind_keys(cx: &mut App) {
     // IntelliJ's Project Structure, which is where SDKs live there too.
@@ -23,6 +23,33 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 pub fn add_to_workspace(workspace: &mut Workspace, _: &mut Window, _: &mut Context<Workspace>) {
+    workspace.register_action(|_, _: &InstallPackage, window, cx| {
+        let prompt = cx.prompt_for_paths(PathPromptOptions {
+            files: false,
+            directories: true,
+            multiple: false,
+            prompt: Some("Install Package".into()),
+        });
+        cx.spawn_in(window, async move |workspace, cx| {
+            let Ok(Ok(Some(paths))) = prompt.await else {
+                return;
+            };
+            let Some(folder) = paths.into_iter().next() else {
+                return;
+            };
+            let installed = gleipnir_packages::registry::install_package(&folder);
+            workspace
+                .update(cx, |workspace, cx| match installed {
+                    Ok(name) => workspace.show_message(
+                        format!("Installed {name}. It's used from the next start of Gleipnir."),
+                        cx,
+                    ),
+                    Err(error) => workspace.show_error(format!("{error:#}"), cx),
+                })
+                .ok();
+        })
+        .detach();
+    });
     workspace.register_action(|workspace, _: &OpenLanguages, window, cx| {
         let toolchains = workspace.toolchains().clone();
         workspace.toggle_modal::<LanguageSettings>(window, cx, move |_, cx| {
@@ -364,8 +391,25 @@ impl Render for LanguageSettings {
                     .border_color(theme.border)
                     .child(
                         div()
-                            .font_weight(gpui::FontWeight::SEMIBOLD)
-                            .child(toolchain.name.clone()),
+                            .flex()
+                            .flex_row()
+                            .gap(px(8.))
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .child(toolchain.name.clone()),
+                            )
+                            .children(
+                                gleipnir_packages::registry()
+                                    .package(&toolchain.package_id)
+                                    .filter(|p| !p.is_builtin())
+                                    .map(|p| {
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(theme.text_faint)
+                                            .child(format!("installed from {}", p.origin))
+                                    }),
+                            ),
                     )
                     .child(self.render_sdk(toolchain, &theme, cx))
                     .children(
@@ -411,11 +455,45 @@ impl Render for LanguageSettings {
                     )
                     .child(
                         div()
-                            .text_size(px(11.))
-                            .text_color(theme.text_faint)
-                            .child("Choices apply to this project"),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(12.))
+                            .child(
+                                div()
+                                    .text_size(px(11.))
+                                    .text_color(theme.text_faint)
+                                    .child("Choices apply to this project"),
+                            )
+                            .child(
+                                div()
+                                    .id("install-package")
+                                    .debug_selector(|| "install-package".into())
+                                    .px(px(8.))
+                                    .py(px(2.))
+                                    .rounded(px(4.))
+                                    .bg(theme.surface)
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .cursor_pointer()
+                                    .hover(|b| b.bg(theme.selection))
+                                    .text_size(px(12.))
+                                    .child("Install Package…")
+                                    .on_click(|_, window, cx| {
+                                        window.dispatch_action(Box::new(InstallPackage), cx)
+                                    }),
+                            ),
                     ),
             )
+            // Problems with installed packages' manifests.
+            .children(gleipnir_packages::registry().errors().iter().map(|error| {
+                div()
+                    .px(px(14.))
+                    .py(px(4.))
+                    .text_size(px(12.))
+                    .text_color(theme.warning)
+                    .child(error.clone())
+            }))
             .child(
                 div()
                     .id("language-settings-body")

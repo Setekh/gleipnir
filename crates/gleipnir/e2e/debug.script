@@ -43,7 +43,17 @@ action debugger::Resume
 wait-match /panels/debug/launch/console 4 6
 wait-match /panels/debug/launch/status Finished
 
+# A program that reads input, under the debugger: what's typed in the console reaches it.
+open {dir}/src/bin/echo.rs
+wait-match /panels/debug/targets echo
+action debugger::DebugFile
+wait-state /panels/debug/launch/status Running
+console debug gleipnir
+wait-match /panels/debug/launch/console hello gleipnir
+wait-match /panels/debug/launch/status Finished
+
 # Run without the debugger: the output lands in the Run panel.
+open {dir}/main.go
 action debugger::RunFile
 wait-match /panels/run/status Finished with exit code 0
 wait-match /panels/run/console 4 6

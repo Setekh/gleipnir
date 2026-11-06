@@ -12,7 +12,7 @@ mod process;
 mod tests;
 
 pub use breakpoints::{Breakpoint, Breakpoints};
-pub use process::{ProcessCommand, ProcessHandle, ProcessOutput};
+pub use process::{ProcessCommand, ProcessHandle, ProcessInfo, ProcessOutput, list_processes};
 
 use crate::buffer::{BufferEvent, BufferModel};
 use crate::toolchains::Toolchains;
@@ -35,6 +35,79 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub type LaunchId = u64;
+
+/// What a run configuration changes about its target: the program's arguments, environment and
+/// working folder.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RunSettings {
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+}
+
+impl RunSettings {
+    pub fn is_empty(&self) -> bool {
+        self.args.is_empty() && self.env.is_empty() && self.cwd.is_none()
+    }
+
+    /// A target as these settings change it.
+    pub fn apply(&self, mut target: RunTarget) -> RunTarget {
+        if !self.args.is_empty() {
+            // npm passes on what comes after `--`.
+            if target.run.first().is_some_and(|p| p == "npm") && !target.run.contains(&"--".into())
+            {
+                target.run.push("--".into());
+            }
+            target.run.extend(self.args.iter().cloned());
+            target.args.extend(self.args.iter().cloned());
+        }
+        if let Some(cwd) = &self.cwd {
+            target.cwd = cwd.clone();
+        }
+        target
+    }
+}
+
+/// Splits arguments as a shell would, keeping quoted parts together.
+pub fn split_args(text: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut quote: Option<char> = None;
+    let mut started = false;
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (None, '"' | '\'') => {
+                quote = Some(c);
+                started = true;
+            }
+            (_, '\\') if quote != Some('\'') => {
+                if let Some(next) = chars.next() {
+                    current.push(next);
+                    started = true;
+                }
+            }
+            (None, c) if c.is_whitespace() => {
+                if started {
+                    args.push(std::mem::take(&mut current));
+                    started = false;
+                }
+            }
+            (_, c) => {
+                current.push(c);
+                started = true;
+            }
+        }
+    }
+    if started {
+        args.push(current);
+    }
+    args
+}
 
 /// How many stack frames to fetch at a stop. Deeper ones are rarely looked at.
 const FRAME_LEVELS: u32 = 200;
@@ -104,6 +177,8 @@ pub struct BreakpointStatus {
 pub struct Session {
     pub name: String,
     adapter: Arc<DebugAdapter>,
+    /// What the adapter was called in `initialize`, like `lldb-dap`.
+    adapter_id: String,
     pub parent: Option<usize>,
     pub state: SessionState,
     pub capabilities: Capabilities,
@@ -124,10 +199,16 @@ pub struct Session {
 }
 
 impl Session {
-    fn new(name: String, adapter: Arc<DebugAdapter>, parent: Option<usize>) -> Self {
+    fn new(
+        name: String,
+        adapter: Arc<DebugAdapter>,
+        adapter_id: String,
+        parent: Option<usize>,
+    ) -> Self {
         Self {
             name,
             adapter,
+            adapter_id,
             parent,
             state: SessionState::new(),
             capabilities: Capabilities::default(),
@@ -176,11 +257,23 @@ pub struct Launch {
     /// The session that stopped last.
     pub focus: Option<usize>,
     process: Option<ProcessHandle>,
+    /// The environment the program runs with, once the toolchain's been found.
+    env: Option<Env>,
+    /// Forwards the output of a program the debugger asked us to start.
+    _program_output: Option<Task<()>>,
+
     stopping: bool,
     _task: Option<Task<()>>,
 }
 
 impl Launch {
+    /// The live lldb session, whose program's terminal can be typed into through lldb.
+    fn lldb_session(&self) -> Option<&Session> {
+        self.sessions
+            .iter()
+            .find(|s| !s.ended && s.adapter_id == "lldb-dap")
+    }
+
     pub fn focused(&self) -> Option<&Session> {
         self.focus.and_then(|i| self.sessions.get(i))
     }
@@ -319,6 +412,12 @@ pub struct Debugger {
     active: Option<LaunchId>,
     next_id: LaunchId,
     watches: Vec<String>,
+    /// Arguments, environment and folder set for run configurations, by name.
+    settings: BTreeMap<String, RunSettings>,
+    /// Each adapter's exception filters, as last seen, so they can be chosen before a session.
+    exception_filters: BTreeMap<String, Vec<gleipnir_dap::ExceptionFilter>>,
+    /// Filters turned on or off by hand, by adapter and filter id; the rest follow the adapter.
+    exception_choices: BTreeMap<String, bool>,
     buffers: HashMap<EntityId, (gpui::WeakEntity<BufferModel>, Subscription)>,
     /// The last text seen of each file with breakpoints, so they can follow a change made while
     /// the file isn't open, like a branch switch.
@@ -357,6 +456,9 @@ impl Debugger {
             active: None,
             next_id: 1,
             watches: Vec::new(),
+            settings: BTreeMap::new(),
+            exception_filters: BTreeMap::new(),
+            exception_choices: BTreeMap::new(),
             buffers: HashMap::new(),
             known_text: HashMap::new(),
             _targets_task: None,
@@ -692,6 +794,13 @@ impl Debugger {
         })
     }
 
+    /// The test declared on a line of a file, given its text, to run from the gutter.
+    pub fn test_at(&self, path: &Path, text: &str, line: usize) -> Option<RunTarget> {
+        let package = registry().language_for_path(path)?.package_id.clone();
+        let root = self.root.clone()?;
+        adapter_for(&package)?.test_at(&root, path, text, line)
+    }
+
     // Launches.
 
     pub fn launches(&self) -> &[Launch] {
@@ -732,7 +841,33 @@ impl Debugger {
     }
 
     /// Runs a target, building it first if it needs that, with or without the debugger.
+    /// What's been set for a run configuration.
+    pub fn run_settings(&self, name: &str) -> RunSettings {
+        self.settings.get(name).cloned().unwrap_or_default()
+    }
+
+    pub fn all_run_settings(&self) -> &BTreeMap<String, RunSettings> {
+        &self.settings
+    }
+
+    pub fn set_run_settings(&mut self, name: &str, settings: RunSettings, cx: &mut Context<Self>) {
+        if settings.is_empty() {
+            self.settings.remove(name);
+        } else {
+            self.settings.insert(name.to_string(), settings);
+        }
+        cx.emit(DebuggerEvent::SettingsChanged);
+        cx.notify();
+    }
+
+    /// Restores every configuration's settings, as saved.
+    pub fn restore_run_settings(&mut self, settings: BTreeMap<String, RunSettings>) {
+        self.settings = settings;
+    }
+
     pub fn start(&mut self, target: RunTarget, debug: bool, cx: &mut Context<Self>) -> LaunchId {
+        let settings = self.run_settings(&target.name);
+        let target = settings.apply(target);
         // Running the same thing again replaces its tab, stopping it if it's still going.
         let previous: Vec<LaunchId> = self
             .launches
@@ -764,6 +899,8 @@ impl Debugger {
             sessions: Vec::new(),
             focus: None,
             process: None,
+            env: None,
+            _program_output: None,
             stopping: false,
             _task: None,
         };
@@ -777,10 +914,17 @@ impl Debugger {
                     .await;
                 waited += Duration::from_millis(50);
             }
-            let env = toolchains.read_with(cx, |t, _| {
+            let mut env = toolchains.read_with(cx, |t, _| {
                 t.env_for(&target.package_id)
                     .unwrap_or_else(gleipnir_packages::env::user_env)
             });
+            for (key, value) in &settings.env {
+                env.set(key.clone(), value.clone());
+            }
+            this.update(cx, |this, _| {
+                this.with_launch(id, |l| l.env = Some(env.clone()));
+            })
+            .ok();
             if let Some(build) = target.build.clone() {
                 // Compilers that write where they're told expect the folder to be there.
                 if let Some(folder) = target.program.as_deref().and_then(Path::parent) {
@@ -792,7 +936,7 @@ impl Debugger {
                 }
             }
             if debug {
-                start_debugging(&this, id, &target, cx).await;
+                start_debugging(&this, id, &target, &env, cx).await;
             } else {
                 run_program(&this, id, &target, &env, cx).await;
             }
@@ -803,6 +947,71 @@ impl Debugger {
         cx.emit(DebuggerEvent::LaunchesChanged);
         cx.notify();
         id
+    }
+
+    /// Debugs a process that's already running, with a language's debugger.
+    pub fn attach(
+        &mut self,
+        package_id: &str,
+        pid: u32,
+        label: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<LaunchId> {
+        let language = adapter_for(package_id)?;
+        let target = RunTarget {
+            package_id: package_id.to_string(),
+            name: format!("{label} ({pid})"),
+            kind: gleipnir_packages::RunTargetKind::Binary,
+            build: None,
+            run: Vec::new(),
+            program: None,
+            cwd: self.root.clone().unwrap_or_else(|| PathBuf::from("/")),
+            source: None,
+            args: Vec::new(),
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        let toolchains = self.toolchains.clone();
+        let task_target = target.clone();
+        let task = cx.spawn(async move |this, cx| {
+            // Getting ready to attach can mean signalling the process and waiting for it.
+            let arguments = cx
+                .background_executor()
+                .spawn(async move { language.attach_arguments(pid) })
+                .await;
+            let Some(arguments) = arguments else {
+                this.update(cx, |this, cx| {
+                    this.fail(id, format!("Can't attach to process {pid}"), cx)
+                })
+                .ok();
+                return;
+            };
+            let env = toolchains.read_with(cx, |t, _| {
+                t.env_for(&task_target.package_id)
+                    .unwrap_or_else(gleipnir_packages::env::user_env)
+            });
+            start_debugging_with(&this, id, &task_target, &env, Some(arguments), cx).await;
+        });
+        self.launches.push(Launch {
+            id,
+            name: target.name.clone(),
+            target,
+            debug: true,
+            status: LaunchStatus::Starting,
+            console: Vec::new(),
+            sessions: Vec::new(),
+            focus: None,
+            process: None,
+            env: None,
+            _program_output: None,
+            stopping: false,
+            _task: Some(task),
+        });
+        self.active = Some(id);
+        cx.emit(DebuggerEvent::Started { id, debug: true });
+        cx.emit(DebuggerEvent::LaunchesChanged);
+        cx.notify();
+        Some(id)
     }
 
     /// Starts a launch's target again, as it was started.
@@ -1069,6 +1278,45 @@ impl Debugger {
         .detach();
     }
 
+    /// Whether the stopped program's variables can be changed.
+    pub fn can_set_values(&self) -> bool {
+        self.is_paused()
+            && self
+                .active_debug_launch()
+                .and_then(Launch::focused)
+                .is_some_and(|s| s.capabilities.supports_set_variable)
+    }
+
+    /// Changes a variable in the selected frame, then fetches the frame's values again, as other
+    /// values may follow from it.
+    pub fn set_variable(
+        &mut self,
+        container: i64,
+        name: &str,
+        value: &str,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<String, String>> {
+        let Some((id, index, adapter, _)) = self.focused_adapter() else {
+            return Task::ready(Err("Nothing is being debugged".into()));
+        };
+        let (name, value) = (name.to_string(), value.to_string());
+        cx.spawn(async move |this, cx| {
+            let result = dap_session::set_variable(&adapter, container, &name, &value)
+                .await
+                .map_err(|e| e.to_string());
+            this.update(cx, |this, cx| {
+                this.with_launch(id, |l| {
+                    let session = &mut l.sessions[index];
+                    session.variables.clear();
+                    session.watches.clear();
+                });
+                this.load_frame(id, index, false, cx);
+            })
+            .ok();
+            result
+        })
+    }
+
     /// Where the focused session is stopped, in the frame shown: file, line, and whether it's the
     /// top frame rather than a caller.
     pub fn execution_point(&self) -> Option<(PathBuf, u32, bool)> {
@@ -1101,6 +1349,89 @@ impl Debugger {
             }
         }
         any.then_some((path, values))
+    }
+
+    // Exceptions.
+
+    /// Each adapter's exception filters, with whether each is on.
+    pub fn exception_filters(&self) -> Vec<(String, gleipnir_dap::ExceptionFilter, bool)> {
+        self.exception_filters
+            .iter()
+            .flat_map(|(adapter, filters)| {
+                filters.iter().map(move |f| {
+                    let on = self
+                        .exception_choices
+                        .get(&format!("{adapter}/{}", f.filter))
+                        .copied()
+                        .unwrap_or(f.default);
+                    (adapter.clone(), f.clone(), on)
+                })
+            })
+            .collect()
+    }
+
+    /// Turns stopping on a kind of exception on or off, now and in later sessions.
+    pub fn set_exception_filter(
+        &mut self,
+        adapter_id: &str,
+        filter: &str,
+        on: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.exception_choices
+            .insert(format!("{adapter_id}/{filter}"), on);
+        let Some(filters) = self.exception_filters.get(adapter_id) else {
+            return;
+        };
+        let chosen: Vec<String> = filters
+            .iter()
+            .filter(|f| {
+                self.exception_choices
+                    .get(&format!("{adapter_id}/{}", f.filter))
+                    .copied()
+                    .unwrap_or(f.default)
+            })
+            .map(|f| f.filter.clone())
+            .collect();
+        for launch in self.launches.iter().filter(|l| l.status.is_live()) {
+            for session in launch
+                .sessions
+                .iter()
+                .filter(|s| !s.ended && s.adapter_id == adapter_id)
+            {
+                let (adapter, chosen) = (session.adapter.clone(), chosen.clone());
+                cx.spawn(async move |_, _| {
+                    dap_session::set_exception_breakpoints(&adapter, &chosen)
+                        .await
+                        .ok();
+                })
+                .detach();
+            }
+        }
+        cx.emit(DebuggerEvent::SettingsChanged);
+        cx.notify();
+    }
+
+    /// The exception filters and choices to save with the project.
+    pub fn exception_settings(
+        &self,
+    ) -> (
+        BTreeMap<String, Vec<gleipnir_dap::ExceptionFilter>>,
+        BTreeMap<String, bool>,
+    ) {
+        (
+            self.exception_filters.clone(),
+            self.exception_choices.clone(),
+        )
+    }
+
+    pub fn set_exception_settings(
+        &mut self,
+        filters: BTreeMap<String, Vec<gleipnir_dap::ExceptionFilter>>,
+        choices: BTreeMap<String, bool>,
+    ) {
+        self.exception_filters = filters;
+        self.exception_choices = choices;
     }
 
     // Watches and evaluation.
@@ -1238,7 +1569,9 @@ impl Debugger {
     ) -> Option<usize> {
         let (adapter, incoming) = connected;
         let index = self.with_launch(id, |launch| {
-            launch.sessions.push(Session::new(name, adapter, parent));
+            launch
+                .sessions
+                .push(Session::new(name, adapter, adapter_id.clone(), parent));
             launch.sessions.len() - 1
         })?;
         let events = cx.spawn(async move |this, cx| {
@@ -1283,6 +1616,9 @@ impl Debugger {
                             })
                             .unwrap_or_default(),
                     }
+                } else if command == "runInTerminal" {
+                    let result = self.run_in_terminal(id, &arguments, cx);
+                    adapter.respond(seq, &command, result);
                 } else {
                     adapter.respond(seq, &command, Err(format!("{command} isn't supported")));
                 }
@@ -1417,6 +1753,122 @@ impl Debugger {
         }
         cx.emit(DebuggerEvent::MarksChanged);
         cx.notify();
+    }
+
+    /// Starts the program for an adapter that asks us to, so that its input and output go
+    /// through the console. Answers with its process id.
+    fn run_in_terminal(
+        &mut self,
+        id: LaunchId,
+        arguments: &serde_json::Value,
+        cx: &mut Context<Self>,
+    ) -> Result<serde_json::Value, String> {
+        let argv: Vec<String> = arguments["args"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let Some((program, args)) = argv.split_first() else {
+            return Err("nothing to run".into());
+        };
+        let Some(launch) = self.launch(id) else {
+            return Err("the launch has ended".into());
+        };
+        let mut env = launch
+            .env
+            .clone()
+            .unwrap_or_else(gleipnir_packages::env::user_env);
+        if let Some(extra) = arguments["env"].as_object() {
+            for (key, value) in extra {
+                match value.as_str() {
+                    Some(value) => env.set(key.clone(), value.to_string()),
+                    None => env.set(key.clone(), String::new()),
+                }
+            }
+        }
+        let cwd = arguments["cwd"]
+            .as_str()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| launch.target.cwd.clone());
+        let command = ProcessCommand {
+            program: resolve_program(program, &env),
+            args: args.to_vec(),
+            env: env_pairs(&env),
+            cwd,
+        };
+        let (handle, mut output) = process::spawn(&command).map_err(|e| format!("{e:#}"))?;
+        let pid = handle.pid();
+        let forward = cx.spawn(async move |this, cx| {
+            while let Some(item) = output.next().await {
+                let (kind, text) = match item {
+                    ProcessOutput::Stdout(text) => (ConsoleKind::Stdout, text),
+                    ProcessOutput::Stderr(text) => (ConsoleKind::Stderr, text),
+                    ProcessOutput::Exited(_) => break,
+                };
+                let alive = this.update(cx, |this, cx| {
+                    this.with_launch(id, |l| l.print(kind, &text));
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    return;
+                }
+            }
+        });
+        self.with_launch(id, |l| {
+            l.process = Some(handle);
+            l._program_output = Some(forward);
+        });
+        Ok(serde_json::json!({ "processId": pid }))
+    }
+
+    /// Whether the active launch's program can be typed to.
+    pub fn accepts_input(&self, id: LaunchId) -> bool {
+        self.launch(id).is_some_and(|l| {
+            l.status.is_live() && (l.process.is_some() || l.lldb_session().is_some())
+        })
+    }
+
+    /// Types a line into a launch's program, echoing it in the console.
+    pub fn send_input(&mut self, id: LaunchId, line: &str, cx: &mut Context<Self>) {
+        let Some(launch) = self.launches.iter_mut().find(|l| l.id == id) else {
+            return;
+        };
+        let text = format!("{line}\n");
+        if let Some(process) = launch.process.clone() {
+            launch.print(ConsoleKind::Input, &text);
+            if let Err(error) = process.write_input(&text) {
+                launch.println(ConsoleKind::Error, &format!("{error:#}"));
+            }
+            cx.notify();
+            return;
+        }
+        // lldb runs the program on a terminal of its own, which only it can type into. Its
+        // terminal echoes what's typed, so it isn't echoed here.
+        let Some(adapter) = launch.lldb_session().map(|s| s.adapter.clone()) else {
+            launch.println(ConsoleKind::Error, "The program isn't taking input");
+            cx.notify();
+            return;
+        };
+        let literal = serde_json::to_string(&text).unwrap_or_default();
+        let command = format!("`script lldb.process.PutSTDIN({literal}) and None");
+        cx.spawn(async move |this, cx| {
+            if let Err(error) = dap_session::evaluate(&adapter, &command, None, "repl").await {
+                this.update(cx, |this, cx| {
+                    this.with_launch(id, |l| {
+                        l.println(
+                            ConsoleKind::Error,
+                            &format!("Couldn't type to the program: {error}"),
+                        )
+                    });
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
     }
 
     fn start_child(
@@ -1766,14 +2218,33 @@ async fn start_debugging(
     this: &gpui::WeakEntity<Debugger>,
     id: LaunchId,
     target: &RunTarget,
+    env: &Env,
     cx: &mut gpui::AsyncApp,
 ) {
+    start_debugging_with(this, id, target, env, None, cx).await
+}
+
+/// Starts debugging a target, or with `attach` arguments, a process that's already running.
+async fn start_debugging_with(
+    this: &gpui::WeakEntity<Debugger>,
+    id: LaunchId,
+    target: &RunTarget,
+    env: &Env,
+    attach: Option<serde_json::Value>,
+    cx: &mut gpui::AsyncApp,
+) {
+    let request_kind = if attach.is_some() { "attach" } else { "launch" };
     let prepared = this.update(cx, |this, cx| {
         this.with_launch(id, |l| l.status = LaunchStatus::Starting);
         cx.notify();
-        let launch = adapter_for(&target.package_id)
-            .ok_or_else(|| anyhow!("{} can't be debugged", target.package_id))
-            .and_then(|a| a.debug_launch(target));
+        let launch = match &attach {
+            Some(arguments) => Ok(gleipnir_packages::DebugLaunch {
+                launch_arguments: arguments.clone(),
+            }),
+            None => adapter_for(&target.package_id)
+                .ok_or_else(|| anyhow!("{} can't be debugged", target.package_id))
+                .and_then(|a| a.debug_launch(target)),
+        };
         let prepared = (this.launcher)(&target.package_id, &target.cwd, cx);
         launch.and_then(|launch| prepared.map(|p| (launch, p)))
     });
@@ -1788,6 +2259,54 @@ async fn start_debugging(
             return;
         }
     };
+    // What only the project's tools can say, like where Rust's lldb formatters are.
+    let launch = match adapter_for(&target.package_id) {
+        Some(language) => {
+            let (target, env) = (target.clone(), env.clone());
+            let prepared = cx
+                .background_executor()
+                .spawn(async move {
+                    let mut launch = launch;
+                    language
+                        .prepare_debug_launch(&target, &mut launch, &env)
+                        .map(|()| launch)
+                })
+                .await;
+            match prepared {
+                Ok(launch) => launch,
+                Err(error) => {
+                    this.update(cx, |this, cx| {
+                        this.fail(id, format!("Can't debug: {error:#}"), cx)
+                    })
+                    .ok();
+                    return;
+                }
+            }
+        }
+        None => launch,
+    };
+    // The configuration's environment, in the form each adapter takes.
+    let mut launch = launch;
+    let extra = this
+        .read_with(cx, |this, _| this.run_settings(&target.name).env)
+        .unwrap_or_default();
+    if !extra.is_empty()
+        && let Some(arguments) = launch.launch_arguments.as_object_mut()
+    {
+        arguments.insert(
+            "env".into(),
+            if prepared.adapter_id == "lldb-dap" {
+                serde_json::json!(
+                    extra
+                        .iter()
+                        .map(|(k, v)| format!("{k}={v}"))
+                        .collect::<Vec<_>>()
+                )
+            } else {
+                serde_json::json!(extra)
+            },
+        );
+    }
     let adapter_id = prepared.adapter_id.clone();
     let connect = prepared.connect;
     let connected = cx
@@ -1813,7 +2332,7 @@ async fn start_debugging(
     };
     let request = LaunchRequest {
         adapter_id,
-        request: "launch".into(),
+        request: request_kind.into(),
         arguments: launch.launch_arguments,
     };
     handshake(this, id, index, &adapter, &request, cx).await;
@@ -1840,11 +2359,28 @@ async fn handshake(
     }) else {
         return;
     };
-    let started = dap_session::start(adapter, request, &breakpoints).await;
+    let Ok(choices) = this.update(cx, |this, _| this.exception_choices.clone()) else {
+        return;
+    };
+    let adapter_id = request.adapter_id.clone();
+    let choose = move |filter: &gleipnir_dap::ExceptionFilter| {
+        choices
+            .get(&format!("{adapter_id}/{}", filter.filter))
+            .copied()
+            .unwrap_or(filter.default)
+    };
+    let started = dap_session::start_with(adapter, request, &breakpoints, &choose).await;
     this.update(cx, |this, cx| match started {
         Ok(started) => {
             for (file, (path, placed)) in breakpoints.iter().zip(&started.breakpoints) {
                 this.record_placed(path, &file.breakpoints, placed);
+            }
+            if !started.capabilities.exception_breakpoint_filters.is_empty() {
+                this.exception_filters.insert(
+                    request.adapter_id.clone(),
+                    started.capabilities.exception_breakpoint_filters.clone(),
+                );
+                cx.emit(DebuggerEvent::SettingsChanged);
             }
             this.with_launch(id, |launch| {
                 let session = &mut launch.sessions[index];

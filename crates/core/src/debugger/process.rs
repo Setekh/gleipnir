@@ -28,6 +28,7 @@ pub struct ProcessCommand {
 #[derive(Clone)]
 pub struct ProcessHandle {
     child: Arc<Mutex<Option<Child>>>,
+    stdin: Arc<Mutex<Option<std::process::ChildStdin>>>,
     pid: u32,
 }
 
@@ -51,6 +52,18 @@ impl ProcessHandle {
 
     pub fn pid(&self) -> u32 {
         self.pid
+    }
+
+    /// Types into the program, as a terminal would.
+    pub fn write_input(&self, text: &str) -> Result<()> {
+        use std::io::Write as _;
+        let mut stdin = self.stdin.lock().expect("the stdin lock");
+        let Some(pipe) = stdin.as_mut() else {
+            anyhow::bail!("the program has finished");
+        };
+        pipe.write_all(text.as_bytes())?;
+        pipe.flush()?;
+        Ok(())
     }
 }
 
@@ -112,7 +125,7 @@ pub fn spawn(
         .env_clear()
         .envs(command.env.iter().cloned())
         .current_dir(&command.cwd)
-        .stdin(Stdio::null())
+        .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -129,6 +142,7 @@ pub fn spawn(
         ProcessOutput::Stderr,
     );
     let pid = child.id();
+    let stdin = Arc::new(Mutex::new(child.stdin.take()));
     let child = Arc::new(Mutex::new(Some(child)));
     let waited = child.clone();
     thread::spawn(move || {
@@ -154,7 +168,42 @@ pub fn spawn(
         };
         tx.unbounded_send(ProcessOutput::Exited(code)).ok();
     });
-    Ok((ProcessHandle { child, pid }, rx))
+    Ok((ProcessHandle { child, stdin, pid }, rx))
+}
+
+/// A running process, as Attach to Process lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProcessInfo {
+    pub pid: u32,
+    /// The executable's file name.
+    pub name: String,
+    /// The whole command line.
+    pub command: String,
+}
+
+/// The user's own processes, newest first, leaving out this one.
+pub fn list_processes() -> Vec<ProcessInfo> {
+    let Ok(output) = Command::new("ps")
+        .args(["x", "-o", "pid=", "-o", "args="])
+        .output()
+    else {
+        return Vec::new();
+    };
+    let own = std::process::id();
+    let mut found: Vec<ProcessInfo> = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim_start();
+            let (pid, command) = line.split_once(char::is_whitespace)?;
+            let pid: u32 = pid.parse().ok()?;
+            let command = command.trim().to_string();
+            let program = command.split_whitespace().next()?;
+            let name = program.rsplit('/').next().unwrap_or(program).to_string();
+            (pid != own).then_some(ProcessInfo { pid, name, command })
+        })
+        .collect();
+    found.sort_by_key(|p| std::cmp::Reverse(p.pid));
+    found
 }
 
 #[cfg(test)]
@@ -198,6 +247,28 @@ mod tests {
         let (stdout, _, code) = collect(rx);
         assert_eq!(stdout, "started\n");
         assert_eq!(code, None);
+    }
+
+    #[test]
+    fn input_reaches_the_program() {
+        let (handle, rx) = spawn(&sh("read name; echo hello $name")).unwrap();
+        handle.write_input("gleipnir\n").unwrap();
+        assert_eq!(collect(rx).0, "hello gleipnir\n");
+    }
+
+    #[test]
+    fn running_processes_are_listed_with_their_names() {
+        let (handle, _rx) = spawn(&sh("sleep 5")).unwrap();
+        let listed = list_processes();
+        handle.kill();
+        let ours = listed
+            .iter()
+            .find(|p| p.pid == handle.pid())
+            .expect("the process we started");
+        // `sh -c` may replace itself with the command it runs.
+        assert!(["sh", "sleep"].contains(&ours.name.as_str()), "{ours:?}");
+        assert!(ours.command.contains("sleep 5"));
+        assert!(!listed.iter().any(|p| p.pid == std::process::id()));
     }
 
     #[test]

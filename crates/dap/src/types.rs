@@ -23,7 +23,7 @@ pub struct Capabilities {
     pub exception_breakpoint_filters: Vec<ExceptionFilter>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct ExceptionFilter {
     pub filter: String,

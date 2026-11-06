@@ -38,3 +38,16 @@ What it took:
   made before building.
 - **Paths come back as the program saw them.** On macOS that can be `/var/...` for `/private/var/...`,
   so frames' paths are made canonical to match the editor's.
+- **Rust's formatters have to be loaded by hand.** `rust-lldb` imports the toolchain's
+  `lib/rustlib/etc/lldb_lookup.py`; lldb-dap doesn't, so launches pass it as an `initCommands`.
+- **Typing to a program differs by adapter.** lldb-dap's `runInTerminal` starts the program and then
+  attaches, which macOS refuses without debugging permission, and Xcode's lldb-dap ignores the
+  `stdio` setting. What works is lldb's own `process.PutSTDIN`, run as a debug console command
+  (`` `script ...``) even while the program runs. js-debug's `integratedTerminal` console has
+  Gleipnir start Node, with pipes. delve has no way in.
+- **js-debug attaching by process id** didn't find Node's inspector here. Sending Node SIGUSR1
+  ourselves and attaching to `127.0.0.1:9229` does; `localhost` can resolve to IPv6 first, where
+  Node isn't listening.
+- **A breakpoint on a `println!` line has two locations**, so stepping over it can stop at the
+  second; tests stop on plain statements.
+

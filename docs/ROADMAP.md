@@ -93,10 +93,6 @@ checksum verified: gopls, delve, ols, js-debug and typescript-language-server.
 | 4.5 | Tool installer: pinned, checksummed, with confirmation | Installs gopls and a TS server; rejects a bad checksum |
 | 4.6 | Settings UI: SDKs and packages | Add, remove and select SDKs per project; see and install tools |
 
-Still open from M4:
-
-- **Third-party packages** aren't loaded yet. The registry reads manifests like any other, so this is
-  a matter of where to find them, which is stage 2 in the architecture.
 
 ## M5: Code intelligence
 
@@ -163,16 +159,6 @@ breakpoint, a right-click edits it, and the Run icon beside `main` runs or debug
 
 Still open from M6:
 
-- **Attaching** to a running process isn't offered; every session launches its program.
-- **Run configurations can't be edited**: arguments, environment and working folder are the
-  defaults each language's adapter gives. Tests aren't run targets yet.
-- **Exception breakpoints** use each adapter's defaults; there's no UI to choose which.
-- **Values can't be changed** while stopped (`setVariable`), and there's no memory or disassembly
-  view.
-- **Programs that read input** can't be typed to: the console takes expressions to evaluate, not
-  the program's stdin, and runs are without a terminal.
-- **Rust values look like C** under lldb, which has no Rust plugin; a formatter script like
-  rust-lldb's would make strings and collections read naturally.
 - **lldb-dap on Linux** is untested, as is all of Linux.
 
 ## M7: Closing the open items
@@ -219,8 +205,32 @@ Done in the second batch:
   file mask, unsaved edits searched as they stand, and a preview of the selected match. Enter opens
   it; Cmd+Enter moves the results to the Find panel.
 
-Next, the debugger's: editable run configurations and tests as targets, attaching, exception
-breakpoints, setting values, program input, readable Rust values; and third-party packages.
+Done in the third batch:
+
+- **Rust values read as Rust** under lldb: launches load the toolchain's own formatters, as
+  `rust-lldb` does, so a `String` shows its text rather than `alloc::string::String @ 0x...`.
+- **Programs can be typed to.** A run's input line writes to its stdin. Under the debugger, js-debug
+  and Run start the program through Gleipnir (`runInTerminal`), so their input goes straight to it;
+  lldb keeps the program on a terminal of its own, which lldb types into for us. In the Debug
+  console, a line is evaluated while stopped and typed to the program while it runs.
+- **Values can be changed** while stopped: double-click a variable.
+- **Exception breakpoints**: each debugger's kinds of exception, once seen, are listed under View
+  Breakpoints to turn on or off, now and for later sessions.
+- **Run configurations can be edited** (Run > Edit Configuration): arguments, environment and
+  working folder, saved with the project.
+- **Tests are run targets**: each Rust package's and Go package's tests, and, from a Run icon in
+  the gutter, one `#[test]` or `func TestX`, run or debugged. Debugging a Rust test asks Cargo for
+  the test binary's name; Go tests debug in delve's test mode.
+- **Attach to Process** (Alt+Shift+F5): pick a process and a debugger. js-debug attaches to Node by
+  having Gleipnir open its inspector; lldb attaches by pid, which macOS allows only with Developer
+  Mode or `DevToolsSecurity` enabled.
+- **Third-party packages** (stage 2): a folder with a `package.toml` in the config folder's
+  `packages`, installed with Install Package, adds a package or replaces a built-in one, such as to
+  use a different language server. Its languages must use one of the built-in grammars, as loading
+  new ones needs WASM (stage 3).
+
+Still open after M7: Odin tests as targets; typing to a Go program under the debugger, as delve
+gives no way in; and the items above that need an Omarchy machine or a remote.
 
 ## Later
 

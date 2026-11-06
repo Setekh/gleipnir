@@ -291,6 +291,26 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
             })?;
             open.await?;
         }
+        "console" => {
+            // `console run|debug <text>`: types a line into that panel's console and presses Enter.
+            let (panel, text) = rest.split_once(' ').unwrap_or((rest, ""));
+            let text = unescape(text);
+            let panel = panel.to_string();
+            with_workspace(window, cx, move |workspace, _, cx| -> Result<()> {
+                let console = match panel.as_str() {
+                    "run" => workspace
+                        .panel::<gleipnir_debugger_ui::RunPanel>(cx)
+                        .map(|p| p.read(cx).console().clone()),
+                    "debug" => workspace
+                        .panel::<gleipnir_debugger_ui::DebugPanel>(cx)
+                        .map(|p| p.read(cx).console().clone()),
+                    other => bail!("no console in {other}"),
+                };
+                let console = console.ok_or_else(|| anyhow!("no {panel} panel"))?;
+                console.update(cx, |c, cx| c.enter(&text, cx));
+                Ok(())
+            })??;
+        }
         "action" => {
             let name = rest.to_string();
             with_window(window, cx, move |window, cx| -> Result<()> {

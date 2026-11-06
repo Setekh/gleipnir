@@ -49,7 +49,7 @@ pub async fn initialize(
                 "columnsStartAt1": true,
                 "supportsVariableType": true,
                 "supportsVariablePaging": false,
-                "supportsRunInTerminalRequest": false,
+                "supportsRunInTerminalRequest": true,
                 "supportsStartDebuggingRequest": true,
                 "supportsProgressReporting": false,
                 "supportsInvalidatedEvent": false,
@@ -75,6 +75,16 @@ pub async fn start(
     request: &LaunchRequest,
     breakpoints: &[FileBreakpoints],
 ) -> Result<Started, RequestError> {
+    start_with(adapter, request, breakpoints, &|filter| filter.default).await
+}
+
+/// `start`, choosing which of the adapter's exception filters to turn on.
+pub async fn start_with(
+    adapter: &DebugAdapter,
+    request: &LaunchRequest,
+    breakpoints: &[FileBreakpoints],
+    exceptions: &dyn Fn(&ExceptionFilter) -> bool,
+) -> Result<Started, RequestError> {
     let capabilities = initialize(adapter, &request.adapter_id).await?;
     let launch = adapter.request(&request.request, request.arguments.clone());
     let initialized = adapter.initialized();
@@ -89,7 +99,7 @@ pub async fn start(
             None
         }
     };
-    let placed = configure(adapter, &capabilities, breakpoints).await?;
+    let placed = configure(adapter, &capabilities, breakpoints, exceptions).await?;
     if let Some(launch) = launch {
         launch.await?;
     }
@@ -104,6 +114,7 @@ async fn configure(
     adapter: &DebugAdapter,
     capabilities: &Capabilities,
     breakpoints: &[FileBreakpoints],
+    exceptions: &dyn Fn(&ExceptionFilter) -> bool,
 ) -> Result<Vec<(PathBuf, Vec<Breakpoint>)>, RequestError> {
     let mut placed = Vec::new();
     for file in breakpoints {
@@ -111,20 +122,29 @@ async fn configure(
         placed.push((file.path.clone(), result));
     }
     if !capabilities.exception_breakpoint_filters.is_empty() {
-        let filters: Vec<&str> = capabilities
+        let filters: Vec<String> = capabilities
             .exception_breakpoint_filters
             .iter()
-            .filter(|f| f.default)
-            .map(|f| f.filter.as_str())
+            .filter(|f| exceptions(f))
+            .map(|f| f.filter.clone())
             .collect();
-        adapter
-            .request("setExceptionBreakpoints", json!({ "filters": filters }))
-            .await?;
+        set_exception_breakpoints(adapter, &filters).await?;
     }
     if capabilities.supports_configuration_done_request {
         adapter.request("configurationDone", json!({})).await?;
     }
     Ok(placed)
+}
+
+/// Which kinds of exception stop the program, by the adapter's filter ids.
+pub async fn set_exception_breakpoints(
+    adapter: &DebugAdapter,
+    filters: &[String],
+) -> Result<(), RequestError> {
+    adapter
+        .request("setExceptionBreakpoints", json!({ "filters": filters }))
+        .await
+        .map(drop)
 }
 
 /// Replaces every breakpoint in a file.
@@ -226,6 +246,23 @@ pub async fn evaluate(
         arguments["frameId"] = json!(frame);
     }
     adapter.request_as("evaluate", arguments).await
+}
+
+/// Changes a variable's value, given the reference of what it's in. Returns its new value as the
+/// adapter shows it.
+pub async fn set_variable(
+    adapter: &DebugAdapter,
+    container: i64,
+    name: &str,
+    value: &str,
+) -> Result<String, RequestError> {
+    let body = adapter
+        .request(
+            "setVariable",
+            json!({ "variablesReference": container, "name": name, "value": value }),
+        )
+        .await?;
+    Ok(body["value"].as_str().unwrap_or(value).to_string())
 }
 
 /// How execution moves on from a stop.

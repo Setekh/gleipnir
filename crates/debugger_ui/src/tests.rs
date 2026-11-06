@@ -38,12 +38,20 @@ impl Keys {
 /// A program that stops at the first breakpoint, steps a line at a time and then finishes.
 fn handler(main: String, line: Arc<Mutex<u64>>) -> impl FnMut(&mut Out) + Send + 'static {
     let mut breakpoints: Vec<u64> = Vec::new();
+    let mut count = "3".to_string();
     move |out: &mut Out| {
         let mut at = line.lock().unwrap();
         match out.command() {
             "initialize" => {
-                out.ok(json!({ "supportsConfigurationDoneRequest": true }));
+                out.ok(json!({
+                    "supportsConfigurationDoneRequest": true,
+                    "supportsSetVariable": true,
+                }));
                 out.event("initialized", json!({}));
+            }
+            "setVariable" => {
+                count = out.args()["value"].as_str().unwrap_or("").to_string();
+                out.ok(json!({ "value": count.clone() }));
             }
             "setBreakpoints" => {
                 breakpoints = out.args()["breakpoints"]
@@ -76,7 +84,7 @@ fn handler(main: String, line: Arc<Mutex<u64>>) -> impl FnMut(&mut Out) + Send +
                 out.ok(json!({ "scopes": [{ "name": "Locals", "variablesReference": 7 }] }))
             }
             "variables" => out.ok(json!({ "variables": [
-                { "name": "count", "value": "3", "type": "i32", "variablesReference": 0 },
+                { "name": "count", "value": count.clone(), "type": "i32", "variablesReference": 0 },
                 { "name": "total", "value": "4", "type": "i32", "variablesReference": 0 },
             ] })),
             "evaluate" => {
@@ -116,6 +124,7 @@ fn target(root: &Path, run: &str) -> RunTarget {
         program: Some(root.join("target/debug/p")),
         cwd: root.to_path_buf(),
         source: Some(root.join("src/main.rs")),
+        args: Vec::new(),
     }
 }
 
@@ -420,4 +429,105 @@ fn breakpoints_and_watches_are_saved_with_the_project(cx: &mut TestAppContext) {
         (d.breakpoints().len(), d.watches().to_vec())
     });
     assert_eq!((count, watches), (1, vec!["total".to_string()]));
+}
+
+#[gpui::test]
+fn what_is_typed_in_the_run_console_reaches_the_program(cx: &mut TestAppContext) {
+    let (_dir, mut s) = setup(cx);
+    s.open(0);
+    let target = target(&s.root, "read name; echo hello $name");
+    s.cx.update(|_, cx| {
+        s.debugger.update(cx, |d, cx| {
+            d.start(target, false, cx);
+        })
+    });
+    s.wait(|s| s.status() == Some(LaunchStatus::Running));
+    let workspace = s.workspace.clone();
+    let panel =
+        s.cx.update(|_, cx| workspace.read(cx).panel::<RunPanel>(cx))
+            .unwrap();
+    // The console follows the running launch once the panel hears of it.
+    s.wait(|s| {
+        let debugger = s.debugger.clone();
+        s.cx.update(|_, cx| {
+            let id = debugger.read(cx).active_launch().map(|l| l.id).unwrap();
+            debugger.read(cx).accepts_input(id)
+        })
+    });
+    s.cx.update(|_, cx| {
+        let console = panel.read(cx).console().clone();
+        console.update(cx, |c, cx| c.enter("gleipnir", cx));
+    });
+    s.wait(|s| s.status() == Some(LaunchStatus::Finished(Some(0))));
+    let console =
+        s.cx.update(|_, cx| s.debugger.read(cx).active_launch().unwrap().console_text());
+    assert!(console.contains("hello gleipnir"), "{console}");
+}
+
+#[gpui::test]
+fn a_value_can_be_changed_while_stopped(cx: &mut TestAppContext) {
+    let (_dir, mut s) = setup(cx);
+    s.open(2);
+    s.cx.simulate_keystrokes(Keys::TOGGLE);
+    s.cx.simulate_keystrokes(Keys::DEBUG);
+    s.wait(|s| {
+        s.panel_state()["variable_rows"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|r| r == "  count = 3"))
+    });
+    let workspace = s.workspace.clone();
+    let panel =
+        s.cx.update(|_, cx| workspace.read(cx).panel::<DebugPanel>(cx))
+            .unwrap();
+    s.cx.update(|window, cx| {
+        panel.update(cx, |p, cx| p.set_value(7, "count".into(), "3", window, cx))
+    });
+    let modal =
+        s.cx.update(|_, cx| workspace.read(cx).active_modal::<SetValueModal>())
+            .expect("the Set Value popup");
+    s.cx.update(|_, cx| {
+        modal.update(cx, |m, cx| {
+            m.set_text("10", cx);
+            m.confirm(cx);
+        })
+    });
+    s.wait(|s| {
+        s.panel_state()["variable_rows"]
+            .as_array()
+            .is_some_and(|rows| rows.iter().any(|r| r == "  count = 10"))
+    });
+}
+
+#[gpui::test]
+fn a_configuration_can_be_given_arguments_environment_and_a_folder(cx: &mut TestAppContext) {
+    let (_dir, mut s) = setup(cx);
+    s.open(0);
+    s.cx.dispatch_action(EditConfiguration);
+    let workspace = s.workspace.clone();
+    let modal =
+        s.cx.update(|_, cx| workspace.read(cx).active_modal::<RunSettingsModal>())
+            .expect("the configuration popup");
+    s.cx.update(|_, cx| {
+        modal.update(cx, |m, cx| {
+            m.set_fields(
+                "--port 80 'two words'",
+                "MODE=dev LEVEL=\"very high\"",
+                "/tmp",
+                cx,
+            );
+            m.confirm(cx);
+        })
+    });
+    let settings = s.cx.update(|_, cx| s.debugger.read(cx).run_settings("p"));
+    assert_eq!(settings.args, ["--port", "80", "two words"]);
+    assert_eq!(settings.env["LEVEL"], "very high");
+    assert_eq!(settings.cwd.as_deref(), Some(Path::new("/tmp")));
+
+    // Opened again, the fields show what was saved.
+    s.cx.dispatch_action(EditConfiguration);
+    let saved = s.cx.update(|_, cx| workspace.read(cx).to_saved(cx));
+    assert_eq!(
+        saved.panels["debug"]["run_settings"]["p"]["args"][2],
+        "two words"
+    );
 }

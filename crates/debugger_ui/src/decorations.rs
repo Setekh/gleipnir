@@ -38,6 +38,45 @@ impl DebugDecorations {
     }
 }
 
+/// Lines that might declare a test, worth asking the language about, found in one pass: in Rust,
+/// a function right under a `#[...test]` attribute; in Go, a `func Test` in a `_test.go` file.
+pub fn test_candidates(language: Language, path: &std::path::Path, text: &str) -> Vec<usize> {
+    match language {
+        Language::Rust => {
+            // Cheap to rule out, which most files are.
+            if !text.contains("test]") {
+                return Vec::new();
+            }
+            let mut attributed = false;
+            let mut found = Vec::new();
+            for (index, line) in text.lines().enumerate() {
+                let line = line.trim();
+                if line.starts_with("#[") {
+                    attributed |= line.ends_with("test]");
+                } else if line.starts_with("fn ")
+                    || line.starts_with("async fn ")
+                    || line.starts_with("pub fn ")
+                {
+                    if attributed {
+                        found.push(index);
+                    }
+                    attributed = false;
+                } else if !line.is_empty() && !line.starts_with("//") {
+                    attributed = false;
+                }
+            }
+            found
+        }
+        Language::Go if path.to_string_lossy().ends_with("_test.go") => text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.trim_start().starts_with("func Test"))
+            .map(|(i, _)| i)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Whether a line declares a program's entry point, in the file's language.
 pub fn is_entry_point(language: Language, line: &str) -> bool {
     let line = line.trim_start();
@@ -102,14 +141,10 @@ impl DecorationProvider for DebugDecorations {
         let (Some(path), Some(buffer)) = (self.path(cx), self.buffer.upgrade()) else {
             return Vec::new();
         };
-        let runs = self
-            .debugger
-            .read(cx)
+        let debugger = self.debugger.read(cx);
+        let runs = debugger
             .target_for_file(&path)
             .is_some_and(|t| t.kind != RunTargetKind::File);
-        if !runs {
-            return Vec::new();
-        }
         let model = buffer.read(cx);
         let Some(language) = model.language() else {
             return Vec::new();
@@ -121,13 +156,33 @@ impl DecorationProvider for DebugDecorations {
         {
             return lines.clone();
         }
-        // Only lines mentioning `main` can declare it, which keeps this quick in a large file.
+        // Tests, which are worth a Run icon wherever they are.
+        let mut tests: Vec<usize> = Vec::new();
+        // Only these languages have tests to find, or entry points to mark.
+        if !runs && !matches!(language, Language::Rust | Language::Go) {
+            *self.run_lines.borrow_mut() = Some((version, Vec::new()));
+            return Vec::new();
+        }
         let whole = text.text();
+        let candidates = test_candidates(language, &path, &whole);
+        if !candidates.is_empty() {
+            tests = candidates
+                .into_iter()
+                .filter(|&line| debugger.test_at(&path, &whole, line).is_some())
+                .collect();
+        }
+        if !runs {
+            *self.run_lines.borrow_mut() = Some((version, tests.clone()));
+            return tests;
+        }
+        // Only lines mentioning `main` can declare it, which keeps this quick in a large file.
         let mut lines: Vec<usize> = whole
             .match_indices("main")
             .map(|(offset, _)| text.offset_to_point(offset).line)
             .filter(|&line| is_entry_point(language, &text.line(line)))
             .collect();
+        lines.extend(tests);
+        lines.sort_unstable();
         lines.dedup();
         *self.run_lines.borrow_mut() = Some((version, lines.clone()));
         lines
@@ -222,6 +277,24 @@ mod tests {
         assert!(is_entry_point(Language::Odin, "main :: proc() {"));
         assert!(!is_entry_point(Language::Odin, "maintain :: proc() {"));
         assert!(!is_entry_point(Language::TypeScript, "function main() {"));
+    }
+
+    #[test]
+    fn test_candidates_are_functions_under_a_test_attribute() {
+        let rust = "fn main() {}\n#[test]\nfn first() {}\n#[tokio::test]\n// a note\nasync fn second() {}\n#[derive(Debug)]\nfn not_a_test() {}\n";
+        assert_eq!(
+            test_candidates(Language::Rust, std::path::Path::new("a.rs"), rust),
+            [2, 5]
+        );
+        let go = "func TestA(t *testing.T) {\n";
+        assert_eq!(
+            test_candidates(Language::Go, std::path::Path::new("a.go"), go),
+            Vec::<usize>::new()
+        );
+        assert_eq!(
+            test_candidates(Language::Go, std::path::Path::new("a_test.go"), go),
+            [0]
+        );
     }
 
     #[test]

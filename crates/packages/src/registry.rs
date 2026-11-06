@@ -21,6 +21,14 @@ const BUILTIN: &[(&str, &str)] = &[
 #[derive(Clone, Debug)]
 pub struct Package {
     pub manifest: Manifest,
+    /// Where the manifest came from: `builtin/...`, or the folder of an installed package.
+    pub origin: String,
+}
+
+impl Package {
+    pub fn is_builtin(&self) -> bool {
+        self.origin.starts_with("builtin/")
+    }
 }
 
 impl Package {
@@ -89,14 +97,54 @@ impl Registry {
         };
         for (origin, source) in sources {
             match parse_manifest(source, origin) {
-                Ok(manifest) => registry.add(manifest),
+                Ok(manifest) => registry.add(manifest, origin.to_string()),
                 Err(error) => registry.errors.push(format!("{error:#}")),
             }
         }
         registry
     }
 
-    fn add(&mut self, manifest: Manifest) {
+    /// The built-in packages, then those installed in `dir`, each in a folder with a
+    /// `package.toml`. An installed package with a built-in's id replaces it, which is how a
+    /// language's servers or tools are changed.
+    pub fn with_installed(dir: &Path) -> Self {
+        let mut sources: Vec<(String, String)> = BUILTIN
+            .iter()
+            .map(|(origin, text)| (origin.to_string(), text.to_string()))
+            .collect();
+        let mut errors = Vec::new();
+        let mut folders: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+            .map(|entries| entries.filter_map(Result::ok).map(|e| e.path()).collect())
+            .unwrap_or_default();
+        folders.sort();
+        for folder in folders {
+            let manifest = folder.join("package.toml");
+            if !manifest.is_file() {
+                continue;
+            }
+            match std::fs::read_to_string(&manifest) {
+                Ok(text) => {
+                    let origin = folder.display().to_string();
+                    // A replacement takes the built-in's place.
+                    let id = parse_manifest(&text, &origin).ok().map(|m| m.package.id);
+                    if let Some(id) = id {
+                        sources.retain(|(o, t)| {
+                            !(o.starts_with("builtin/")
+                                && parse_manifest(t, o).is_ok_and(|m| m.package.id == id))
+                        });
+                    }
+                    sources.push((origin, text));
+                }
+                Err(error) => errors.push(format!("{}: {error}", manifest.display())),
+            }
+        }
+        let mut registry =
+            Self::from_sources(sources.iter().map(|(o, t)| (o.as_str(), t.as_str())));
+        registry.errors.extend(errors);
+        registry
+    }
+
+    fn add(&mut self, manifest: Manifest, origin: String) {
         if self.packages.iter().any(|p| p.id() == manifest.package.id) {
             self.errors
                 .push(format!("two packages are called {:?}", manifest.package.id));
@@ -104,6 +152,12 @@ impl Registry {
         }
         for spec in &manifest.languages {
             let Some(grammar) = grammar(&spec.grammar) else {
+                // New grammars would need WASM, which isn't built yet.
+                self.errors.push(format!(
+                    "{}: {} uses the grammar {:?}, which isn't built in (only rust, go, odin, \
+                     typescript, tsx and javascript are)",
+                    manifest.package.id, spec.name, spec.grammar
+                ));
                 continue;
             };
             let index = self.languages.len();
@@ -123,7 +177,7 @@ impl Registry {
                 }
             }
         }
-        self.packages.push(Package { manifest });
+        self.packages.push(Package { manifest, origin });
     }
 
     pub fn packages(&self) -> &[Package] {
@@ -154,10 +208,49 @@ impl Registry {
     }
 }
 
-/// The application's registry: the built-in packages.
+/// Where installed packages live: a folder each, with a `package.toml`.
+pub fn packages_dir() -> std::path::PathBuf {
+    crate::dirs::config_dir().join("packages")
+}
+
+/// The application's registry: the built-in packages and those installed. Read once at startup,
+/// so installing one takes a restart.
 pub fn registry() -> &'static Registry {
     static REGISTRY: OnceLock<Registry> = OnceLock::new();
-    REGISTRY.get_or_init(|| Registry::from_sources(BUILTIN.iter().copied()))
+    REGISTRY.get_or_init(|| Registry::with_installed(&packages_dir()))
+}
+
+/// Installs a package from a folder holding its `package.toml`, by copying the folder in.
+/// Returns the package's name.
+pub fn install_package(from: &Path) -> anyhow::Result<String> {
+    install_package_into(from, &packages_dir())
+}
+
+/// Installs a package into a given packages folder.
+pub fn install_package_into(from: &Path, packages: &Path) -> anyhow::Result<String> {
+    let text = std::fs::read_to_string(from.join("package.toml"))
+        .map_err(|_| anyhow::anyhow!("{} has no package.toml", from.display()))?;
+    let manifest = parse_manifest(&text, &from.display().to_string())?;
+    let to = packages.join(&manifest.package.id);
+    if to.exists() {
+        std::fs::remove_dir_all(&to)?;
+    }
+    copy_folder(from, &to)?;
+    Ok(manifest.package.name)
+}
+
+fn copy_folder(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_folder(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -255,5 +348,66 @@ mod tests {
             "{:?}",
             registry.errors()
         );
+    }
+
+    #[test]
+    fn installed_packages_add_to_and_replace_the_built_in_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let write = |folder: &str, text: &str| {
+            std::fs::create_dir_all(dir.path().join(folder)).unwrap();
+            std::fs::write(dir.path().join(folder).join("package.toml"), text).unwrap();
+        };
+        // Go with a different server.
+        write(
+            "my-go",
+            "[package]\nid = \"go\"\nname = \"Go, my way\"\nversion = \"1.0.0\"\n\n[[language]]\nname = \"Go\"\ngrammar = \"go\"\nextensions = [\"go\"]\n\n[server]\ntool = \"my-gopls\"\n\n[tool.my-gopls]\nbinary = \"my-gopls\"\n",
+        );
+        // A language without a built-in grammar.
+        write(
+            "zig",
+            "[package]\nid = \"zig\"\nname = \"Zig\"\nversion = \"0.1.0\"\n\n[[language]]\nname = \"Zig\"\ngrammar = \"zig\"\nextensions = [\"zig\"]\n",
+        );
+        let registry = Registry::with_installed(dir.path());
+        let go = registry.package("go").unwrap();
+        assert_eq!(go.name(), "Go, my way");
+        assert!(!go.is_builtin());
+        assert_eq!(
+            registry
+                .packages()
+                .iter()
+                .filter(|p| p.id() == "go")
+                .count(),
+            1
+        );
+        assert!(registry.package("rust").unwrap().is_builtin());
+        assert!(
+            registry.errors().iter().any(|e| e.contains("zig")),
+            "{:?}",
+            registry.errors()
+        );
+        assert!(registry.language_for_path(Path::new("a.go")).is_some());
+    }
+
+    #[test]
+    fn installing_copies_the_folder_in_and_refuses_one_without_a_manifest() {
+        let source = tempfile::tempdir().unwrap();
+        let packages = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(source.path().join("queries")).unwrap();
+        std::fs::write(source.path().join("queries/extra.scm"), "").unwrap();
+        std::fs::write(
+            source.path().join("package.toml"),
+            "[package]\nid = \"mine\"\nname = \"Mine\"\nversion = \"0.1.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            install_package_into(source.path(), packages.path()).unwrap(),
+            "Mine"
+        );
+        assert!(packages.path().join("mine/queries/extra.scm").is_file());
+        let registry = Registry::with_installed(packages.path());
+        assert!(registry.package("mine").is_some());
+
+        let empty = tempfile::tempdir().unwrap();
+        assert!(install_package_into(empty.path(), packages.path()).is_err());
     }
 }

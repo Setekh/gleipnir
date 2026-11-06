@@ -116,6 +116,10 @@ impl RunPanel {
         }
     }
 
+    pub fn console(&self) -> &Entity<ConsoleView> {
+        &self.console
+    }
+
     fn shown<'a>(&self, debugger: &'a Debugger) -> Option<&'a Launch> {
         debugger
             .active_launch()
@@ -270,6 +274,15 @@ struct Saved {
     watches: Vec<String>,
     #[serde(default)]
     configuration: Option<String>,
+    /// Each adapter's exception filters, as last seen.
+    #[serde(default)]
+    exception_filters: std::collections::BTreeMap<String, Vec<gleipnir_dap::ExceptionFilter>>,
+    /// Filters turned on or off by hand.
+    #[serde(default)]
+    exception_choices: std::collections::BTreeMap<String, bool>,
+    /// Arguments, environment and folder set for run configurations.
+    #[serde(default)]
+    run_settings: std::collections::BTreeMap<String, gleipnir_core::RunSettings>,
 }
 
 pub struct DebugPanel {
@@ -338,6 +351,29 @@ impl DebugPanel {
                 .update(cx, |d, cx| d.load_variables(reference, cx));
         }
         cx.notify();
+    }
+
+    /// Opens the popup to change a variable's value, if the adapter can.
+    pub fn set_value(
+        &mut self,
+        container: i64,
+        name: String,
+        value: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.debugger.read(cx).can_set_values() {
+            return;
+        }
+        let debugger = self.debugger.clone();
+        let value = value.to_string();
+        self.workspace
+            .update(cx, |workspace, cx| {
+                workspace.toggle_modal(window, cx, move |_, cx| {
+                    crate::SetValueModal::new(debugger, container, name, &value, cx)
+                })
+            })
+            .ok();
     }
 
     /// Variables as shown, one per line, indented by depth: for tests and the driver.
@@ -828,6 +864,15 @@ impl DebugPanel {
         };
         let key = row.key().map(String::from);
         let reference = row.reference();
+        let settable = match &row {
+            Row::Variable {
+                name,
+                value,
+                container,
+                ..
+            } => Some((*container, name.clone(), value.clone())),
+            _ => None,
+        };
         let watch_index = match &row {
             Row::Watch { index, .. } => Some(*index),
             _ => None,
@@ -869,14 +914,21 @@ impl DebugPanel {
                         })),
                 )
             })
-            .when(expandable, |d| {
-                d.cursor_pointer()
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        if let Some(key) = &key {
-                            this.toggle(key, reference, cx);
+            .on_click(
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    // A double-click changes a value, as F2 does in IntelliJ.
+                    if event.click_count() > 1 {
+                        if let Some((container, name, value)) = settable.clone() {
+                            this.set_value(container, name, &value, window, cx);
                         }
-                    }))
-            })
+                        return;
+                    }
+                    if expandable && let Some(key) = &key {
+                        this.toggle(key, reference, cx);
+                    }
+                }),
+            )
+            .when(expandable, |d| d.cursor_pointer())
             .into_any_element()
     }
 }
@@ -903,10 +955,14 @@ impl Panel for DebugPanel {
 
     fn save_state(&self, cx: &App) -> serde_json::Value {
         let debugger = self.debugger.read(cx);
+        let (exception_filters, exception_choices) = debugger.exception_settings();
         serde_json::to_value(Saved {
             breakpoints: debugger.breakpoints().clone(),
             watches: debugger.watches().to_vec(),
             configuration: debugger.selected_target_name().map(String::from),
+            exception_filters,
+            exception_choices,
+            run_settings: debugger.all_run_settings().clone(),
         })
         .unwrap_or_default()
     }
@@ -919,6 +975,8 @@ impl Panel for DebugPanel {
             d.set_all_breakpoints(saved.breakpoints, cx);
             d.set_watches(saved.watches, cx);
             d.set_selected_target(saved.configuration, cx);
+            d.set_exception_settings(saved.exception_filters, saved.exception_choices);
+            d.restore_run_settings(saved.run_settings);
         });
     }
 

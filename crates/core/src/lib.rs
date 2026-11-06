@@ -11,7 +11,8 @@ pub use buffer::{BufferEvent, BufferModel, Diagnostic, DiskStatus, Severity};
 pub use debugger::{
     AdapterLauncher, Breakpoint, BreakpointStatus, Breakpoints, ConsoleKind, ConsoleLine, Debugger,
     DebuggerEvent, Launch, LaunchId, LaunchStatus, PreparedAdapter, ProcessCommand, ProcessHandle,
-    ProcessOutput, Session, WatchValue, is_local_scope, toolchain_adapter_launcher,
+    ProcessInfo, ProcessOutput, RunSettings, Session, WatchValue, is_local_scope, list_processes,
+    split_args, toolchain_adapter_launcher,
 };
 pub use language_servers::{
     GotoKind, LanguageServerEvent, LanguageServers, Launcher, Location, ServerStatus, SymbolHit,

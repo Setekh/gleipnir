@@ -40,6 +40,8 @@ struct Program {
     crash_on: Option<&'static str>,
     /// Start the real session as a child, as js-debug does.
     child_session: bool,
+    /// Every `setExceptionBreakpoints` the fake got.
+    exception_sets: Vec<Vec<String>>,
 }
 
 type Shared = Arc<Mutex<Program>>;
@@ -65,6 +67,10 @@ fn handler(program: Shared, connection: usize) -> impl FnMut(&mut Out) + Send + 
                     "supportsConfigurationDoneRequest": true,
                     "supportsConditionalBreakpoints": true,
                     "supportsLogPoints": true,
+                    "exceptionBreakpointFilters": [
+                        { "filter": "uncaught", "label": "Uncaught", "default": true },
+                        { "filter": "all", "label": "All", "default": false },
+                    ],
                 }));
                 out.event("initialized", json!({}));
             }
@@ -120,6 +126,16 @@ fn handler(program: Shared, connection: usize) -> impl FnMut(&mut Out) + Send + 
                         out.event("terminated", json!({}));
                     }
                 }
+            }
+            "setExceptionBreakpoints" => {
+                let filters = out.args()["filters"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|f| f.as_str().map(String::from))
+                    .collect();
+                p.exception_sets.push(filters);
+                out.ok(json!({}));
             }
             "threads" => out.ok(json!({ "threads": [{ "id": 1, "name": "main" }] })),
             "stackTrace" => out.ok(frames(p.line)),
@@ -256,6 +272,7 @@ fn target(build: Option<&str>, run: &str) -> RunTarget {
         program: Some("/p/target/debug/p".into()),
         cwd: std::env::temp_dir(),
         source: Some(SRC.into()),
+        args: Vec::new(),
     }
 }
 
@@ -338,7 +355,7 @@ fn debugging_stops_at_a_breakpoint_then_steps_and_runs_to_the_end(cx: &mut TestA
         .commands()
         .into_iter()
         .map(|(_, c)| c)
-        .take(4)
+        .take(5)
         .collect();
     assert_eq!(
         handshake,
@@ -346,6 +363,7 @@ fn debugging_stops_at_a_breakpoint_then_steps_and_runs_to_the_end(cx: &mut TestA
             "initialize",
             "launch",
             "setBreakpoints",
+            "setExceptionBreakpoints",
             "configurationDone"
         ]
     );
@@ -771,4 +789,102 @@ fn breakpoints_in_a_closed_file_follow_a_change_made_elsewhere(cx: &mut TestAppC
     // `y := 2` moved from line 4 to 5; `x := 1` was removed, so its breakpoint joins the line
     // where the change landed.
     assert_eq!(lines, [5]);
+}
+
+#[gpui::test]
+fn exception_filters_are_offered_and_choices_reach_sessions(cx: &mut TestAppContext) {
+    let setup = setup(Program::default(), cx);
+    setup.debugger.update(cx, |d, cx| {
+        d.toggle_breakpoint(&src(), 1, cx);
+        d.start(target(None, ""), true, cx);
+    });
+    setup.wait_for(cx, LaunchStatus::Paused);
+    let program = setup.program.clone();
+    assert_eq!(
+        program.lock().unwrap().exception_sets,
+        [vec!["uncaught".to_string()]]
+    );
+    let offered: Vec<(String, bool)> = setup.read(cx, |d| {
+        d.exception_filters()
+            .into_iter()
+            .map(|(_, f, on)| (f.label, on))
+            .collect()
+    });
+    assert_eq!(offered, [("Uncaught".into(), true), ("All".into(), false)]);
+
+    // Turned on, it reaches the running session at once.
+    setup
+        .debugger
+        .update(cx, |d, cx| d.set_exception_filter("fake", "all", true, cx));
+    wait(cx, |_| program.lock().unwrap().exception_sets.len() == 2);
+    assert_eq!(
+        program.lock().unwrap().exception_sets[1],
+        ["uncaught".to_string(), "all".to_string()]
+    );
+}
+
+#[test]
+fn arguments_split_as_a_shell_would() {
+    assert_eq!(
+        split_args(r#"--name "two words" 'single quoted' plain\ space"#),
+        ["--name", "two words", "single quoted", "plain space"]
+    );
+    assert_eq!(split_args("  "), Vec::<String>::new());
+    assert_eq!(split_args(r#"--empty """#), ["--empty", ""]);
+}
+
+#[gpui::test]
+fn a_configurations_arguments_and_environment_reach_the_program(cx: &mut TestAppContext) {
+    let setup = setup(Program::default(), cx);
+    setup.debugger.update(cx, |d, cx| {
+        d.set_run_settings(
+            "p",
+            RunSettings {
+                args: vec!["world".into()],
+                env: [("GREETING".to_string(), "hello".to_string())].into(),
+                cwd: None,
+            },
+            cx,
+        );
+        // `sh -c script` passes what follows to the script as $0, $1...
+        let mut target = target(None, r#"echo "$GREETING $1""#);
+        target.run.push("sh".into());
+        d.start(target, false, cx);
+    });
+    setup.wait_for(cx, LaunchStatus::Finished(Some(0)));
+    let console = setup.console(cx);
+    assert!(console.contains("hello world"), "{console}");
+}
+
+#[gpui::test]
+fn attaching_sends_the_process_to_the_debugger(cx: &mut TestAppContext) {
+    let setup = setup(Program::default(), cx);
+    let id = setup
+        .debugger
+        .update(cx, |d, cx| d.attach("rust", 4242, "server", cx))
+        .unwrap();
+    let debugger = setup.debugger.clone();
+    wait(cx, |cx| {
+        debugger.read_with(cx, |d, _| {
+            d.launch(id).is_some_and(|l| l.sessions.len() == 1)
+        })
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let attach = loop {
+        if let Some((_, message)) = setup
+            .received
+            .try_iter()
+            .find(|(_, m)| m["command"] == "attach")
+        {
+            break message;
+        }
+        assert!(Instant::now() < deadline, "no attach request");
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(attach["arguments"]["pid"], 4242);
+    assert_eq!(
+        setup.read(cx, |d| d.launch(id).unwrap().name.clone()),
+        "server (4242)"
+    );
 }

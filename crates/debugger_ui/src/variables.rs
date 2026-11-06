@@ -24,6 +24,8 @@ pub enum Row {
         value: String,
         type_name: Option<String>,
         reference: i64,
+        /// The reference of what it's in, which changing its value needs.
+        container: i64,
         depth: usize,
         key: String,
         expanded: bool,
@@ -152,6 +154,7 @@ fn children(
             value: variable.value.clone(),
             type_name: variable.type_name.clone(),
             reference: variable.variables_reference,
+            container: reference,
             depth,
             key: key.clone(),
             expanded,

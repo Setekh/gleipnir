@@ -339,12 +339,13 @@ impl BreakpointList {
         cx: &mut Context<Self>,
     ) -> Self {
         let subscription = cx.observe(&debugger, |this, _, cx| {
-            let count = this.entries(cx).len();
+            let count = this.entries(cx).len() + this.exceptions(cx).len();
             this.nav.set_count(count);
             cx.notify();
         });
         let mut nav = ListNav::new();
-        nav.set_count(debugger.read(cx).breakpoints().len());
+        let d = debugger.read(cx);
+        nav.set_count(d.breakpoints().len() + d.exception_filters().len());
         Self {
             debugger,
             workspace,
@@ -388,6 +389,34 @@ impl BreakpointList {
             .collect()
     }
 
+    /// The kinds of exception each adapter can stop on, with whether each is on.
+    fn exceptions(&self, cx: &App) -> Vec<(String, gleipnir_dap::ExceptionFilter, bool)> {
+        self.debugger.read(cx).exception_filters()
+    }
+
+    /// Each exception filter as `adapter: label (on|off)`, for tests and the driver.
+    pub fn exception_labels(&self, cx: &App) -> Vec<String> {
+        self.exceptions(cx)
+            .iter()
+            .map(|(adapter, f, on)| {
+                format!(
+                    "{adapter}: {} ({})",
+                    f.label,
+                    if *on { "on" } else { "off" }
+                )
+            })
+            .collect()
+    }
+
+    fn toggle_exception(&mut self, index: usize, cx: &mut Context<Self>) {
+        let Some((adapter, filter, on)) = self.exceptions(cx).get(index).cloned() else {
+            return;
+        };
+        self.debugger.update(cx, |d, cx| {
+            d.set_exception_filter(&adapter, &filter.filter, !on, cx)
+        });
+    }
+
     fn selected(&self, cx: &App) -> Option<(PathBuf, Breakpoint)> {
         self.entries(cx).get(self.nav.selected()?).cloned()
     }
@@ -406,6 +435,11 @@ impl BreakpointList {
     }
 
     fn toggle_enabled(&mut self, cx: &mut Context<Self>) {
+        let count = self.entries(cx).len();
+        if let Some(index) = self.nav.selected().filter(|i| *i >= count) {
+            self.toggle_exception(index - count, cx);
+            return;
+        }
         let Some((path, breakpoint)) = self.selected(cx) else {
             return;
         };
@@ -435,6 +469,8 @@ impl Render for BreakpointList {
         let theme = cx.global::<Theme>().clone();
         let entries = self.entries(cx);
         let labels = self.labels(cx);
+        let exceptions = self.exceptions(cx);
+        let breakpoint_count = entries.len();
         let selected = self.nav.selected();
         frame(&theme, "BreakpointList", 520.)
             .track_focus(&self.focus_handle)
@@ -503,11 +539,275 @@ impl Render for BreakpointList {
                         },
                     )),
             )
+            .when(!exceptions.is_empty(), |d| {
+                d.child(title(&theme, "Stop on exceptions".into()))
+                    .children(exceptions.into_iter().enumerate().map(
+                        |(i, (adapter, filter, on))| {
+                            let row = breakpoint_count + i;
+                            div()
+                                .id(("exception", i))
+                                .h(px(24.))
+                                .px(px(6.))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.))
+                                .rounded(px(4.))
+                                .cursor_pointer()
+                                .when(selected == Some(row), |d| d.bg(theme.selection))
+                                .child(
+                                    div()
+                                        .size(px(11.))
+                                        .flex_none()
+                                        .rounded(px(3.))
+                                        .border_1()
+                                        .border_color(theme.border)
+                                        .when(on, |d| d.bg(theme.accent)),
+                                )
+                                .child(div().text_color(theme.text).child(filter.label.clone()))
+                                .child(div().text_color(theme.text_faint).child(adapter))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.nav.select(row);
+                                    this.toggle_exception(i, cx);
+                                }))
+                        },
+                    ))
+            })
             .child(
                 div()
                     .text_color(theme.text_faint)
                     .child("Enter opens · Space enables or disables · Delete removes"),
             )
+    }
+}
+
+/// Run > Edit Configuration: the chosen configuration's arguments, environment and folder.
+pub fn edit_configuration(
+    workspace: &mut Workspace,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(debugger) = debugger(workspace, cx) else {
+        return;
+    };
+    let Some(target) = debugger.read(cx).selected_target().cloned() else {
+        workspace.show_message("There's no run configuration to edit", cx);
+        return;
+    };
+    workspace.toggle_modal(window, cx, move |_, cx| {
+        RunSettingsModal::new(debugger, target.name.clone(), cx)
+    });
+}
+
+pub struct RunSettingsModal {
+    debugger: Entity<Debugger>,
+    name: String,
+    args: Entity<TextInput>,
+    env: Entity<TextInput>,
+    cwd: Entity<TextInput>,
+}
+
+impl EventEmitter<DismissEvent> for RunSettingsModal {}
+impl ModalView for RunSettingsModal {}
+
+impl Focusable for RunSettingsModal {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.args.read(cx).focus_handle(cx)
+    }
+}
+
+/// Text for an argument list that splits back into the same arguments.
+fn join_args(args: &[String]) -> String {
+    args.iter()
+        .map(|a| {
+            if a.is_empty() || a.contains(char::is_whitespace) || a.contains('"') {
+                format!("'{a}'")
+            } else {
+                a.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+impl RunSettingsModal {
+    pub fn new(debugger: Entity<Debugger>, name: String, cx: &mut Context<Self>) -> Self {
+        let settings = debugger.read(cx).run_settings(&name);
+        let input = |placeholder: &'static str, text: String, cx: &mut Context<Self>| {
+            cx.new(|cx| {
+                let mut input = TextInput::new(placeholder, cx);
+                input.set_text(&text, cx);
+                input
+            })
+        };
+        let env_text = join_args(
+            &settings
+                .env
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>(),
+        );
+        Self {
+            args: input(
+                "Arguments, as you'd type them in a shell",
+                join_args(&settings.args),
+                cx,
+            ),
+            env: input("Environment, like RUST_LOG=debug PORT=8080", env_text, cx),
+            cwd: input(
+                "The project's folder",
+                settings
+                    .cwd
+                    .map(|c| c.display().to_string())
+                    .unwrap_or_default(),
+                cx,
+            ),
+            debugger,
+            name,
+        }
+    }
+
+    pub fn set_fields(&mut self, args: &str, env: &str, cwd: &str, cx: &mut Context<Self>) {
+        self.args.update(cx, |i, cx| i.set_text(args, cx));
+        self.env.update(cx, |i, cx| i.set_text(env, cx));
+        self.cwd.update(cx, |i, cx| i.set_text(cwd, cx));
+    }
+
+    pub fn confirm(&mut self, cx: &mut Context<Self>) {
+        let args = gleipnir_core::split_args(&self.args.read(cx).text());
+        let env = gleipnir_core::split_args(&self.env.read(cx).text())
+            .into_iter()
+            .filter_map(|pair| {
+                let (key, value) = pair.split_once('=')?;
+                Some((key.to_string(), value.to_string()))
+            })
+            .collect();
+        let cwd = self.cwd.read(cx).text();
+        let settings = gleipnir_core::RunSettings {
+            args,
+            env,
+            cwd: (!cwd.trim().is_empty()).then(|| PathBuf::from(cwd.trim())),
+        };
+        let name = self.name.clone();
+        self.debugger
+            .update(cx, |d, cx| d.set_run_settings(&name, settings, cx));
+        cx.emit(DismissEvent);
+    }
+
+    fn next_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let fields = [&self.args, &self.env, &self.cwd];
+        let focused = fields
+            .iter()
+            .position(|f| f.read(cx).focus_handle(cx).is_focused(window))
+            .unwrap_or(0);
+        fields[(focused + 1) % fields.len()]
+            .read(cx)
+            .focus_handle(cx)
+            .focus(window, cx);
+    }
+}
+
+impl Render for RunSettingsModal {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<Theme>().clone();
+        frame(&theme, "BreakpointEditor", 520.)
+            .on_action(cx.listener(|this, _: &Confirm, _, cx| this.confirm(cx)))
+            .on_action(cx.listener(|_, _: &Cancel, _, cx| cx.emit(DismissEvent)))
+            .on_action(cx.listener(|this, _: &NextField, window, cx| this.next_field(window, cx)))
+            .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
+            .child(title(&theme, format!("Run configuration: {}", self.name)))
+            .child(field(&theme, "Program arguments", self.args.clone()))
+            .child(field(&theme, "Environment variables", self.env.clone()))
+            .child(field(&theme, "Working folder", self.cwd.clone()))
+            .child(
+                div()
+                    .text_color(theme.text_faint)
+                    .child("Enter to save, Tab for the next field"),
+            )
+    }
+}
+
+/// Changes a variable's value while stopped, from a double-click in the variables tree.
+pub struct SetValueModal {
+    debugger: Entity<Debugger>,
+    container: i64,
+    name: String,
+    input: Entity<TextInput>,
+    error: Option<String>,
+}
+
+impl EventEmitter<DismissEvent> for SetValueModal {}
+impl ModalView for SetValueModal {}
+
+impl Focusable for SetValueModal {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.input.read(cx).focus_handle(cx)
+    }
+}
+
+impl SetValueModal {
+    pub fn new(
+        debugger: Entity<Debugger>,
+        container: i64,
+        name: String,
+        value: &str,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let input = cx.new(|cx| {
+            let mut input = TextInput::new("New value", cx);
+            input.set_text(value, cx);
+            input
+        });
+        Self {
+            debugger,
+            container,
+            name,
+            input,
+            error: None,
+        }
+    }
+
+    pub fn set_text(&mut self, text: &str, cx: &mut Context<Self>) {
+        self.input.update(cx, |i, cx| i.set_text(text, cx));
+    }
+
+    pub fn confirm(&mut self, cx: &mut Context<Self>) {
+        let value = self.input.read(cx).text();
+        let (container, name) = (self.container, self.name.clone());
+        let task = self
+            .debugger
+            .update(cx, |d, cx| d.set_variable(container, &name, &value, cx));
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| match result {
+                Ok(_) => cx.emit(DismissEvent),
+                Err(error) => {
+                    this.error = Some(error);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
+impl Render for SetValueModal {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<Theme>().clone();
+        frame(&theme, "EvaluateModal", 420.)
+            .on_action(cx.listener(|this, _: &Confirm, _, cx| this.confirm(cx)))
+            .on_action(cx.listener(|_, _: &Cancel, _, cx| cx.emit(DismissEvent)))
+            .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
+            .child(title(&theme, format!("Set the value of {}", self.name)))
+            .child(field(
+                &theme,
+                "Value, as the language writes it",
+                self.input.clone(),
+            ))
+            .when_some(self.error.clone(), |d, error| {
+                d.child(div().text_color(theme.error).child(error))
+            })
     }
 }
 
