@@ -40,6 +40,12 @@ actions!(
         RevealActiveFile,
         Confirm,
         Cancel,
+        ExtendSelectionUp,
+        ExtendSelectionDown,
+        ClearSpeedSearch,
+        SpeedSearchBackspace,
+        NextMatch,
+        PreviousMatch,
     ]
 );
 
@@ -61,6 +67,20 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("shift-f6", Rename, browsing),
         KeyBinding::new("delete", Delete, browsing),
         KeyBinding::new("escape", FocusEditor, browsing),
+        KeyBinding::new("shift-up", ExtendSelectionUp, browsing),
+        KeyBinding::new("shift-down", ExtendSelectionDown, browsing),
+        KeyBinding::new(
+            "escape",
+            ClearSpeedSearch,
+            Some("ProjectPanel && speed_search"),
+        ),
+        KeyBinding::new(
+            "backspace",
+            SpeedSearchBackspace,
+            Some("ProjectPanel && speed_search"),
+        ),
+        KeyBinding::new("down", NextMatch, Some("ProjectPanel && speed_search")),
+        KeyBinding::new("up", PreviousMatch, Some("ProjectPanel && speed_search")),
         KeyBinding::new("enter", Confirm, editing),
         KeyBinding::new("escape", Cancel, editing),
     ]);
@@ -180,6 +200,12 @@ pub struct ProjectPanel {
     display: Vec<DisplayRow>,
     nav: ListNav,
     selected: Option<PathBuf>,
+    /// Entries selected along with `selected`, by Cmd-click or Shift.
+    marked: std::collections::BTreeSet<PathBuf>,
+    /// Where a Shift-click range starts.
+    anchor: Option<PathBuf>,
+    /// What's been typed to jump to a name, as IntelliJ's speed search.
+    speed: Option<String>,
     /// A path to select once the folders leading to it have loaded.
     pending_reveal: Option<PathBuf>,
     project: Option<Entity<Project>>,
@@ -228,6 +254,9 @@ impl ProjectPanel {
             display: Vec::new(),
             nav: ListNav::new(),
             selected: None,
+            marked: Default::default(),
+            anchor: None,
+            speed: None,
             pending_reveal: None,
             project,
             edit: None,
@@ -247,6 +276,122 @@ impl ProjectPanel {
 
     pub fn selected(&self) -> Option<&Path> {
         self.selected.as_deref()
+    }
+
+    /// Everything selected, in the tree's order, for tests and multi-entry actions.
+    pub fn selection(&self) -> Vec<PathBuf> {
+        self.rows
+            .iter()
+            .map(|row| &row.entry.path)
+            .filter(|path| self.selected.as_ref() == Some(*path) || self.marked.contains(*path))
+            .cloned()
+            .collect()
+    }
+
+    /// What's been typed to jump to a name, for tests.
+    pub fn speed_search(&self) -> Option<&str> {
+        self.speed.as_deref()
+    }
+
+    fn is_selected(&self, path: &Path) -> bool {
+        self.selected.as_deref() == Some(path) || self.marked.contains(path)
+    }
+
+    /// A click, with Cmd to add or take away one entry and Shift to select a range.
+    fn click_row(&mut self, path: PathBuf, modifiers: gpui::Modifiers, cx: &mut Context<Self>) {
+        self.speed = None;
+        if modifiers.secondary(cx) {
+            if self.is_selected(&path) && self.selection().len() > 1 {
+                self.marked.remove(&path);
+                if self.selected.as_ref() == Some(&path) {
+                    self.selected = self.marked.iter().next().cloned();
+                }
+            } else {
+                if let Some(lead) = self.selected.take() {
+                    self.marked.insert(lead);
+                }
+                self.selected = Some(path.clone());
+                self.anchor = Some(path);
+            }
+        } else if modifiers.shift {
+            let anchor = self.anchor.clone().or_else(|| self.selected.clone());
+            let index = |p: &PathBuf| self.rows.iter().position(|r| &r.entry.path == p);
+            if let (Some(from), Some(to)) = (anchor.as_ref().and_then(index), index(&path)) {
+                let (low, high) = (from.min(to), from.max(to));
+                self.marked = self.rows[low..=high]
+                    .iter()
+                    .map(|r| r.entry.path.clone())
+                    .collect();
+            }
+            self.selected = Some(path);
+        } else {
+            self.marked.clear();
+            self.selected = Some(path.clone());
+            self.anchor = Some(path);
+        }
+    }
+
+    /// Shift+arrow: moves the selection's end, keeping what it passes selected.
+    fn extend_selection(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let Some(index) = self.selected_row_index() else {
+            return;
+        };
+        let next = if forward {
+            (index + 1).min(self.rows.len().saturating_sub(1))
+        } else {
+            index.saturating_sub(1)
+        };
+        let lead = self.rows[index].entry.path.clone();
+        if self.anchor.is_none() {
+            self.anchor = Some(lead.clone());
+        }
+        let next_path = self.rows[next].entry.path.clone();
+        // Going back over the selection shrinks it.
+        if self.marked.contains(&next_path) && self.anchor.as_ref() != Some(&lead) {
+            self.marked.remove(&lead);
+        } else {
+            self.marked.insert(lead);
+        }
+        self.marked.remove(&next_path);
+        self.selected = Some(next_path);
+        self.sync_nav();
+        cx.notify();
+    }
+
+    /// Typed while the tree has the keyboard: jumps to the first name containing it, from the
+    /// selection on.
+    fn speed_type(&mut self, text: &str, cx: &mut Context<Self>) {
+        let mut query = self.speed.clone().unwrap_or_default();
+        query.push_str(text);
+        self.speed = Some(query);
+        self.jump_to_match(0, true, cx);
+    }
+
+    /// Selects the next name matching the speed search, starting `skip` rows past the selection.
+    fn jump_to_match(&mut self, skip: usize, forward: bool, cx: &mut Context<Self>) {
+        let Some(query) = self.speed.as_ref().map(|q| q.to_lowercase()) else {
+            return;
+        };
+        let count = self.rows.len();
+        if count == 0 {
+            return;
+        }
+        let start = self.selected_row_index().unwrap_or(0);
+        let found = (0..count)
+            .map(|step| {
+                let step = step + skip;
+                if forward {
+                    (start + step) % count
+                } else {
+                    (start + count * 2 - step) % count
+                }
+            })
+            .find(|&i| self.rows[i].entry.name.to_lowercase().contains(&query));
+        if let Some(index) = found {
+            self.marked.clear();
+            self.select_row(index, cx);
+        }
+        cx.notify();
     }
 
     /// The visible entries' names, indented by depth, for tests.
@@ -419,6 +564,8 @@ impl ProjectPanel {
         if self.rows.is_empty() {
             return;
         }
+        self.marked.clear();
+        self.anchor = None;
         let next = match self.selected_row_index() {
             None => 0,
             Some(index) if forward => (index + 1).min(self.rows.len() - 1),
@@ -691,6 +838,16 @@ impl ProjectPanel {
 
     /// Asks, then moves the selection to the Trash.
     fn delete_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let root = self.tree.as_ref().map(|t| t.root().to_path_buf());
+        let several: Vec<PathBuf> = self
+            .selection()
+            .into_iter()
+            .filter(|p| Some(p) != root.as_ref())
+            .collect();
+        if several.len() > 1 {
+            self.delete_paths(several, window, cx);
+            return;
+        }
         let Some(index) = self.selected_row_index() else {
             return;
         };
@@ -739,9 +896,73 @@ impl ProjectPanel {
         .detach();
     }
 
+    /// Asks once, then moves several entries to the Trash.
+    fn delete_paths(&mut self, paths: Vec<PathBuf>, window: &mut Window, cx: &mut Context<Self>) {
+        // Something inside a folder that's going too needn't be moved on its own.
+        let paths: Vec<PathBuf> = paths
+            .iter()
+            .filter(|p| {
+                !paths
+                    .iter()
+                    .any(|other| other != *p && p.starts_with(other))
+            })
+            .cloned()
+            .collect();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Move {} items to the Trash?", paths.len()),
+            None,
+            &["Move to Trash", "Cancel"],
+            cx,
+        );
+        let trash = self.trash.clone();
+        cx.spawn_in(window, async move |this, cx| {
+            if answer.await != Ok(0) {
+                return;
+            }
+            let moved = paths.clone();
+            let result = cx
+                .background_spawn(async move { moved.iter().try_for_each(|path| trash(path)) })
+                .await;
+            this.update_in(cx, |this, window, cx| {
+                if let Err(error) = result {
+                    this.show_error(format!("{error:#}"), cx);
+                }
+                this.marked.clear();
+                if let Some(workspace) = this.workspace.upgrade() {
+                    let gone = paths.clone();
+                    window.defer(cx, move |window, cx| {
+                        workspace.update(cx, |workspace, cx| {
+                            for path in &gone {
+                                workspace.close_clean_tabs_under(path, window, cx);
+                            }
+                        });
+                    });
+                }
+                let mut parents: Vec<PathBuf> = paths
+                    .iter()
+                    .filter_map(|p| p.parent().map(Path::to_path_buf))
+                    .collect();
+                parents.sort();
+                parents.dedup();
+                for parent in parents {
+                    this.reload_dir(parent, cx);
+                }
+                this.refresh_git(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn copy_path(&mut self, cx: &mut Context<Self>) {
-        if let Some(path) = &self.selected {
-            cx.write_to_clipboard(ClipboardItem::new_string(path.display().to_string()));
+        let paths: Vec<String> = self
+            .selection()
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect();
+        if !paths.is_empty() {
+            cx.write_to_clipboard(ClipboardItem::new_string(paths.join("\n")));
         }
     }
 
@@ -870,7 +1091,7 @@ impl ProjectPanel {
             return self.render_input_row(row.depth, theme);
         }
 
-        let selected = self.selected.as_ref() == Some(&row.entry.path);
+        let selected = self.is_selected(&row.entry.path);
         let is_dir = row.entry.kind == EntryKind::Dir;
         let is_root = row_index == 0;
         let color = Self::row_color(row, git, theme);
@@ -962,7 +1183,7 @@ impl ProjectPanel {
             .when(selected, |r| r.bg(selection))
             .when(!selected, |r| r.hover(|r| r.bg(theme.hover)))
             .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                this.selected = Some(click_path.clone());
+                this.click_row(click_path.clone(), event.modifiers(), cx);
                 this.pending_reveal = None;
                 window.focus(&this.focus_handle, cx);
                 if event.click_count() >= 2 {
@@ -1116,6 +1337,9 @@ impl Render for ProjectPanel {
 
         let mut key_context = KeyContext::new_with_defaults(cx.platform_info().os);
         key_context.add("ProjectPanel");
+        if self.speed.is_some() && self.edit.is_none() {
+            key_context.add("speed_search");
+        }
         if self.edit.is_some() {
             key_context.add("editing");
         }
@@ -1175,6 +1399,47 @@ impl Render for ProjectPanel {
             .flex_col()
             .size_full()
             .on_action(cx.listener(|this, _: &SelectNext, _, cx| this.select_relative(true, cx)))
+            .on_action(
+                cx.listener(|this, _: &ExtendSelectionUp, _, cx| this.extend_selection(false, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &ExtendSelectionDown, _, cx| this.extend_selection(true, cx)),
+            )
+            .on_action(cx.listener(|this, _: &ClearSpeedSearch, _, cx| {
+                this.speed = None;
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &SpeedSearchBackspace, _, cx| {
+                if let Some(query) = &mut this.speed {
+                    query.pop();
+                    if query.is_empty() {
+                        this.speed = None;
+                    }
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &NextMatch, _, cx| this.jump_to_match(1, true, cx)))
+            .on_action(
+                cx.listener(|this, _: &PreviousMatch, _, cx| this.jump_to_match(1, false, cx)),
+            )
+            // Letters typed with no shortcut behind them search the names shown.
+            .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if this.edit.is_some() {
+                    return;
+                }
+                let modifiers = event.keystroke.modifiers;
+                if modifiers.control || modifiers.alt || modifiers.platform || modifiers.function {
+                    return;
+                }
+                let Some(text) = event.keystroke.key_char.as_ref() else {
+                    return;
+                };
+                if text.chars().any(|c| c.is_control()) || (text == " " && this.speed.is_none()) {
+                    return;
+                }
+                this.speed_type(text, cx);
+                cx.stop_propagation();
+            }))
             .on_action(cx.listener(|this, _: &SelectPrevious, _, cx| {
                 this.select_relative(false, cx);
             }))
@@ -1222,7 +1487,22 @@ impl Render for ProjectPanel {
                     .border_b_1()
                     .border_color(theme.border)
                     .font_weight(gpui::FontWeight::MEDIUM)
-                    .child("Project"),
+                    .child("Project")
+                    .when_some(self.speed.clone(), |header, query| {
+                        header.child(
+                            div()
+                                .ml_auto()
+                                .px(px(6.))
+                                .py(px(1.))
+                                .rounded(px(4.))
+                                .bg(theme.surface_raised)
+                                .border_1()
+                                .border_color(theme.accent)
+                                .text_color(theme.text)
+                                .font_weight(gpui::FontWeight::NORMAL)
+                                .child(format!("Search for: {query}")),
+                        )
+                    }),
             )
             .child(body)
             .children(menu)

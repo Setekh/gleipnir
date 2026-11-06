@@ -588,3 +588,70 @@ fn completion_comes_from_the_server_with_its_import_and_snippet(cx: &mut TestApp
         "inside the parentheses"
     );
 }
+
+#[gpui::test]
+fn find_in_files_searches_the_project_and_fills_the_find_panel(cx: &mut TestAppContext) {
+    let (_dir, mut s) = setup(cx);
+    s.open("src/main.rs", 0, 0);
+    let workspace = s.workspace.clone();
+    let project =
+        s.cx.update(|_, cx| workspace.read(cx).project().cloned().unwrap());
+    run_until(s.cx, |cx| {
+        cx.update(|_, cx| project.update(cx, |p, _| p.files().len() >= 3))
+    });
+    let find = if cfg!(target_os = "macos") {
+        "cmd-shift-f"
+    } else {
+        "ctrl-shift-f"
+    };
+    s.cx.simulate_keystrokes(find);
+    let modal =
+        s.cx.update(|_, cx| workspace.read(cx).active_modal::<FindInFiles>())
+            .expect("the Find in Files popup");
+    s.cx.update(|_, cx| modal.update(cx, |m, cx| m.set_query("area", cx)));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        s.cx.executor()
+            .advance_clock(std::time::Duration::from_millis(200));
+        run_until(s.cx, |_| true);
+        if s.cx.update(|_, cx| !modal.read(cx).is_searching()) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the search never finished"
+        );
+    }
+    let labels = s.cx.update(|_, cx| modal.read(cx).labels());
+    assert_eq!(
+        labels,
+        [
+            "src/main.rs:3: let a = shapes::area(2.0);",
+            "src/main.rs:4: let b = shapes::area(3.0);",
+            "src/shapes.rs:1: pub fn area(r: f64) -> f64 {",
+        ]
+    );
+    // Down to the declaration, and Enter opens it there.
+    s.cx.simulate_keystrokes("down down enter");
+    run_until(s.cx, |_| true);
+    assert_eq!(s.active(), Some(("src/shapes.rs".into(), 0, 7)));
+
+    // Cmd+Enter moves the results to the Find panel instead.
+    s.cx.simulate_keystrokes(find);
+    let modal =
+        s.cx.update(|_, cx| workspace.read(cx).active_modal::<FindInFiles>())
+            .unwrap();
+    s.cx.update(|_, cx| modal.update(cx, |m, cx| m.set_query("shapes::", cx)));
+    s.cx.executor()
+        .advance_clock(std::time::Duration::from_millis(200));
+    run_until(s.cx, |cx| cx.update(|_, cx| !modal.read(cx).is_searching()));
+    let to_panel = if cfg!(target_os = "macos") {
+        "cmd-enter"
+    } else {
+        "ctrl-enter"
+    };
+    s.cx.simulate_keystrokes(to_panel);
+    let state = s.panel_state(USAGES_PANEL);
+    assert_eq!(state["title"], "Occurrences of 'shapes::'");
+    assert_eq!(state["usages"].as_array().unwrap().len(), 2);
+}

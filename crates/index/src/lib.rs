@@ -1,5 +1,6 @@
 //! What's in the project, independent of the UI: its files, their git status, and how they change.
 
+pub mod find;
 pub mod fs_ops;
 pub mod fuzzy;
 pub mod git;

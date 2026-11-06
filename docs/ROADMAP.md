@@ -43,8 +43,6 @@ Still open from M1:
 - **CI has never run,** because the repository is local. `script/check` covers the same ground.
 - **The frame budgets are CPU-side measurements.** `script/e2e perf` times layout and painting, not
   GPU submission or what reaches the display.
-- **IntelliJ's double-tap Option/Ctrl to clone a caret** uses Cmd+Alt+arrow or Ctrl+Alt+arrow for
-  now. It can share the gesture detector from item 3.3.
 
 ## M2: Workspace shell
 
@@ -61,12 +59,6 @@ Status: built and passing on macOS. See the notes below the table for what's sti
 | 2.5 | Project panel: file ops, reveal active file, gitignored and git status colours | Create, rename, delete and move all work, with confirmation for delete |
 | 2.6 | Status bar and breadcrumbs | Shows position, encoding, line ending and indent; breadcrumbs are clickable |
 
-Still open from M2:
-
-- **Tabs can't be dragged** to reorder them or move them between panes. Splitting copies the
-  current tab, and closing removes it, which covers moving one by hand.
-- **The tree selects one entry at a time.** Multi-select, and typing to jump to a name as IntelliJ
-  does, aren't built.
 
 ## M3: Search Everywhere
 
@@ -84,9 +76,6 @@ about four seconds in the background, and a search over 100,000 paths takes unde
 | 3.5 | Tree-sitter symbol index, all five languages | Finds symbols with no language server running |
 | 3.6 | Direct entry points: go to file, symbol and action; recent files | Each opens the popup on the right tab |
 
-Still open from M3:
-
-- **There's no full-text search** (Find in Files) yet. It's on the list for later.
 
 ## M4: Packages and SDKs
 
@@ -131,7 +120,7 @@ diagnostics, rename and reformat.
 | 5.9 | File structure popup, LSP symbols in Search Everywhere | LSP results replace index entries without duplicates |
 | 5.10 | Rename, code actions, format | Multi-file rename applies as one operation |
 
-Shortcuts, IntelliJ's macOS ones: Cmd+B declaration or usages, Cmd+Alt+B implementations, Cmd+Shift+B
+Shortcuts, IntelliJ's macOS ones: Cmd+Shift+F Find in Files, Cmd+B declaration or usages, Cmd+Alt+B implementations, Cmd+Shift+B
 type declaration, Alt+F7 Find Usages, Cmd+Alt+F7 Show Usages, Cmd+F12 file structure, Cmd+6
 Problems, F2 and Shift+F2 next and previous problem, Shift+F6 rename, Alt+Enter intentions,
 Cmd+Alt+L reformat, Ctrl+Space completion, F1 quick documentation, Cmd+P parameter info, Cmd+[ and
@@ -139,8 +128,6 @@ Cmd+] back and forward.
 
 Still open from M5:
 
-- **Not built yet:** highlighting the usages of the name under the cursor, inlay hints and semantic
-  highlighting.
 - **rust-analyzer reports type errors on save**, from `cargo check`, as it does everywhere (this is
   how rust-analyzer works rather than something to fix); only its
   own diagnostics show while typing.
@@ -212,11 +199,28 @@ Done in the first batch:
 - Already done, and only out of date here: the prompt when saving over a change on disk (M2), the
   panels beyond Project, symbols from servers in search (M5), and run targets that run (M6).
 
-Next: highlighting usages of the name under the cursor, inlay hints, semantic highlighting,
-double-tap Option/Ctrl to clone a caret, dragging tabs, multi-select and type-to-jump in the project
-tree, and Find in Files. Then the debugger's: editable run configurations and tests as targets,
-attaching, exception breakpoints, setting values, program input, readable Rust values, and
-third-party packages.
+Done in the second batch:
+
+- **The uses of the name under the cursor** are highlighted once it rests (`documentHighlight`).
+- **Inlay hints** show types and parameter names in the text, in a quieter color. The editor's tab
+  map became a general map between the file's columns and the screen's, so the cursor, clicks and
+  selection step around hints as they do tabs. Hints move with edits and are asked for again
+  when typing pauses. Servers that only give them when asked (gopls, tsserver, ols) are asked in
+  their manifests.
+- **Semantic highlighting** lays the server's colors over the syntax tree's where it knows more,
+  such as which names are types, parameters or fields. Files over 20,000 lines keep the tree's.
+- **Double-tap Option** (Ctrl on Linux), held on the second press, makes the arrows add carets.
+- **Tabs drag** to reorder them, onto another pane's tabs or editor to move them there, and a pane
+  emptied that way closes.
+- **The project tree selects several entries**, with Cmd-click, Shift-click and Shift+arrows, and
+  deletes or copies the paths of them all. **Typing in it jumps to a name**, with Up and Down for
+  the next and previous match.
+- **Find in Files** (Cmd+Shift+F) searches as you type, with case, whole-word and regex toggles, a
+  file mask, unsaved edits searched as they stand, and a preview of the selected match. Enter opens
+  it; Cmd+Enter moves the results to the Find panel.
+
+Next, the debugger's: editable run configurations and tests as targets, attaching, exception
+breakpoints, setting values, program input, readable Rust values; and third-party packages.
 
 ## Later
 

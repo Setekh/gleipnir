@@ -3,12 +3,14 @@
 
 mod apply;
 mod convert;
+mod find_in_files;
 mod panels;
 mod picker;
 mod provider;
 mod rename;
 
 pub use apply::apply_workspace_edit;
+pub use find_in_files::FindInFiles;
 pub use panels::{PROBLEMS_PANEL, ProblemsPanel, USAGES_PANEL, Usage, UsagesPanel, previews};
 pub use picker::{Picker, PickerItem};
 pub use provider::LspSemantics;
@@ -41,11 +43,13 @@ actions!(
         Reformat,
         ShowProblems,
         RestartLanguageServer,
+        FindInPath,
     ]
 );
 
 pub fn bind_keys(cx: &mut App) {
     picker::bind_keys(cx);
+    find_in_files::bind_keys(cx);
     panels::bind_keys(cx);
     rename::bind_keys(cx);
     let editor = Some("Editor");
@@ -58,6 +62,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-f7", ShowUsages, None),
         KeyBinding::new("cmd-f12", FileStructure, None),
         KeyBinding::new("cmd-6", ShowProblems, None),
+        KeyBinding::new("cmd-shift-f", FindInPath, None),
         KeyBinding::new("shift-f6", Rename, editor),
         KeyBinding::new("alt-enter", ShowIntentions, editor),
         KeyBinding::new("cmd-alt-l", Reformat, editor),
@@ -71,6 +76,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-alt-f7", ShowUsages, None),
         KeyBinding::new("ctrl-f12", FileStructure, None),
         KeyBinding::new("alt-6", ShowProblems, None),
+        KeyBinding::new("ctrl-shift-f", FindInPath, None),
         KeyBinding::new("shift-f6", Rename, editor),
         KeyBinding::new("alt-enter", ShowIntentions, editor),
         KeyBinding::new("ctrl-alt-l", Reformat, editor),
@@ -107,6 +113,7 @@ pub fn add_to_workspace(
     workspace.register_action(|w, _: &Rename, window, cx| rename::start(w, window, cx));
     workspace.register_action(|w, _: &ShowIntentions, window, cx| show_intentions(w, window, cx));
     workspace.register_action(|w, _: &Reformat, window, cx| reformat(w, window, cx));
+    workspace.register_action(|w, _: &FindInPath, window, cx| find_in_files::open(w, window, cx));
     workspace.register_action(|w, _: &ShowProblems, window, cx| {
         w.toggle_panel(PROBLEMS_PANEL, window, cx)
     });
@@ -171,7 +178,23 @@ fn attach(
         }))
     });
     servers.update(cx, |servers, cx| servers.register_buffer(&buffer, cx));
+    editor.update(cx, |editor, cx| editor.refresh_annotations(cx));
+    // Hints and semantic colors are asked for again when the file's server changes state, as
+    // a server answers emptily until it's loaded the project.
+    let weak_editor = editor.downgrade();
+    let watched = buffer.clone();
+    let status = cx.subscribe(&servers, move |_, _, event, cx| {
+        let LanguageServerEvent::StatusChanged(package) = event else {
+            return;
+        };
+        let ours =
+            LanguageServers::server_name_for(&watched, cx).is_some_and(|(p, _)| p == *package);
+        if ours && let Some(editor) = weak_editor.upgrade() {
+            editor.update(cx, |editor, cx| editor.refresh_annotations(cx));
+        }
+    });
     vec![
+        status,
         // An untitled file that's been saved now has a language and a path.
         cx.observe(&buffer, move |_, buffer, cx| {
             servers.update(cx, |servers, cx| servers.register_buffer(&buffer, cx));

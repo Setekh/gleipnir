@@ -246,4 +246,5 @@ pub fn bind_keys(cx: &mut App) {
         .collect();
     cx.bind_keys(bindings);
     crate::semantics::popup_bindings(cx);
+    crate::caret_gesture::bind_keys(cx);
 }

@@ -669,5 +669,6 @@ fn jumping_to_a_line_far_away_centres_it(cx: &mut TestAppContext) {
     );
 }
 
+mod annotations;
 mod decorations;
 mod semantics;

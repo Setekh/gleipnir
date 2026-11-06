@@ -40,6 +40,8 @@ pub(crate) enum Drag {
 /// so a blinking cursor or a mouse move doesn't re-run the query.
 pub(crate) struct HighlightCache {
     pub generation: u64,
+    /// The semantic tokens' generation the spans include.
+    pub tokens: u64,
     pub version: u64,
     pub lines: Range<usize>,
     pub spans: Rc<Vec<HighlightSpan>>,
@@ -67,6 +69,12 @@ pub struct EditorState {
     pub signature: Option<String>,
     /// Each as `line:column severity: message`, one-based.
     pub diagnostics: Vec<String>,
+    /// Inlay hints, as `line: text`, one-based.
+    pub inlay_hints: Vec<String>,
+    /// The other uses of the name under the cursor, as their text.
+    pub usage_highlights: Vec<String>,
+    /// How many ranges the server colored.
+    pub semantic_tokens: usize,
     /// Lines with breakpoints, one-based.
     pub breakpoints: Vec<usize>,
     /// The line execution is stopped on, one-based.
@@ -123,6 +131,8 @@ pub struct EditorView {
     blink: Option<Task<()>>,
     pub(crate) semantics: crate::semantics::SemanticsState,
     pub(crate) decorations: Option<Rc<dyn crate::decorations::DecorationProvider>>,
+    pub(crate) annotations: crate::annotations::Annotations,
+    pub(crate) caret_gesture: crate::caret_gesture::CaretGesture,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -157,6 +167,8 @@ impl EditorView {
             blink: None,
             semantics: Default::default(),
             decorations: None,
+            annotations: Default::default(),
+            caret_gesture: Default::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -260,6 +272,14 @@ impl EditorView {
                     )
                 })
                 .collect(),
+            inlay_hints: self.inlay_labels(cx),
+            usage_highlights: self
+                .annotations
+                .highlights
+                .iter()
+                .map(|r| buffer.slice(r.clone()))
+                .collect(),
+            semantic_tokens: self.semantic_token_count(),
             breakpoints: self.decorations.as_ref().map_or_else(Vec::new, |d| {
                 d.breakpoints(cx).iter().map(|b| b.line + 1).collect()
             }),
@@ -307,6 +327,7 @@ impl EditorView {
                 self.marked = None;
                 self.expand_stack.clear();
             }
+            self.annotations_edited(edits, cx);
             cx.notify();
         }
     }
@@ -334,6 +355,7 @@ impl EditorView {
         self.semantics.completion = None;
         self.semantics.hover = None;
         self.check_signature(cx);
+        self.request_usage_highlights(cx);
         self.autoscroll = true;
         self.buffer
             .update(cx, |buffer, _| buffer.break_undo_group());
@@ -417,6 +439,9 @@ impl EditorView {
         }
         if self.has_popups() {
             context.add("showing_popups");
+        }
+        if self.caret_gesture.active {
+            context.add("cloning_carets");
         }
         context
     }
@@ -946,6 +971,20 @@ impl Render for EditorView {
             .key_context(self.key_context(cx))
             .track_focus(&self.focus_handle)
             .size_full()
+            .on_modifiers_changed(cx.listener(
+                |this, event: &gpui::ModifiersChangedEvent, _, cx| {
+                    let (ours, only) = crate::caret_gesture::gesture_modifier(&event.modifiers);
+                    if this
+                        .caret_gesture
+                        .modifiers_changed(ours, only, std::time::Instant::now())
+                    {
+                        cx.notify();
+                    }
+                },
+            ))
+            .capture_key_down(
+                cx.listener(|this, _: &gpui::KeyDownEvent, _, _| this.caret_gesture.key_pressed()),
+            )
             .on_action(cx.listener(|this, _: &SelectAll, _, cx| {
                 let len = this.buffer.read(cx).buffer().len();
                 this.selections = SelectionSet::single(Selection::new(0, len));

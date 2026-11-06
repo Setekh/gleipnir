@@ -13,6 +13,7 @@ gleipnir-core.workspace = true
 gleipnir-editor.workspace = true
 gleipnir-index.workspace = true
 gleipnir-lsp.workspace = true
+gleipnir-syntax.workspace = true
 gleipnir-text.workspace = true
 gleipnir-ui.workspace = true
 gleipnir-workspace.workspace = true

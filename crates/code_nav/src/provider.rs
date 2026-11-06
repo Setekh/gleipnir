@@ -151,4 +151,59 @@ impl SemanticsProvider for LspSemantics {
         let request = self.servers.read(cx).signature_help(buffer, offset, cx);
         cx.background_spawn(async move { Ok(request.await?.and_then(convert::signature_info)) })
     }
+
+    fn document_highlights(
+        &self,
+        buffer: &Entity<BufferModel>,
+        offset: usize,
+        cx: &mut App,
+    ) -> Task<Result<Vec<std::ops::Range<usize>>>> {
+        let request = self
+            .servers
+            .read(cx)
+            .document_highlights(buffer, offset, cx);
+        let buffer = buffer.clone();
+        cx.spawn(async move |cx| {
+            let ranges = request.await?;
+            Ok(buffer.read_with(cx, |model, _| {
+                ranges
+                    .into_iter()
+                    .map(|r| gleipnir_core::range_to_offsets(model.buffer(), &r))
+                    .collect()
+            }))
+        })
+    }
+
+    fn inlay_hints(
+        &self,
+        buffer: &Entity<BufferModel>,
+        cx: &mut App,
+    ) -> Task<Result<Vec<gleipnir_editor::InlayHint>>> {
+        let request = self.servers.read(cx).inlay_hints(buffer, cx);
+        let buffer = buffer.clone();
+        cx.spawn(async move |cx| {
+            let hints = request.await?;
+            Ok(buffer.read_with(cx, |model, _| {
+                hints
+                    .into_iter()
+                    .filter_map(|h| convert::inlay_hint(model.buffer(), h))
+                    .collect()
+            }))
+        })
+    }
+
+    fn semantic_tokens(
+        &self,
+        buffer: &Entity<BufferModel>,
+        cx: &mut App,
+    ) -> Task<Result<gleipnir_editor::SemanticTokens>> {
+        let request = self.servers.read(cx).semantic_tokens(buffer, cx);
+        let buffer = buffer.clone();
+        cx.spawn(async move |cx| {
+            let (types, tokens) = request.await?;
+            Ok(buffer.read_with(cx, |model, _| {
+                convert::semantic_tokens(model.buffer(), &types, &tokens)
+            }))
+        })
+    }
 }

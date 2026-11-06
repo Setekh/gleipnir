@@ -163,6 +163,7 @@ struct Decorations {
 
 pub(crate) struct Prepainted {
     geometry: Rc<FrameGeometry>,
+    usage_rects: Vec<Bounds<Pixels>>,
     decorations: Option<Decorations>,
     gutter_numbers: Vec<(Pixels, ShapedLine, Pixels)>,
     active_lines: Vec<Pixels>,
@@ -244,11 +245,48 @@ fn runs_for_line(
             display_at = display_end;
         }
     }
+    // Text after the last source byte, like an inlay at the end of the line, still needs a run.
+    if display_at < display_len && !runs.is_empty() {
+        runs.push(run(display_len - display_at, default, false));
+    }
     // An empty run list is invalid for shaping, even with no text.
     if runs.is_empty() {
         runs.push(run(display_len, default, false));
     }
     runs
+}
+
+/// Recolors the parts of a line's runs that are inserted text, like inlay hints, splitting runs at
+/// their edges.
+fn color_inserted(runs: Vec<TextRun>, inserted: &[Range<usize>], color: Hsla) -> Vec<TextRun> {
+    let mut out = Vec::with_capacity(runs.len() + inserted.len() * 2);
+    let mut at = 0;
+    for run in runs {
+        let end = at + run.len;
+        let mut start = at;
+        // Cut points inside this run, from inserted ranges' edges.
+        let mut cuts: Vec<usize> = inserted
+            .iter()
+            .flat_map(|r| [r.start, r.end])
+            .filter(|&c| c > start && c < end)
+            .collect();
+        cuts.push(end);
+        cuts.sort_unstable();
+        cuts.dedup();
+        for cut in cuts {
+            let inside = inserted.iter().any(|r| r.start <= start && cut <= r.end);
+            let mut piece = run.clone();
+            piece.len = cut - start;
+            if inside {
+                piece.color = color;
+                piece.underline = None;
+            }
+            out.push(piece);
+            start = cut;
+        }
+        at = end;
+    }
+    out
 }
 
 fn floor_boundary(text: &str, mut index: usize) -> usize {
@@ -360,8 +398,12 @@ impl Element for EditorElement {
             let snapshot = model.snapshot();
             let generation = model.syntax().map_or(0, |s| s.generation());
             let version = buffer.version();
+            let tokens_generation = view.annotations.tokens_generation;
             let cached = view.highlights.as_ref().filter(|c| {
-                c.generation == generation && c.version == version && c.lines == visible
+                c.generation == generation
+                    && c.version == version
+                    && c.lines == visible
+                    && c.tokens == tokens_generation
             });
             let spans = match cached {
                 Some(cache) => cache.spans.clone(),
@@ -371,9 +413,15 @@ impl Element for EditorElement {
                     let spans = model
                         .syntax()
                         .and_then(|s| Some((s.language(), s.tree()?)))
-                        .map(|(language, tree)| highlights(language, tree, &snapshot, range))
+                        .map(|(language, tree)| {
+                            highlights(language, tree, &snapshot, range.clone())
+                        })
                         .unwrap_or_default();
-                    Rc::new(spans)
+                    Rc::new(crate::annotations::overlay(
+                        &spans,
+                        &view.annotations.tokens,
+                        range,
+                    ))
                 }
             };
 
@@ -389,6 +437,7 @@ impl Element for EditorElement {
                 .map(|s| buffer.offset_to_point(s.head).line)
                 .collect();
 
+            let inlays = view.annotations.inlays.clone();
             let mut lines = Vec::with_capacity(visible.len());
             let mut gutter_numbers = Vec::with_capacity(visible.len());
             let mut active_lines = Vec::new();
@@ -399,7 +448,13 @@ impl Element for EditorElement {
                 if text.len() > MAX_DISPLAY_BYTES {
                     text.truncate(floor_boundary(&text, MAX_DISPLAY_BYTES));
                 }
-                let (display, tabs) = TabMap::expand(&text, tab_size);
+                let line_inlays: Vec<(usize, &str)> = inlays
+                    .iter()
+                    .skip_while(|h| h.offset < line_start)
+                    .take_while(|h| h.offset <= line_start + text.len())
+                    .map(|h| (h.offset - line_start, h.label.as_str()))
+                    .collect();
+                let (display, tabs) = TabMap::expand_with(&text, tab_size, &line_inlays);
                 let marked = view.marked.as_ref().and_then(|m| {
                     let line_end = line_start + text.len();
                     (m.start < line_end && m.end > line_start).then(|| {
@@ -409,7 +464,7 @@ impl Element for EditorElement {
                         )
                     })
                 });
-                let runs = runs_for_line(
+                let mut runs = runs_for_line(
                     &text,
                     display.len(),
                     line_start,
@@ -419,6 +474,9 @@ impl Element for EditorElement {
                     &font,
                     &theme,
                 );
+                if !line_inlays.is_empty() {
+                    runs = color_inserted(runs, &tabs.inserted(), theme.inline_value);
+                }
                 let shaped = window.text_system().shape_line(
                     SharedString::from(display),
                     font_size,
@@ -529,6 +587,21 @@ impl Element for EditorElement {
                 text_origin_x + laid_out.shaped.x_for_index(laid_out.tabs.to_display(col))
                     - scroll.x
             };
+            let mut usage_rects = Vec::new();
+            for range in &view.annotations.highlights {
+                let start = buffer.offset_to_point(range.start);
+                let end = buffer.offset_to_point(range.end);
+                if start.line != end.line || !(first_line..last_line).contains(&start.line) {
+                    continue;
+                }
+                let top = bounds.top() + line_height * start.line as f32 - scroll.y;
+                let left = x_of(start.line, start.col);
+                let right = x_of(start.line, end.col);
+                usage_rects.push(Bounds::new(
+                    point(left, top),
+                    size((right - left).max(px(0.)), line_height),
+                ));
+            }
             for selection in view.selections.iter() {
                 let range = selection.range();
                 let start = buffer.offset_to_point(range.start);
@@ -571,6 +644,7 @@ impl Element for EditorElement {
 
             view.highlights = Some(HighlightCache {
                 generation,
+                tokens: tokens_generation,
                 version,
                 lines: visible,
                 spans,
@@ -580,6 +654,7 @@ impl Element for EditorElement {
             Prepainted {
                 geometry,
                 decorations,
+                usage_rects,
                 gutter_numbers,
                 active_lines,
                 selection_rects,
@@ -656,6 +731,9 @@ impl Element for EditorElement {
                 bounds: text_bounds,
             }),
             |window| {
+                for rect in &prepainted.usage_rects {
+                    window.paint_quad(fill(*rect, theme.usage_highlight).corner_radii(px(2.)));
+                }
                 for rect in &prepainted.selection_rects {
                     window.paint_quad(fill(*rect, theme.editor_selection));
                 }

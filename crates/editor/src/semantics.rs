@@ -84,6 +84,9 @@ pub struct Triggers {
     pub signature: Vec<char>,
 }
 
+/// Byte ranges and the colors a server gives them, sorted.
+pub type SemanticTokens = Vec<(Range<usize>, gleipnir_syntax::HighlightKind)>;
+
 pub trait SemanticsProvider {
     fn triggers(&self, buffer: &Entity<BufferModel>, cx: &App) -> Triggers;
     fn completions(
@@ -112,6 +115,31 @@ pub trait SemanticsProvider {
         offset: usize,
         cx: &mut App,
     ) -> Task<Result<Option<SignatureInfo>>>;
+    /// The uses of the name at `offset` in this file, to highlight while the cursor's on it.
+    fn document_highlights(
+        &self,
+        _buffer: &Entity<BufferModel>,
+        _offset: usize,
+        _cx: &mut App,
+    ) -> Task<Result<Vec<Range<usize>>>> {
+        Task::ready(Ok(Vec::new()))
+    }
+    /// Types and parameter names to show in the text, like `: i32` after a variable.
+    fn inlay_hints(
+        &self,
+        _buffer: &Entity<BufferModel>,
+        _cx: &mut App,
+    ) -> Task<Result<Vec<crate::InlayHint>>> {
+        Task::ready(Ok(Vec::new()))
+    }
+    /// Colors from the server's understanding of names, laid over the syntax tree's.
+    fn semantic_tokens(
+        &self,
+        _buffer: &Entity<BufferModel>,
+        _cx: &mut App,
+    ) -> Task<Result<SemanticTokens>> {
+        Task::ready(Ok(Vec::new()))
+    }
 }
 
 pub(crate) struct CompletionMenu {

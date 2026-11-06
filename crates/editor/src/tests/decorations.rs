@@ -163,3 +163,35 @@ fn without_a_provider_the_gutter_selects_lines_as_before(cx: &mut TestAppContext
     let state = editor.read_with(cx, |e, cx| e.state(cx));
     assert!(state.breakpoints.is_empty());
 }
+
+#[gpui::test]
+fn tapping_the_modifier_then_holding_it_makes_arrows_add_carets(cx: &mut TestAppContext) {
+    let (editor, cx) = setup("one\ntwo\nthree\n", None, cx);
+    let held = if cfg!(target_os = "macos") {
+        Modifiers::alt()
+    } else {
+        Modifiers::control()
+    };
+    let arrow = if cfg!(target_os = "macos") {
+        "alt-down"
+    } else {
+        "ctrl-down"
+    };
+    // Tap, then press and hold.
+    cx.simulate_modifiers_change(held);
+    cx.simulate_modifiers_change(Modifiers::none());
+    cx.simulate_modifiers_change(held);
+    cx.run_until_parked();
+    let active = editor.read_with(cx, |e, _| e.caret_gesture.active);
+    assert!(active, "the gesture is on");
+    cx.simulate_keystrokes(arrow);
+    cx.simulate_keystrokes(arrow);
+    assert_eq!(heads(&editor, cx).len(), 3);
+    cx.simulate_modifiers_change(Modifiers::none());
+
+    // Without the tap, the same keys do what they normally do.
+    cx.simulate_keystrokes("escape");
+    cx.simulate_modifiers_change(held);
+    cx.simulate_keystrokes(arrow);
+    assert_eq!(heads(&editor, cx).len(), 1);
+}

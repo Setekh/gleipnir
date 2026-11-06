@@ -1959,6 +1959,7 @@ dependencies = [
  "gleipnir-editor",
  "gleipnir-index",
  "gleipnir-lsp",
+ "gleipnir-syntax",
  "gleipnir-test-support",
  "gleipnir-text",
  "gleipnir-ui",
@@ -2042,8 +2043,10 @@ dependencies = [
  "anyhow",
  "futures",
  "gleipnir-syntax",
+ "globset",
  "ignore",
  "notify",
+ "regex",
  "tempfile",
  "trash",
 ]

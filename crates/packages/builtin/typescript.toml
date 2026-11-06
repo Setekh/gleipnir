@@ -40,6 +40,13 @@ args = ["--stdio"]
 [server.initialization_options.tsserver]
 useSyntaxServer = "never"
 
+# Inlay hints, off in tsserver unless asked for: parameter names for literal arguments, as
+# IntelliJ shows, and the types of variables that don't say theirs.
+[server.initialization_options.preferences]
+includeInlayParameterNameHints = "literals"
+includeInlayVariableTypeHints = true
+includeInlayVariableTypeHintsWhenTypeMatchesName = false
+
 [debugger]
 tool = "js-debug"
 adapter_id = "pwa-node"

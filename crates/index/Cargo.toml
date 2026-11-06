@@ -11,8 +11,10 @@ name = "gleipnir_index"
 anyhow.workspace = true
 futures.workspace = true
 gleipnir-syntax.workspace = true
+globset = "0.4"
 ignore = "0.4.34"
 notify = "8.2.1"
+regex = "1"
 trash = "5.3.0"
 
 [dev-dependencies]

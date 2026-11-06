@@ -361,6 +361,85 @@ pub fn signature_info(help: lsp::SignatureHelp) -> Option<SignatureInfo> {
     })
 }
 
+/// An inlay hint as the editor shows it: its place, and its label with the padding asked for.
+pub fn inlay_hint(buffer: &Buffer, hint: lsp::InlayHint) -> Option<gleipnir_editor::InlayHint> {
+    let label = match hint.label {
+        lsp::InlayHintLabel::String(text) => text,
+        lsp::InlayHintLabel::LabelParts(parts) => parts.into_iter().map(|p| p.value).collect(),
+    };
+    let label = label.trim().to_string();
+    if label.is_empty() || (hint.position.line as usize) >= buffer.line_count() {
+        return None;
+    }
+    let left = if hint.padding_left == Some(true) {
+        " "
+    } else {
+        ""
+    };
+    let right = if hint.padding_right == Some(true) {
+        " "
+    } else {
+        ""
+    };
+    Some(gleipnir_editor::InlayHint {
+        offset: buffer.utf16_to_offset(utf16(hint.position)),
+        label: format!("{left}{label}{right}"),
+    })
+}
+
+/// The color a server's token type maps to. Types the syntax tree already colors well, like
+/// keywords, strings and comments, are left to it.
+pub fn token_kind(token_type: &str) -> Option<gleipnir_syntax::HighlightKind> {
+    use gleipnir_syntax::HighlightKind as K;
+    Some(match token_type {
+        "namespace" => K::Namespace,
+        "type" | "class" | "enum" | "interface" | "struct" | "typeParameter" | "typeAlias"
+        | "builtinType" | "selfTypeKeyword" => K::Type,
+        "parameter" => K::Parameter,
+        "variable" => K::Variable,
+        "property" | "field" => K::Property,
+        "enumMember" | "constParameter" => K::Constant,
+        "function" | "method" => K::Function,
+        "macro" => K::Macro,
+        "decorator" | "attribute" | "derive" => K::Attribute,
+        "lifetime" | "label" => K::Label,
+        _ => return None,
+    })
+}
+
+/// Decodes a server's relative token positions into byte ranges with colors.
+pub fn semantic_tokens(
+    buffer: &Buffer,
+    types: &[String],
+    tokens: &[lsp::SemanticToken],
+) -> Vec<(Range<usize>, gleipnir_syntax::HighlightKind)> {
+    let (mut line, mut start) = (0u32, 0u32);
+    let mut out = Vec::with_capacity(tokens.len());
+    for token in tokens {
+        if token.delta_line > 0 {
+            line += token.delta_line;
+            start = token.delta_start;
+        } else {
+            start += token.delta_start;
+        }
+        if line as usize >= buffer.line_count() {
+            break;
+        }
+        let Some(kind) = types
+            .get(token.token_type as usize)
+            .and_then(|t| token_kind(t))
+        else {
+            continue;
+        };
+        let from = buffer.utf16_to_offset(Utf16Point::new(line, start));
+        let to = buffer.utf16_to_offset(Utf16Point::new(line, start + token.length));
+        if from < to {
+            out.push((from..to, kind));
+        }
+    }
+    out
+}
+
 pub fn utf16(position: lsp::Position) -> Utf16Point {
     Utf16Point::new(position.line, position.character)
 }
@@ -506,5 +585,63 @@ mod tests {
         .unwrap();
         let info = signature_info(help).unwrap();
         assert_eq!(&info.label[info.active_parameter.unwrap()], "a int");
+    }
+
+    #[test]
+    fn semantic_tokens_decode_relative_positions_in_utf16() {
+        // `é` is two bytes, one UTF-16 unit.
+        let buffer = Buffer::new("let é = count;\nfn f(x: i32) {}");
+        let types = vec!["variable".to_string(), "parameter".into(), "keyword".into()];
+        let token = |delta_line, delta_start, length, token_type| lsp::SemanticToken {
+            delta_line,
+            delta_start,
+            length,
+            token_type,
+            token_modifiers_bitset: 0,
+        };
+        let tokens = [
+            token(0, 0, 3, 2), // `let`: a keyword, left to the syntax tree
+            token(0, 8, 5, 0), // `count`, after `é`
+            token(1, 5, 1, 1), // `x` on the next line
+        ];
+        let decoded = semantic_tokens(&buffer, &types, &tokens);
+        let text = buffer.text();
+        let shown: Vec<(&str, gleipnir_syntax::HighlightKind)> = decoded
+            .iter()
+            .map(|(r, k)| (&text[r.clone()], *k))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                ("count", gleipnir_syntax::HighlightKind::Variable),
+                ("x", gleipnir_syntax::HighlightKind::Parameter),
+            ]
+        );
+    }
+
+    #[test]
+    fn inlay_hints_take_padding_and_joined_parts() {
+        let buffer = Buffer::new("let x = 1;");
+        let hint = lsp::InlayHint {
+            position: lsp::Position::new(0, 5),
+            label: lsp::InlayHintLabel::LabelParts(vec![
+                lsp::InlayHintLabelPart {
+                    value: ": ".into(),
+                    ..Default::default()
+                },
+                lsp::InlayHintLabelPart {
+                    value: "i32".into(),
+                    ..Default::default()
+                },
+            ]),
+            kind: None,
+            text_edits: None,
+            tooltip: None,
+            padding_left: None,
+            padding_right: Some(true),
+            data: None,
+        };
+        let shown = inlay_hint(&buffer, hint).unwrap();
+        assert_eq!((shown.offset, shown.label.as_str()), (5, ": i32 "));
     }
 }

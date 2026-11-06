@@ -720,28 +720,50 @@ fn char_class(c: char) -> CharClass {
     }
 }
 
-/// Maps between byte columns and display columns in a line containing tabs. GPUI's text shaper
-/// has no notion of tab stops, so we shape an expanded copy of the line and translate through
-/// this map whenever we need to go between the document and the screen.
+/// Maps between byte columns and display columns in a line containing tabs, or text shown in it
+/// that isn't part of the document, like inlay hints. GPUI's text shaper has no notion of tab
+/// stops, so we shape an expanded copy of the line and translate through this map whenever we
+/// need to go between the document and the screen.
 #[derive(Clone, Debug, Default)]
 pub struct TabMap {
-    /// Byte column of each tab in the source line, with its expanded width.
-    tabs: Vec<(usize, usize)>,
+    /// Each place the display differs from the source, in order: the source byte where it starts,
+    /// how many source bytes it covers, and how many display bytes replace them. A tab covers one
+    /// source byte; an inlay covers none.
+    replacements: Vec<(usize, usize, usize)>,
 }
 
 impl TabMap {
     /// Expands tabs to spaces, returning the display text and a map back to the source.
     pub fn expand(line: &str, tab_size: usize) -> (String, TabMap) {
-        if !line.contains('\t') {
+        Self::expand_with(line, tab_size, &[])
+    }
+
+    /// Expands tabs and inserts inlays, each shown before the source byte column it's at.
+    /// Returns the display text, the map, and each inlay's display byte range.
+    pub fn expand_with(line: &str, tab_size: usize, inlays: &[(usize, &str)]) -> (String, TabMap) {
+        if inlays.is_empty() && !line.contains('\t') {
             return (line.to_string(), TabMap::default());
         }
         let mut out = String::with_capacity(line.len() + 8);
-        let mut tabs = Vec::new();
+        let mut replacements = Vec::new();
         let mut column = 0;
+        let mut inlays = inlays.iter().peekable();
+        let mut insert_inlays =
+            |at: usize,
+             out: &mut String,
+             column: &mut usize,
+             replacements: &mut Vec<(usize, usize, usize)>| {
+                while let Some((_, text)) = inlays.next_if(|(col, _)| *col <= at) {
+                    replacements.push((at.min(line.len()), 0, text.len()));
+                    out.push_str(text);
+                    *column += text.chars().count();
+                }
+            };
         for (idx, c) in line.char_indices() {
+            insert_inlays(idx, &mut out, &mut column, &mut replacements);
             if c == '\t' {
                 let width = tab_size - column % tab_size;
-                tabs.push((idx, width));
+                replacements.push((idx, 1, width));
                 out.extend(std::iter::repeat_n(' ', width));
                 column += width;
             } else {
@@ -749,40 +771,56 @@ impl TabMap {
                 column += 1;
             }
         }
-        (out, TabMap { tabs })
+        insert_inlays(usize::MAX, &mut out, &mut column, &mut replacements);
+        (out, TabMap { replacements })
     }
 
-    /// Converts a byte index in the source line to a byte index in the expanded line.
+    /// The display byte ranges of inserted text, like inlays, which tabs aren't.
+    pub fn inserted(&self) -> Vec<std::ops::Range<usize>> {
+        let mut extra = 0isize;
+        let mut ranges = Vec::new();
+        for &(start, source_len, display_len) in &self.replacements {
+            let display_start = (start as isize + extra) as usize;
+            if source_len == 0 {
+                ranges.push(display_start..display_start + display_len);
+            }
+            extra += display_len as isize - source_len as isize;
+        }
+        ranges
+    }
+
+    /// Converts a byte index in the source line to a byte index in the expanded line. A column
+    /// with an inlay at it is before the inlay.
     pub fn to_display(&self, col: usize) -> usize {
-        let mut extra = 0;
-        for &(tab, width) in &self.tabs {
-            if tab >= col {
+        let mut extra = 0isize;
+        for &(start, source_len, display_len) in &self.replacements {
+            if start >= col {
                 break;
             }
-            extra += width - 1;
+            extra += display_len as isize - source_len as isize;
         }
-        col + extra
+        (col as isize + extra) as usize
     }
 
     /// Converts a byte index in the expanded line back to the source. An index inside a tab's
-    /// expansion snaps to whichever edge of the tab is closer.
+    /// expansion, or an inlay, snaps to whichever edge is closer.
     pub fn from_display(&self, display: usize) -> usize {
-        let mut extra = 0;
-        for &(tab, width) in &self.tabs {
-            let display_start = tab + extra;
+        let mut extra = 0isize;
+        for &(start, source_len, display_len) in &self.replacements {
+            let display_start = (start as isize + extra) as usize;
             if display <= display_start {
                 break;
             }
-            if display < display_start + width {
-                return if display - display_start < width.div_ceil(2) {
-                    tab
+            if display < display_start + display_len {
+                return if display - display_start < display_len.div_ceil(2) {
+                    start
                 } else {
-                    tab + 1
+                    start + source_len
                 };
             }
-            extra += width - 1;
+            extra += display_len as isize - source_len as isize;
         }
-        display - extra
+        (display as isize - extra).max(0) as usize
     }
 }
 
@@ -1236,6 +1274,28 @@ mod tests {
         // Inside the first tab: closer to the left edge, then closer to the right.
         assert_eq!(map.from_display(1), 0);
         assert_eq!(map.from_display(3), 1);
+    }
+
+    #[test]
+    fn inlays_take_display_space_but_no_source_bytes() {
+        // `let x = f(a);` with a type after `x` and a parameter name before `a`.
+        let (text, map) = TabMap::expand_with("let x = f(a);", 4, &[(5, ": i32"), (10, "n: ")]);
+        assert_eq!(text, "let x: i32 = f(n: a);");
+        assert_eq!(map.inserted(), [5..10, 15..18]);
+        // The cursor after `x` is before its hint; `=` moved right by the hint.
+        assert_eq!(map.to_display(5), 5);
+        assert_eq!(map.to_display(6), 11);
+        assert_eq!(map.to_display(10), 15);
+        assert_eq!(map.to_display(11), 19);
+        // Clicking a hint lands on its column.
+        assert_eq!(map.from_display(7), 5);
+        assert_eq!(map.from_display(16), 10);
+        assert_eq!(map.from_display(19), 11);
+        // With a tab too.
+        let (text, map) = TabMap::expand_with("\tx", 4, &[(2, ": u8")]);
+        assert_eq!(text, "    x: u8");
+        assert_eq!(map.to_display(1), 4);
+        assert_eq!(map.inserted(), vec![5..9]);
     }
 
     #[test]

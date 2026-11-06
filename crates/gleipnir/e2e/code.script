@@ -81,9 +81,19 @@ type \s\s\s
 action code_nav::Reformat
 wait-match /editor/text {\n    r * r\n}
 
+# Inlay hints, semantic colors and the uses of the name under the cursor, from rust-analyzer.
+open {dir}/src/main.rs
+wait-match /editor/inlay_hints : f64
+wait-match /editor/semantic_tokens >5
+cursor 4:22
+wait-match /editor/usage_highlights surface
+screenshot {shots}/code-rust-annotations.png
+
 # Go, with gopls.
 open {dir}/main.go
 wait-state /language_servers/go running
+wait-match /editor/inlay_hints n:
+wait-match /editor/semantic_tokens >3
 cursor 10:15
 action code_nav::GoToDeclarationOrUsages
 wait-state /editor/cursor/0 4

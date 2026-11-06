@@ -569,6 +569,53 @@ pub fn client_capabilities() -> ClientCapabilities {
                 ..Default::default()
             }),
             formatting: Some(DynamicRegistrationClientCapabilities::default()),
+            document_highlight: Some(DynamicRegistrationClientCapabilities::default()),
+            inlay_hint: Some(InlayHintClientCapabilities {
+                dynamic_registration: Some(false),
+                resolve_support: None,
+            }),
+            semantic_tokens: Some(SemanticTokensClientCapabilities {
+                dynamic_registration: Some(false),
+                requests: SemanticTokensClientCapabilitiesRequests {
+                    range: Some(false),
+                    full: Some(SemanticTokensFullOptions::Bool(true)),
+                },
+                token_types: [
+                    "namespace",
+                    "type",
+                    "class",
+                    "enum",
+                    "interface",
+                    "struct",
+                    "typeParameter",
+                    "parameter",
+                    "variable",
+                    "property",
+                    "enumMember",
+                    "event",
+                    "function",
+                    "method",
+                    "macro",
+                    "keyword",
+                    "modifier",
+                    "comment",
+                    "string",
+                    "number",
+                    "regexp",
+                    "operator",
+                    "decorator",
+                ]
+                .into_iter()
+                .map(SemanticTokenType::new)
+                .collect(),
+                token_modifiers: Vec::new(),
+                formats: vec![TokenFormat::RELATIVE],
+                overlapping_token_support: Some(false),
+                multiline_token_support: Some(false),
+                server_cancel_support: Some(false),
+                // We color from the syntax tree too, and the server only refines it.
+                augments_syntax_tokens: Some(true),
+            }),
             publish_diagnostics: Some(PublishDiagnosticsClientCapabilities {
                 related_information: Some(true),
                 ..Default::default()

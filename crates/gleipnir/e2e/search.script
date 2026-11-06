@@ -51,3 +51,14 @@ wait 100
 screenshot {shots}/23-recent.png
 key enter
 wait-state /editor/language Go
+
+# Find in Files: "count" across the project, with a preview of the selected match.
+action code_nav::FindInPath
+wait-state /modal FindInFiles
+type count
+wait 400
+screenshot {shots}/24-find-in-files.png
+key enter
+wait-state /modal null
+wait-match /editor/path app.odin
+expect-state /editor/cursor/0 9

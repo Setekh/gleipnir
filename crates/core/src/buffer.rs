@@ -98,6 +98,10 @@ pub struct BufferModel {
     disk_status: DiskStatus,
     parsing: bool,
     checking_disk: bool,
+    /// Hashes of the text of our latest saves. A watcher reports a save like any other change,
+    /// sometimes before the save has finished or after more typing, and finding our own text on
+    /// disk then isn't a change from somewhere else.
+    written: std::collections::VecDeque<u64>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -126,6 +130,7 @@ impl BufferModel {
             disk_status: DiskStatus::InSync,
             parsing: false,
             checking_disk: false,
+            written: Default::default(),
             diagnostics: Vec::new(),
         };
         this.schedule_parse(cx);
@@ -357,6 +362,10 @@ impl BufferModel {
         };
         let token = self.buffer.begin_save();
         let text = token.text.clone();
+        self.written.push_back(text_hash(&text));
+        if self.written.len() > 4 {
+            self.written.pop_front();
+        }
         let write = cx.background_spawn(async move { write_atomically(&path, &text) });
         cx.spawn(async move |this, cx| {
             let mtime = write.await?;
@@ -422,6 +431,10 @@ impl BufferModel {
             DiskChange::Unchanged | DiskChange::Unreadable => {}
             DiskChange::Deleted => self.set_disk_status(DiskStatus::Deleted, cx),
             DiskChange::Modified { text, mtime } => {
+                // A save of ours, which records its own time when it finishes.
+                if self.written.contains(&text_hash(&text)) {
+                    return;
+                }
                 let identical = self.buffer.text_for_save() == text;
                 self.mtime = Some(mtime);
                 if identical {
@@ -558,4 +571,74 @@ fn write_atomically(path: &Path, text: &str) -> Result<SystemTime> {
         fs::remove_file(&temporary).ok();
     }
     result
+}
+
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gpui::TestAppContext;
+
+    #[gpui::test]
+    async fn a_save_seen_on_disk_before_it_finishes_is_not_a_conflict(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "old").unwrap();
+        let buffer = cx.new(|cx| BufferModel::new("old", Some(path.clone()), cx));
+        buffer.update(cx, |b, cx| {
+            let mut selections = gleipnir_text::SelectionSet::cursor(3);
+            b.edit(&mut selections, EntityId::from(1u64), cx, |e| {
+                (
+                    (),
+                    e.apply_edits(
+                        vec![gleipnir_text::TextEdit::new(3..3, " new")],
+                        None,
+                        gleipnir_text::UndoGrouping::Distinct,
+                    ),
+                )
+            });
+        });
+        // The save starts, and typing carries on; then the watcher's check sees the saved text.
+        let save = buffer.update(cx, |b, cx| b.save(cx));
+        buffer.update(cx, |b, cx| {
+            let mut selections = gleipnir_text::SelectionSet::cursor(7);
+            b.edit(&mut selections, EntityId::from(1u64), cx, |e| {
+                (
+                    (),
+                    e.apply_edits(
+                        vec![gleipnir_text::TextEdit::new(7..7, "!")],
+                        None,
+                        gleipnir_text::UndoGrouping::Distinct,
+                    ),
+                )
+            });
+        });
+        buffer.update(cx, |b, cx| {
+            b.apply_disk_change(
+                DiskChange::Modified {
+                    text: "old new".into(),
+                    mtime: SystemTime::now(),
+                },
+                cx,
+            )
+        });
+        assert_eq!(
+            buffer.read_with(cx, |b, _| b.disk_status()),
+            DiskStatus::InSync
+        );
+        save.await.unwrap();
+        // The typing after the save is still unsaved, and nothing calls it a conflict.
+        assert!(buffer.read_with(cx, |b, _| b.buffer().is_dirty()));
+        assert_eq!(
+            buffer.read_with(cx, |b, _| b.disk_status()),
+            DiskStatus::InSync
+        );
+    }
 }

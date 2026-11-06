@@ -332,6 +332,12 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
                 serde_json::Value::Array(items) => items
                     .iter()
                     .any(|i| i.as_str().is_some_and(|s| s.contains(&expected))),
+                // `>N` for a count that should grow past N.
+                serde_json::Value::Number(n) => expected
+                    .strip_prefix('>')
+                    .and_then(|m| m.trim().parse::<f64>().ok())
+                    .zip(n.as_f64())
+                    .is_some_and(|(min, n)| n > min),
                 _ => false,
             };
             let started = Instant::now();

@@ -526,3 +526,96 @@ fn a_large_folder_only_reads_what_is_shown(cx: &mut TestAppContext) {
     let loaded = s.cx.update(|_, cx| panel.read(cx).loaded_folder_count());
     assert_eq!(loaded, 1);
 }
+
+impl Setup<'_> {
+    fn selection_names(&mut self) -> Vec<String> {
+        let panel = self.panel.clone();
+        self.cx.update(|_, cx| {
+            panel
+                .read(cx)
+                .selection()
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect()
+        })
+    }
+
+    fn click_name(&mut self, name: &str, modifiers: gpui::Modifiers) {
+        self.settle();
+        let selector: &'static str = Box::leak(format!("row-{name}").into_boxed_str());
+        let at = self
+            .cx
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("no row {name}"))
+            .center();
+        self.cx.simulate_click(at, modifiers);
+    }
+}
+
+#[gpui::test]
+fn several_entries_can_be_selected_and_deleted_together(cx: &mut TestAppContext) {
+    let (_dir, root) = project(&[("a.rs", ""), ("b.rs", ""), ("c.rs", ""), ("d.rs", "")]);
+    let mut s = setup(&root, cx);
+    s.focus_panel();
+    let secondary = if cfg!(target_os = "macos") {
+        gpui::Modifiers::command()
+    } else {
+        gpui::Modifiers::control()
+    };
+    s.click_name("a.rs", gpui::Modifiers::none());
+    s.click_name("c.rs", secondary);
+    assert_eq!(s.selection_names(), ["a.rs", "c.rs"]);
+    // Shift-click selects from the last one clicked.
+    s.click_name("d.rs", gpui::Modifiers::shift());
+    assert_eq!(s.selection_names(), ["c.rs", "d.rs"]);
+    // Shift+Up first shrinks back to where the range started, then grows past it.
+    s.keys("shift-up");
+    assert_eq!(s.selection_names(), ["c.rs"]);
+    s.keys("shift-up");
+    assert_eq!(s.selection_names(), ["b.rs", "c.rs"]);
+
+    s.keys("delete");
+    s.cx.simulate_prompt_answer("Move to Trash");
+    let trashed = s.trashed.clone();
+    run_until(s.cx, |_| trashed.lock().unwrap().len() == 2);
+    s.wait_for_rows(|rows| {
+        let names: Vec<&str> = rows.iter().map(|r| r.trim()).collect();
+        names.ends_with(&["a.rs", "d.rs"])
+    });
+
+    // A plain arrow goes back to one.
+    s.keys("down");
+    assert_eq!(s.selection_names().len(), 1);
+}
+
+#[gpui::test]
+fn typing_in_the_tree_jumps_to_a_matching_name(cx: &mut TestAppContext) {
+    let (_dir, root) = project(&[
+        ("alpha.rs", ""),
+        ("beta.rs", ""),
+        ("gamma.rs", ""),
+        ("betamax.rs", ""),
+    ]);
+    let mut s = setup(&root, cx);
+    s.focus_panel();
+    s.cx.simulate_input("bet");
+    assert_eq!(s.selection_names(), ["beta.rs"]);
+    let panel = s.panel.clone();
+    let query =
+        s.cx.update(|_, cx| panel.read(cx).speed_search().map(String::from));
+    assert_eq!(query.as_deref(), Some("bet"));
+    // Down goes to the next match rather than the next row.
+    s.keys("down");
+    assert_eq!(s.selection_names(), ["betamax.rs"]);
+    s.keys("backspace backspace backspace");
+    let query =
+        s.cx.update(|_, cx| panel.read(cx).speed_search().map(String::from));
+    assert_eq!(query, None);
+    // Escape ends a search without leaving the tree.
+    s.cx.simulate_input("gam");
+    s.keys("escape");
+    assert_eq!(s.selection_names(), ["gamma.rs"]);
+    let query =
+        s.cx.update(|_, cx| panel.read(cx).speed_search().map(String::from));
+    assert_eq!(query, None);
+}

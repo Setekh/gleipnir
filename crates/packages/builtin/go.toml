@@ -17,6 +17,16 @@ pairs = ["()", "[]", "{}", "\"\"", "''", "``"]
 tool = "gopls"
 args = ["serve"]
 
+# gopls gives semantic colors and inlay hints only when asked. Hints follow IntelliJ's defaults:
+# parameter names and the types of variables declared with `:=`.
+[server.initialization_options]
+semanticTokens = true
+
+[server.initialization_options.hints]
+parameterNames = true
+assignVariableTypes = true
+rangeVariableTypes = true
+
 [debugger]
 tool = "dlv"
 args = ["dap", "--listen=127.0.0.1:{port}"]

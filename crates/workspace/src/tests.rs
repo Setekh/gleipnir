@@ -638,3 +638,70 @@ fn symbols_typed_but_not_saved_are_searchable(cx: &mut TestAppContext) {
         })
     });
 }
+
+fn panes(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Vec<Entity<Pane>> {
+    cx.update(|_, cx| workspace.read(cx).panes())
+}
+
+#[gpui::test]
+fn tabs_move_within_a_pane_and_between_panes(cx: &mut TestAppContext) {
+    let (_dir, root) = project(&[("a.rs", ""), ("b.rs", ""), ("c.rs", "")]);
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    for name in ["a.rs", "b.rs", "c.rs"] {
+        open(&workspace, root.join(name), cx);
+    }
+    let pane = panes(&workspace, cx)[0].clone();
+    // The first tab to the end.
+    cx.update(|window, cx| {
+        workspace.update(cx, |w, cx| w.move_tab(&pane, 0, &pane, 3, window, cx))
+    });
+    assert_eq!(tabs(&workspace, cx), [["b.rs", "c.rs", "a.rs"]]);
+
+    // Into a new split, taking the tab out of the first pane.
+    cx.update(|window, cx| {
+        workspace.update(cx, |w, cx| w.split_active(Axis::Horizontal, window, cx))
+    });
+    let [first, second] = panes(&workspace, cx).try_into().ok().unwrap();
+    let before = tabs(&workspace, cx);
+    assert_eq!(before[1], ["a.rs"]);
+    cx.update(|window, cx| {
+        workspace.update(cx, |w, cx| w.move_tab(&first, 0, &second, 0, window, cx))
+    });
+    assert_eq!(
+        tabs(&workspace, cx),
+        [vec!["c.rs", "a.rs"], vec!["b.rs", "a.rs"]]
+    );
+
+    // A file the other pane already shows goes to its tab, and the moved one closes.
+    cx.update(|window, cx| {
+        workspace.update(cx, |w, cx| w.move_tab(&first, 1, &second, 0, window, cx))
+    });
+    assert_eq!(tabs(&workspace, cx), [vec!["c.rs"], vec!["b.rs", "a.rs"]]);
+
+    // Moving the last tab out of a pane closes the pane.
+    cx.update(|window, cx| {
+        workspace.update(cx, |w, cx| w.move_tab(&first, 0, &second, 2, window, cx))
+    });
+    assert_eq!(tabs(&workspace, cx), [["b.rs", "a.rs", "c.rs"]]);
+}
+
+#[gpui::test]
+fn a_tab_dragged_onto_another_moves_before_it(cx: &mut TestAppContext) {
+    let (_dir, root) = project(&[("a.rs", ""), ("b.rs", ""), ("c.rs", "")]);
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    for name in ["a.rs", "b.rs", "c.rs"] {
+        open(&workspace, root.join(name), cx);
+    }
+    let from = cx.debug_bounds("tab-2").unwrap().center();
+    let to = cx.debug_bounds("tab-0").unwrap().center();
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        from + point(px(-10.), px(0.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(tabs(&workspace, cx), [["c.rs", "a.rs", "b.rs"]]);
+}

@@ -1101,6 +1101,73 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Moves a tab to a position in a pane, the same one or another. A tab moved into a pane that
+    /// already shows its file goes to that file's tab instead, so a pane never has a file twice.
+    pub fn move_tab(
+        &mut self,
+        from: &Entity<Pane>,
+        index: usize,
+        to: &Entity<Pane>,
+        to_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(item) = from.read(cx).items().get(index).cloned() else {
+            return;
+        };
+        if from == to {
+            // Positions count the tab itself, which leaves before it's put back.
+            let target = if to_index > index {
+                to_index - 1
+            } else {
+                to_index
+            };
+            if target != index
+                && let Some((item, subscriptions)) =
+                    from.update(cx, |pane, cx| pane.take_item(index, cx))
+            {
+                from.update(cx, |pane, cx| {
+                    pane.insert_item_at(target, item, subscriptions, cx)
+                });
+            }
+        } else {
+            let buffer = item.read(cx).buffer().clone();
+            let existing = to
+                .read(cx)
+                .items()
+                .iter()
+                .position(|i| i.read(cx).buffer() == &buffer);
+            match existing {
+                Some(existing) => {
+                    to.update(cx, |pane, cx| pane.activate(existing, cx));
+                    self.remove_tab(from, &item, window, cx);
+                }
+                None => {
+                    let Some((item, subscriptions)) =
+                        from.update(cx, |pane, cx| pane.take_item(index, cx))
+                    else {
+                        return;
+                    };
+                    to.update(cx, |pane, cx| {
+                        pane.insert_item_at(to_index, item, subscriptions, cx)
+                    });
+                    // An emptied pane goes, as when its last tab closes.
+                    if from.read(cx).is_empty() && self.center.panes().len() > 1 {
+                        self.center.remove(from);
+                        self.pane_subscriptions.remove(&from.entity_id());
+                    }
+                }
+            }
+            self.active_pane = to.clone();
+        }
+        let target = to.read(cx).focus_target(cx);
+        window.focus(&target, cx);
+        self.active_item_changed(cx);
+        self.update_title(window, cx);
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
     fn save_as(&mut self, editor: Entity<EditorView>, window: &mut Window, cx: &mut Context<Self>) {
         let buffer = editor.read(cx).buffer().clone();
         let directory = buffer

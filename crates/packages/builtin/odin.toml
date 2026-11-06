@@ -16,6 +16,12 @@ pairs = ["()", "[]", "{}", "\"\"", "''", "``"]
 [server]
 tool = "ols"
 
+# ols takes its settings here, as it would from ols.json.
+[server.initialization_options]
+enable_semantic_tokens = true
+enable_inlay_hints_params = true
+enable_inlay_hints_default_params = true
+
 [debugger]
 tool = "lldb-dap"
 transport = "stdio"

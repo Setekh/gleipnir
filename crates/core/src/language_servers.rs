@@ -983,6 +983,106 @@ impl LanguageServers {
         cx.background_spawn(async move { request.await.map_err(|e| anyhow!("{e}")) })
     }
 
+    /// The uses of the name at `offset` in this file. Empty when the server doesn't do this.
+    pub fn document_highlights(
+        &self,
+        buffer: &Entity<BufferModel>,
+        offset: usize,
+        cx: &App,
+    ) -> Task<Result<Vec<lsp::Range>>> {
+        let Ok(server) = self.server_or_error(buffer, cx) else {
+            return Task::ready(Ok(Vec::new()));
+        };
+        if server.capabilities().document_highlight_provider.is_none() {
+            return Task::ready(Ok(Vec::new()));
+        }
+        let (document, position) = Self::position(buffer, offset, cx);
+        let request =
+            server.request::<req::DocumentHighlightRequest>(lsp::DocumentHighlightParams {
+                text_document_position_params: lsp::TextDocumentPositionParams {
+                    text_document: document,
+                    position,
+                },
+                work_done_progress_params: Default::default(),
+                partial_result_params: Default::default(),
+            });
+        cx.background_spawn(async move {
+            let found = request.await.map_err(|e| anyhow!("{e}"))?;
+            Ok(found
+                .unwrap_or_default()
+                .into_iter()
+                .map(|h| h.range)
+                .collect())
+        })
+    }
+
+    /// Inlay hints for the whole file. Empty when the server doesn't give them.
+    pub fn inlay_hints(
+        &self,
+        buffer: &Entity<BufferModel>,
+        cx: &App,
+    ) -> Task<Result<Vec<lsp::InlayHint>>> {
+        let Ok(server) = self.server_or_error(buffer, cx) else {
+            return Task::ready(Ok(Vec::new()));
+        };
+        if server.capabilities().inlay_hint_provider.is_none() {
+            return Task::ready(Ok(Vec::new()));
+        }
+        let model = buffer.read(cx);
+        let (document, _) = Self::position(buffer, 0, cx);
+        let end = to_lsp(model.buffer().offset_to_utf16(model.buffer().len()));
+        let request = server.request::<req::InlayHintRequest>(lsp::InlayHintParams {
+            text_document: document,
+            range: lsp::Range::new(lsp::Position::new(0, 0), end),
+            work_done_progress_params: Default::default(),
+        });
+        cx.background_spawn(async move {
+            Ok(request
+                .await
+                .map_err(|e| anyhow!("{e}"))?
+                .unwrap_or_default())
+        })
+    }
+
+    /// The file's semantic tokens, with the names of their types from the server's legend.
+    pub fn semantic_tokens(
+        &self,
+        buffer: &Entity<BufferModel>,
+        cx: &App,
+    ) -> Task<Result<(Vec<String>, Vec<lsp::SemanticToken>)>> {
+        let Ok(server) = self.server_or_error(buffer, cx) else {
+            return Task::ready(Ok(Default::default()));
+        };
+        let legend = match server.capabilities().semantic_tokens_provider {
+            Some(lsp::SemanticTokensServerCapabilities::SemanticTokensOptions(options)) => {
+                options.legend
+            }
+            Some(lsp::SemanticTokensServerCapabilities::SemanticTokensRegistrationOptions(
+                options,
+            )) => options.semantic_tokens_options.legend,
+            None => return Task::ready(Ok(Default::default())),
+        };
+        let types: Vec<String> = legend
+            .token_types
+            .iter()
+            .map(|t| t.as_str().to_string())
+            .collect();
+        let (document, _) = Self::position(buffer, 0, cx);
+        let request = server.request::<req::SemanticTokensFullRequest>(lsp::SemanticTokensParams {
+            text_document: document,
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+        });
+        cx.background_spawn(async move {
+            let tokens = match request.await.map_err(|e| anyhow!("{e}"))? {
+                Some(lsp::SemanticTokensResult::Tokens(tokens)) => tokens.data,
+                Some(lsp::SemanticTokensResult::Partial(partial)) => partial.data,
+                None => Vec::new(),
+            };
+            Ok((types, tokens))
+        })
+    }
+
     pub fn completions(
         &self,
         buffer: &Entity<BufferModel>,
