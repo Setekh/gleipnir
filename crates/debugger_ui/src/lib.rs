@@ -129,6 +129,17 @@ pub fn add_with_debugger(
     workspace.add_panel(run_panel, cx);
     workspace.add_panel(debug_panel, cx);
 
+    // Breakpoints in files changed outside the editor, like on a branch switch, follow them.
+    if let Some(project) = workspace.project().cloned() {
+        let debugger = debugger.clone();
+        cx.subscribe(&project, move |_, _, event, cx| {
+            if let gleipnir_core::ProjectEvent::FilesChanged(paths) = event {
+                debugger.update(cx, |d, cx| d.files_changed(paths, cx));
+            }
+        })
+        .detach();
+    }
+
     let hooked = debugger.clone();
     workspace.add_editor_hook(move |_, editor, window, cx| attach(&hooked, editor, window, cx));
     workspace.add_status_item(run_widget);

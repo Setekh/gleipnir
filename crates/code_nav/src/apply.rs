@@ -98,10 +98,11 @@ pub fn apply_workspace_edit(
     };
     cx.spawn(async move |_, cx| {
         let mut changed = std::collections::BTreeSet::new();
+        let mut edited = Vec::new();
         for op in ops {
             match op {
                 Op::Edit(path, edits) => {
-                    edit_file(&store, &servers, &path, edits, cx).await?;
+                    edited.push(edit_file(&store, &servers, &path, edits, cx).await?);
                     changed.insert(path);
                 }
                 Op::Create { path, overwrite } => {
@@ -137,6 +138,8 @@ pub fn apply_workspace_edit(
                 }
             }
         }
+        // One undo, from any of the files, takes back the whole change.
+        cx.update(|cx| gleipnir_core::BufferModel::link_last_edits(edited, cx));
         Ok(changed.len())
     })
 }
@@ -147,7 +150,7 @@ async fn edit_file(
     path: &std::path::Path,
     edits: Vec<lsp::TextEdit>,
     cx: &mut AsyncApp,
-) -> Result<()> {
+) -> Result<(Entity<gleipnir_core::BufferModel>, bool)> {
     let open = store.read_with(cx, |store, _| store.get(path));
     let was_open = open.is_some();
     let buffer = match open {
@@ -163,5 +166,5 @@ async fn edit_file(
     if !was_open {
         buffer.update(cx, |buffer, cx| buffer.save(cx)).await?;
     }
-    Ok(())
+    Ok((buffer, !was_open))
 }

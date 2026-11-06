@@ -3,7 +3,7 @@ use gleipnir_packages::registry;
 use gleipnir_syntax::{Language, Syntax};
 use gleipnir_text::ops::{EditConfig, EditContext};
 use gleipnir_text::{AppliedEdit, Bias, Buffer, SelectionSet, Snapshot};
-use gpui::{AppContext as _, Context, EntityId, EventEmitter, Task};
+use gpui::{AppContext as _, Context, Entity, EntityId, EventEmitter, Task};
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -33,6 +33,40 @@ pub enum BufferEvent {
     },
     Saved,
     DiskStatusChanged,
+}
+
+/// How many cross-file changes can be undone together; older ones undo file by file.
+const LINKED_GROUPS: usize = 20;
+
+struct LinkedMember {
+    buffer: gpui::WeakEntity<BufferModel>,
+    undo_id: u64,
+    save: bool,
+    /// Keeps a file that wasn't open in memory, so its part can be undone.
+    _keep: Option<Entity<BufferModel>>,
+}
+
+struct LinkedGroup {
+    members: Vec<LinkedMember>,
+}
+
+/// Changes across files that undo as one.
+#[derive(Default)]
+struct LinkedUndo {
+    groups: Vec<LinkedGroup>,
+}
+
+impl gpui::Global for LinkedUndo {}
+
+impl LinkedUndo {
+    fn take(&mut self, buffer: EntityId, undo_id: u64) -> Option<LinkedGroup> {
+        let index = self.groups.iter().position(|g| {
+            g.members
+                .iter()
+                .any(|m| m.buffer.entity_id() == buffer && m.undo_id == undo_id)
+        })?;
+        Some(self.groups.remove(index))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -153,6 +187,8 @@ impl BufferModel {
             };
             edit_cx.apply_edits(edits, None, gleipnir_text::UndoGrouping::Distinct)
         };
+        // Typing afterwards is its own step, not part of this change.
+        self.buffer.break_undo_group();
         self.did_edit(applied, None, cx);
     }
 
@@ -181,9 +217,63 @@ impl BufferModel {
 
     /// Reverts the last change, returning the selections to restore in the view that asked.
     pub fn undo(&mut self, origin: EntityId, cx: &mut Context<Self>) -> Option<SelectionSet> {
+        // A step that's part of a change across files, like a rename, takes the rest with it.
+        let me = cx.entity_id();
+        let top = self.buffer.undo_top_id();
+        let linked = top.and_then(|top| {
+            cx.has_global::<LinkedUndo>()
+                .then(|| cx.global_mut::<LinkedUndo>().take(me, top))
+                .flatten()
+        });
+        if let Some(group) = linked {
+            for member in group.members {
+                let Some(buffer) = member.buffer.upgrade() else {
+                    continue;
+                };
+                if buffer.entity_id() == me
+                    || buffer.read(cx).buffer.undo_top_id() != Some(member.undo_id)
+                {
+                    continue;
+                }
+                buffer.update(cx, |buffer, cx| {
+                    if let Some((applied, _)) = buffer.buffer.undo() {
+                        buffer.did_edit(applied, None, cx);
+                    }
+                    if member.save {
+                        buffer.save(cx).detach();
+                    }
+                });
+            }
+        }
         let (applied, selections) = self.buffer.undo()?;
         self.did_edit(applied, Some(origin), cx);
         Some(selections)
+    }
+
+    /// The step each buffer last took, as one change that undoes together from any of them.
+    /// Buffers marked to save are files nobody had open: they're kept in memory for this, and
+    /// saved again when undone.
+    pub fn link_last_edits(buffers: Vec<(Entity<BufferModel>, bool)>, cx: &mut gpui::App) {
+        let members: Vec<LinkedMember> = buffers
+            .into_iter()
+            .filter_map(|(buffer, save)| {
+                let undo_id = buffer.read(cx).buffer.undo_top_id()?;
+                Some(LinkedMember {
+                    buffer: buffer.downgrade(),
+                    undo_id,
+                    save,
+                    _keep: save.then_some(buffer),
+                })
+            })
+            .collect();
+        if members.len() < 2 {
+            return;
+        }
+        let linked = cx.default_global::<LinkedUndo>();
+        linked.groups.push(LinkedGroup { members });
+        if linked.groups.len() > LINKED_GROUPS {
+            linked.groups.remove(0);
+        }
     }
 
     pub fn redo(&mut self, origin: EntityId, cx: &mut Context<Self>) -> Option<SelectionSet> {
@@ -362,14 +452,17 @@ impl BufferModel {
     }
 
     fn reload(&mut self, text: &str, cx: &mut Context<Self>) {
-        let edit = self.buffer.reset(text);
+        let edits = self.buffer.reset(text);
+        self.set_disk_status(DiskStatus::InSync, cx);
+        if edits.is_empty() {
+            return;
+        }
         if let Some(syntax) = &mut self.syntax {
             syntax.reset(self.buffer.version());
         }
         self.schedule_parse(cx);
-        self.set_disk_status(DiskStatus::InSync, cx);
         cx.emit(BufferEvent::Edited {
-            edits: Arc::new(vec![edit]),
+            edits: Arc::new(edits),
             origin: None,
             version: self.buffer.version(),
         });

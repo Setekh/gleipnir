@@ -479,6 +479,12 @@ pub fn client_capabilities() -> ClientCapabilities {
             configuration: Some(true),
             workspace_folders: Some(true),
             symbol: Some(WorkspaceSymbolClientCapabilities::default()),
+            // We report changes made outside the editor, but for every file rather than the
+            // patterns a server registers, so servers that can watch for themselves still do.
+            did_change_watched_files: Some(DidChangeWatchedFilesClientCapabilities {
+                dynamic_registration: Some(false),
+                relative_pattern_support: None,
+            }),
             ..Default::default()
         }),
         text_document: Some(TextDocumentClientCapabilities {

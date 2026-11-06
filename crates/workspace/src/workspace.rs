@@ -8,7 +8,9 @@ use crate::persistence::{
     self, SavedDock, SavedPane, SavedTab, SavedTree, SavedWorkspace, remember_last_project,
 };
 use anyhow::Result;
-use gleipnir_core::{BufferModel, BufferStore, DiskStatus, LanguageServers, Project, Toolchains};
+use gleipnir_core::{
+    BufferModel, BufferStore, DiskStatus, LanguageServers, Project, ProjectEvent, Toolchains,
+};
 use gleipnir_editor::{EditorEvent, EditorState, EditorView};
 use gleipnir_text::SelectionSet;
 use gleipnir_ui::{Icon, Theme};
@@ -206,6 +208,8 @@ pub struct Workspace {
     status_items: Vec<StatusItem>,
     nav_back: Vec<NavEntry>,
     nav_forward: Vec<NavEntry>,
+    /// Buffers whose unsaved text is indexed for search, with the pending refresh.
+    indexed_buffers: HashMap<gpui::EntityId, Option<Task<()>>>,
 }
 
 /// A plain description of the workspace, for tests and the end-to-end driver.
@@ -312,10 +316,20 @@ impl Workspace {
             status_items: Vec::new(),
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
+            indexed_buffers: HashMap::new(),
         };
         this.watch_pane(&pane, cx);
         if let Some(root) = &this.root {
             remember_last_project(root).ok();
+        }
+        // Language servers hear of files changed outside the editor, like on a branch switch.
+        if let Some(project) = this.project.clone() {
+            cx.subscribe(&project, |this, _, event, cx| {
+                if let ProjectEvent::FilesChanged(paths) = event {
+                    this.language_servers.read(cx).files_changed(paths);
+                }
+            })
+            .detach();
         }
         this.update_title(window, cx);
 
@@ -330,6 +344,52 @@ impl Workspace {
             })
         });
         this
+    }
+
+    /// Keeps Search Everywhere's symbols for a file current with its unsaved edits, once typing
+    /// pauses, and goes back to the file on disk if the edits are thrown away.
+    fn index_unsaved_text(&mut self, buffer: &Entity<BufferModel>, cx: &mut Context<Self>) {
+        let id = buffer.entity_id();
+        if self.project.is_none() || self.indexed_buffers.contains_key(&id) {
+            return;
+        }
+        self.indexed_buffers.insert(id, None);
+        cx.subscribe(buffer, move |this, buffer, event, cx| {
+            if !matches!(event, gleipnir_core::BufferEvent::Edited { .. }) {
+                return;
+            }
+            let id = buffer.entity_id();
+            let buffer = buffer.downgrade();
+            let refresh = cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(300))
+                    .await;
+                this.update(cx, |this, cx| {
+                    let Some(buffer) = buffer.upgrade() else {
+                        return;
+                    };
+                    let model = buffer.read(cx);
+                    let (Some(path), Some(project)) = (model.path(), this.project.clone()) else {
+                        return;
+                    };
+                    let (path, text) = (path.to_path_buf(), model.buffer().snapshot());
+                    project.update(cx, |p, cx| p.index_text(&path, text, cx));
+                })
+                .ok();
+            });
+            this.indexed_buffers.insert(id, Some(refresh));
+        })
+        .detach();
+        let path = buffer.read(cx).path().map(Path::to_path_buf);
+        cx.observe_release(buffer, move |this, buffer, cx| {
+            this.indexed_buffers.remove(&id);
+            if buffer.buffer().is_dirty()
+                && let (Some(path), Some(project)) = (&path, this.project.clone())
+            {
+                project.update(cx, |p, cx| p.reindex_from_disk(path, cx));
+            }
+        })
+        .detach();
     }
 
     pub fn root(&self) -> Option<&Path> {
@@ -776,6 +836,7 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> (Entity<EditorView>, Vec<Subscription>) {
         let editor = cx.new(|cx| EditorView::new(buffer.clone(), window, cx));
+        self.index_unsaved_text(&buffer, cx);
         let mut subscriptions = vec![
             cx.subscribe_in(
                 &editor,

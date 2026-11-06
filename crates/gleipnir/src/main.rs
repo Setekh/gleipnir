@@ -14,7 +14,8 @@ use std::time::Duration;
 
 /// How often to check open files for external changes. The project watcher only reports on files
 /// inside the project, and open files can be anywhere.
-const DISK_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// A safety net only: open files' folders are watched, so changes normally show at once.
+const DISK_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 /// What the command line asked for.
 struct LaunchTarget {
@@ -85,6 +86,7 @@ fn main() {
 
             let store = cx.new(|cx| {
                 let mut store = BufferStore::new();
+                store.start_watching(cx);
                 store.start_polling(DISK_POLL_INTERVAL, cx);
                 store
             });

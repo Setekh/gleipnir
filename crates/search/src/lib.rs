@@ -281,6 +281,23 @@ fn merge_server_symbols(
     added
 }
 
+/// Where `name` is on a line, taking the occurrence nearest `column` when it's there more than
+/// once.
+fn name_column(line: &str, name: &str, column: usize) -> Option<usize> {
+    if name.is_empty() {
+        return None;
+    }
+    line.match_indices(name)
+        .map(|(at, _)| at)
+        .filter(|&at| {
+            let before = line[..at].chars().next_back();
+            let after = line[at + name.len()..].chars().next();
+            let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric() || c == '_');
+            !word(before) && !word(after)
+        })
+        .min_by_key(|&at| at.abs_diff(column))
+}
+
 #[derive(Clone, Debug)]
 struct ActionEntry {
     info: ActionInfo,
@@ -819,13 +836,26 @@ impl SearchPopup {
             Item::Symbol(hit) => {
                 let Some(root) = self.root(cx) else { return };
                 let path = root.join(&*hit.entry.path);
-                let position = Some((
+                let (line, column) = (
                     hit.entry.symbol.line as usize,
                     hit.entry.symbol.column as usize,
-                ));
+                );
+                let name = hit.entry.symbol.name.clone();
                 workspace.update(cx, |w, cx| {
                     w.dismiss_modal(window, cx);
-                    w.open_path_at(path, position, window, cx).detach();
+                    let open = w.open_path_at(path, Some((line, column)), window, cx);
+                    // Language servers count columns in UTF-16 units and the index in bytes, which
+                    // differ after non-ASCII text, so land on the name itself.
+                    cx.spawn(async move |_, cx| {
+                        let Ok(editor) = open.await else { return };
+                        editor.update(cx, |editor, cx| {
+                            let text = editor.buffer().read(cx).buffer().line(line);
+                            if let Some(at) = name_column(&text, &name, column) {
+                                editor.jump_to(line, at, cx);
+                            }
+                        });
+                    })
+                    .detach();
                 });
             }
             Item::Action { entry, .. } => {

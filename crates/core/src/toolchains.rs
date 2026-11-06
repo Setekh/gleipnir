@@ -29,6 +29,8 @@ pub struct ToolStatus {
     pub version: Option<String>,
     pub installing: bool,
     pub error: Option<String>,
+    /// An older version we installed, when the manifest now pins a newer one.
+    pub outdated: Option<String>,
 }
 
 /// One package's toolchain.
@@ -289,6 +291,13 @@ impl Toolchains {
                             .and_then(|i| i.version().map(String::from)),
                         installing: self.installing.contains(name),
                         error: self.errors.get(name).cloned(),
+                        outdated: gleipnir_packages::tools::older_installs(
+                            name,
+                            spec,
+                            &self.managed_dir,
+                        )
+                        .pop()
+                        .map(|(version, _)| version),
                     }
                 })
                 .collect();

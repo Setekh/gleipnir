@@ -6,6 +6,7 @@
 //! - UTF-16 line/character: what LSP uses on the wire.
 //! - display columns: what the screen uses once tabs are expanded.
 
+pub mod diff;
 pub mod ops;
 mod selection;
 
@@ -470,6 +471,12 @@ impl Buffer {
     }
 
     /// Reverts the last transaction, returning the edits made and the selections to restore.
+    /// The id of the step `undo` would revert, which stays the same until that step is undone or
+    /// another is added.
+    pub fn undo_top_id(&self) -> Option<u64> {
+        self.undo.last().map(|t| t.id)
+    }
+
     pub fn undo(&mut self) -> Option<(Vec<AppliedEdit>, SelectionSet)> {
         let mut transaction = self.undo.pop()?;
         transaction.sealed = true;
@@ -503,12 +510,28 @@ impl Buffer {
         Some((applied, selections))
     }
 
-    /// Replaces the whole document, for reloading a file that changed on disk. Clears history,
-    /// since the offsets in it no longer refer to anything.
-    pub fn reset(&mut self, text: &str) -> AppliedEdit {
+    /// Replaces the document's text, for reloading a file that changed on disk. Only the lines that
+    /// differ are replaced, so whatever follows positions through edits, like cursors, breakpoints
+    /// and language servers, keeps its place. Clears history, as the file was changed by
+    /// something else. The edits come last first, like `apply_edits`'.
+    pub fn reset(&mut self, text: &str) -> Vec<AppliedEdit> {
         let (normalized, line_ending, has_bom) = normalize_text(text);
-        let end = self.len();
-        let applied = self.apply(0, end, &normalized);
+        let current = self.text();
+        let hunks = diff::diff_lines(&current, &normalized);
+        let old_lines = diff::split_lines(&current);
+        let new_lines = diff::split_lines(&normalized);
+        let mut starts = Vec::with_capacity(old_lines.len() + 1);
+        let mut offset = 0;
+        for line in &old_lines {
+            starts.push(offset);
+            offset += line.len();
+        }
+        starts.push(offset);
+        let mut applied = Vec::with_capacity(hunks.len());
+        for hunk in hunks.iter().rev() {
+            let replacement: String = new_lines[hunk.new.clone()].concat();
+            applied.push(self.apply(starts[hunk.old.start], starts[hunk.old.end], &replacement));
+        }
         self.line_ending = line_ending;
         self.has_bom = has_bom;
         self.undo.clear();
@@ -1131,6 +1154,20 @@ mod tests {
         assert!(b.is_crlf());
         assert!(!b.can_undo());
         assert!(!b.is_dirty());
+    }
+
+    #[test]
+    fn reset_replaces_only_the_lines_that_changed() {
+        let mut b = Buffer::new("one\ntwo\nthree\nfour\n");
+        let edits = b.reset("one\nTWO\nthree\nfour\nfive\n");
+        assert_eq!(b.text(), "one\nTWO\nthree\nfour\nfive\n");
+        // Last first, each a line.
+        let lines: Vec<(usize, usize)> = edits
+            .iter()
+            .map(|e| (e.start.line, e.old_end.line))
+            .collect();
+        assert_eq!(lines, [(4, 4), (1, 2)]);
+        assert!(b.reset("one\nTWO\nthree\nfour\nfive\n").is_empty());
     }
 
     #[test]

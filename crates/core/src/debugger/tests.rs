@@ -737,3 +737,38 @@ fn files_map_to_the_targets_that_run_them(cx: &mut TestAppContext) {
     // A script runs itself.
     assert_eq!(name(dir.path().join("tool.ts"), cx), Some("tool.ts".into()));
 }
+
+#[gpui::test]
+fn breakpoints_in_a_closed_file_follow_a_change_made_elsewhere(cx: &mut TestAppContext) {
+    let setup = setup(Program::default(), cx);
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("main.go");
+    std::fs::write(
+        &path,
+        "package main\n\nfunc main() {\n\tx := 1\n\ty := 2\n}\n",
+    )
+    .unwrap();
+    setup.debugger.update(cx, |d, cx| {
+        d.toggle_breakpoint(&path, 3, cx);
+        d.toggle_breakpoint(&path, 4, cx);
+    });
+    // As a branch switch would: lines added above, and one breakpoint's line removed.
+    std::fs::write(
+        &path,
+        "package main\n\nimport \"fmt\"\n\nfunc main() {\n\ty := 2\n\tfmt.Println(y)\n}\n",
+    )
+    .unwrap();
+    setup
+        .debugger
+        .update(cx, |d, cx| d.files_changed(std::slice::from_ref(&path), cx));
+    let lines: Vec<u32> = setup.read(cx, |d| {
+        d.breakpoints()
+            .in_file(&path)
+            .iter()
+            .map(|b| b.line)
+            .collect()
+    });
+    // `y := 2` moved from line 4 to 5; `x := 1` was removed, so its breakpoint joins the line
+    // where the change landed.
+    assert_eq!(lines, [5]);
+}

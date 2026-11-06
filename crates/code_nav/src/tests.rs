@@ -5,6 +5,7 @@ use super::*;
 use gleipnir_core::{BufferStore, Launcher};
 use gleipnir_lsp::{LanguageServer, path_to_uri, read_message, write_message};
 use gleipnir_test_support::{isolate_state, project, run_until};
+use gpui::Focusable as _;
 use gpui::{TestAppContext, VisualTestContext, size};
 use serde_json::{Value, json};
 use std::io::BufReader;
@@ -388,6 +389,25 @@ fn find_usages_fills_the_find_panel_grouped_by_file(cx: &mut TestAppContext) {
             .iter()
             .any(|d| d.visible && d.panels.iter().any(|p| p == USAGES_PANEL))
     );
+
+    // Moving through the results shows each in the editor, and the list keeps the keyboard.
+    let panel =
+        s.cx.update(|_, cx| workspace.read(cx).panel::<UsagesPanel>(cx))
+            .unwrap();
+    s.cx.update(|window, cx| {
+        let focus = panel.read(cx).focus_handle(cx);
+        window.focus(&focus, cx);
+    });
+    // The list starts on the first usage.
+    s.cx.simulate_keystrokes("down");
+    run_until(s.cx, |_| true);
+    assert_eq!(s.active(), Some(("src/main.rs".into(), 3, 20)));
+    s.cx.simulate_keystrokes("up");
+    run_until(s.cx, |_| true);
+    assert_eq!(s.active(), Some(("src/main.rs".into(), 2, 20)));
+    let focused =
+        s.cx.update(|window, cx| panel.read(cx).focus_handle(cx).is_focused(window));
+    assert!(focused, "the list keeps the keyboard");
 }
 
 #[gpui::test]
@@ -417,6 +437,19 @@ fn rename_edits_open_files_and_saves_the_rest(cx: &mut TestAppContext) {
         s.message().as_deref(),
         Some("Renamed area to surface in 2 files")
     );
+
+    // One undo, in the open file, takes back the whole rename, saving the file that wasn't open.
+    let undo = if cfg!(target_os = "macos") {
+        "cmd-z"
+    } else {
+        "ctrl-z"
+    };
+    s.cx.simulate_keystrokes(undo);
+    run_until(s.cx, |_| {
+        std::fs::read_to_string(&main).unwrap().contains("area")
+    });
+    assert_eq!(std::fs::read_to_string(&main).unwrap(), MAIN);
+    assert_eq!(s.text(&editor), SHAPES);
 }
 
 #[gpui::test]

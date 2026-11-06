@@ -518,13 +518,11 @@ fn a_large_folder_only_reads_what_is_shown(cx: &mut TestAppContext) {
             fs::write(path.join(format!("f{file}.rs")), "").unwrap();
         }
     }
-    let started = std::time::Instant::now();
     let mut s = setup(&root, cx);
-    // Ten thousand files, but only the 50 folders at the top are read.
+    // Ten thousand files, but only the root is read: its 50 folders show, closed. Counting reads
+    // rather than timing them keeps this from failing on a busy machine.
     assert_eq!(s.rows().len(), 51);
-    assert!(
-        started.elapsed() < std::time::Duration::from_secs(2),
-        "{:?}",
-        started.elapsed()
-    );
+    let panel = s.panel.clone();
+    let loaded = s.cx.update(|_, cx| panel.read(cx).loaded_folder_count());
+    assert_eq!(loaded, 1);
 }

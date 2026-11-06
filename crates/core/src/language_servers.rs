@@ -447,6 +447,72 @@ impl LanguageServers {
         }
     }
 
+    /// Files changed on disk, perhaps by another program, like a branch switch. Each running
+    /// server hears about its own languages' files and project manifests, except those it has
+    /// open: their buffers reload, and the edits reach it as usual.
+    pub fn files_changed(&self, paths: &[PathBuf]) {
+        const MANIFESTS: &[&str] = &[
+            "Cargo.toml",
+            "Cargo.lock",
+            "go.mod",
+            "go.sum",
+            "go.work",
+            "package.json",
+            "tsconfig.json",
+            "jsconfig.json",
+            "ols.json",
+        ];
+        const SKIPPED: &[&str] = &[".git", "target", "node_modules"];
+        for (package_id, server) in &self.servers {
+            let Some(handle) = server.handle.clone().filter(|h| h.is_alive()) else {
+                continue;
+            };
+            let Some(package) = registry().package(package_id) else {
+                continue;
+            };
+            let extensions: Vec<&str> = package
+                .manifest
+                .languages
+                .iter()
+                .flat_map(|l| l.extensions.iter().map(String::as_str))
+                .collect();
+            let open: Vec<&Path> = self
+                .documents
+                .values()
+                .filter(|d| d.package_id == *package_id && d.opened_on.is_some())
+                .map(|d| d.path.as_path())
+                .collect();
+            let changes: Vec<lsp::FileEvent> = paths
+                .iter()
+                .filter(|path| {
+                    let skipped = path
+                        .components()
+                        .any(|c| SKIPPED.contains(&c.as_os_str().to_string_lossy().as_ref()));
+                    let name = path.file_name().map(|n| n.to_string_lossy());
+                    let extension = path.extension().map(|e| e.to_string_lossy());
+                    let relevant = name.as_deref().is_some_and(|n| MANIFESTS.contains(&n))
+                        || extension
+                            .as_deref()
+                            .is_some_and(|e| extensions.contains(&e));
+                    !skipped && relevant && !open.contains(&path.as_path())
+                })
+                .map(|path| lsp::FileEvent {
+                    uri: path_to_uri(path),
+                    typ: if path.exists() {
+                        lsp::FileChangeType::CHANGED
+                    } else {
+                        lsp::FileChangeType::DELETED
+                    },
+                })
+                .collect();
+            if !changes.is_empty() {
+                handle.notify::<notif::DidChangeWatchedFiles>(lsp::DidChangeWatchedFilesParams {
+                    changes,
+                });
+            }
+        }
+    }
+
     /// Answers a server's request to apply edits.
     pub fn respond_to_apply_edit(
         &self,

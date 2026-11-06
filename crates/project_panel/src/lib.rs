@@ -257,6 +257,11 @@ impl ProjectPanel {
             .collect()
     }
 
+    /// How many folders have been read from disk, for tests.
+    pub fn loaded_folder_count(&self) -> usize {
+        self.tree.as_ref().map_or(0, |t| t.loaded_dirs().count())
+    }
+
     pub fn is_loading(&self) -> bool {
         self.rows.iter().any(|row| row.loading)
     }

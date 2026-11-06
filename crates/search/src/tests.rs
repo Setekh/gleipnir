@@ -343,3 +343,16 @@ fn clicking_a_result_opens_it(cx: &mut TestAppContext) {
     assert!(s.editor_state().path.unwrap().ends_with("README.md"));
     let _ = Path::new("");
 }
+
+#[test]
+fn a_symbol_lands_on_its_name_whatever_units_the_column_was_in() {
+    // "é" is two bytes but one UTF-16 unit, so a server's column 14 is byte 15.
+    let line = "let é = 1; fn area() {}";
+    assert_eq!(super::name_column(line, "area", 14), Some(15));
+    // A name inside a longer word doesn't count, and the nearest of several wins.
+    assert_eq!(
+        super::name_column("areas area x area", "area", 15),
+        Some(13)
+    );
+    assert_eq!(super::name_column("nothing here", "area", 0), None);
+}

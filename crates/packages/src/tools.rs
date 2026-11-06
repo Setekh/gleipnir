@@ -69,6 +69,28 @@ pub fn managed_binary(name: &str, spec: &ToolSpec, managed_dir: &Path) -> Option
     })
 }
 
+/// Versions of a tool that we installed earlier, other than the one the manifest pins now, as
+/// (version, folder).
+pub fn older_installs(name: &str, spec: &ToolSpec, managed_dir: &Path) -> Vec<(String, PathBuf)> {
+    let Some(current) = spec.install.as_ref().and_then(|i| i.version()) else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(managed_dir.join(name)) else {
+        return Vec::new();
+    };
+    let mut older: Vec<(String, PathBuf)> = entries
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| {
+            let version = e.file_name().to_string_lossy().into_owned();
+            // Dot-folders are installs in progress.
+            (version != current && !version.starts_with('.')).then(|| (version, e.path()))
+        })
+        .collect();
+    older.sort();
+    older
+}
+
 /// Fills in `{os}` and `{arch}` in a binary's name, as release assets name them.
 pub fn platform_binary(template: &str) -> String {
     let os = if cfg!(target_os = "macos") {
@@ -283,5 +305,22 @@ mod tests {
     fn platform_names_are_filled_in() {
         let name = platform_binary("ols-{arch}-{os}");
         assert!(!name.contains('{'), "{name}");
+    }
+
+    #[test]
+    fn older_installs_are_the_other_versions_but_not_installs_in_progress() {
+        let dir = tempfile::tempdir().unwrap();
+        for folder in ["v1.0.0", "v2.0.0", "v3.0.0", ".v3.0.0.installing-7"] {
+            std::fs::create_dir_all(dir.path().join("gopls").join(folder)).unwrap();
+        }
+        let spec: ToolSpec = toml::from_str(
+            "binary = \"gopls\"\ninstall = { kind = \"go-install\", module = \"x\", version = \"v3.0.0\" }",
+        )
+        .unwrap();
+        let older: Vec<String> = older_installs("gopls", &spec, dir.path())
+            .into_iter()
+            .map(|(v, _)| v)
+            .collect();
+        assert_eq!(older, ["v1.0.0", "v2.0.0"]);
     }
 }

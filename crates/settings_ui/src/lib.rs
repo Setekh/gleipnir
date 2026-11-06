@@ -258,15 +258,22 @@ impl LanguageSettings {
                 (format!("{} · {how}", path.display()), theme.text_muted)
             }
             None if tool.installing => ("Installing…".to_string(), theme.accent),
-            None => ("Not found".to_string(), theme.warning),
+            None => match &tool.outdated {
+                Some(old) => (
+                    format!("{old} is installed, but this version of Gleipnir uses a newer one"),
+                    theme.warning,
+                ),
+                None => ("Not found".to_string(), theme.warning),
+            },
         };
         let action: Option<AnyElement> = if tool.installing || tool.resolution.found.is_some() {
             None
         } else if tool.can_install {
             let (package_id, tool) = (package_id.to_string(), tool.clone());
-            let label = match &tool.version {
-                Some(version) => format!("Install {version}"),
-                None => "Install".to_string(),
+            let label = match (&tool.version, &tool.outdated) {
+                (Some(version), Some(_)) => format!("Update to {version}"),
+                (Some(version), None) => format!("Install {version}"),
+                (None, _) => "Install".to_string(),
             };
             Some(
                 div()

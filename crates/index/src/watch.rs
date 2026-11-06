@@ -43,6 +43,58 @@ pub fn watch(root: &Path) -> Result<(ProjectWatcher, mpsc::UnboundedReceiver<Vec
     Ok((ProjectWatcher { _watcher: watcher }, batch_rx))
 }
 
+/// Watches individual folders, not their subfolders: for open files wherever they are, which a
+/// project's recursive watch may not cover.
+pub struct DirWatcher {
+    watcher: RecommendedWatcher,
+    watched: BTreeSet<PathBuf>,
+}
+
+impl DirWatcher {
+    /// Starts watching a folder, if it isn't already.
+    pub fn add(&mut self, dir: &Path) -> Result<()> {
+        if self.watched.contains(dir) {
+            return Ok(());
+        }
+        self.watcher.watch(dir, RecursiveMode::NonRecursive)?;
+        self.watched.insert(dir.to_path_buf());
+        Ok(())
+    }
+
+    pub fn remove(&mut self, dir: &Path) {
+        if self.watched.remove(dir) {
+            self.watcher.unwatch(dir).ok();
+        }
+    }
+
+    pub fn watched(&self) -> impl Iterator<Item = &Path> {
+        self.watched.iter().map(PathBuf::as_path)
+    }
+}
+
+/// A watcher for single folders, added as needed. Batches arrive as with `watch`.
+pub fn watch_dirs() -> Result<(DirWatcher, mpsc::UnboundedReceiver<Vec<PathBuf>>)> {
+    let (raw_tx, raw_rx) = std_mpsc::channel::<PathBuf>();
+    let (batch_tx, batch_rx) = mpsc::unbounded();
+    let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if let Ok(event) = event {
+            for path in event.paths {
+                raw_tx.send(path).ok();
+            }
+        }
+    })?;
+    thread::Builder::new()
+        .name("file-watcher".to_string())
+        .spawn(move || batch_events(raw_rx, batch_tx))?;
+    Ok((
+        DirWatcher {
+            watcher,
+            watched: BTreeSet::new(),
+        },
+        batch_rx,
+    ))
+}
+
 /// Ends when the watcher is dropped, which closes the incoming channel.
 fn batch_events(raw: std_mpsc::Receiver<PathBuf>, batches: mpsc::UnboundedSender<Vec<PathBuf>>) {
     while let Ok(first) = raw.recv() {
@@ -102,6 +154,21 @@ mod tests {
             }
             false
         })
+    }
+
+    #[test]
+    fn single_folders_report_their_files_but_not_subfolders() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir(root.join("sub")).unwrap();
+        let (mut watcher, mut rx) = watch_dirs().unwrap();
+        watcher.add(&root).unwrap();
+        watcher.add(&root).unwrap();
+        assert_eq!(watcher.watched().count(), 1);
+        thread::sleep(Duration::from_millis(100));
+        let file = root.join("open.txt");
+        fs::write(&file, "changed").unwrap();
+        assert!(wait_for(&mut rx, &file));
     }
 
     #[test]

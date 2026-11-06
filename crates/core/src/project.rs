@@ -304,6 +304,46 @@ impl Project {
         cx.notify();
     }
 
+    /// Indexes a file's symbols from text that isn't on disk yet, like an open file's unsaved
+    /// edits, so Search Everywhere finds what's been typed. Saving brings disk back in line, and
+    /// `reindex_from_disk` forgets the unsaved version when its edits are discarded.
+    pub fn index_text(
+        &mut self,
+        path: &Path,
+        text: gleipnir_text::Snapshot,
+        cx: &mut Context<Self>,
+    ) {
+        let Ok(relative) = path.strip_prefix(&self.root) else {
+            return;
+        };
+        let Some(language) = registry().language_for_path(path).map(|l| l.grammar) else {
+            return;
+        };
+        if text.len() as u64 > MAX_SYMBOL_FILE_SIZE {
+            return;
+        }
+        let relative: Arc<str> = relative.to_string_lossy().into();
+        // The snapshot shares the rope, so only this background task pays for the copy.
+        let extract = cx
+            .background_spawn(async move { extract_symbols(language, &text.slice(0..text.len())) });
+        cx.spawn(async move |this, cx| {
+            let symbols = extract.await;
+            this.update(cx, |this, cx| {
+                this.symbols.insert(relative, symbols.into());
+                this.symbols_changed(cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Indexes a file from disk again, as when unsaved edits that were indexed are thrown away.
+    pub fn reindex_from_disk(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if let Ok(relative) = path.strip_prefix(&self.root) {
+            self.queue_symbols(vec![relative.to_string_lossy().into()], cx);
+        }
+    }
+
     pub fn refresh_git(&mut self, cx: &mut Context<Self>) {
         if self.git_running {
             self.git_rerun = true;
@@ -442,6 +482,20 @@ mod tests {
             (status.files, status.symbols, status.indexing),
             (3, 3, None)
         );
+    }
+
+    #[gpui::test]
+    fn unsaved_text_is_indexed_until_disk_is_read_again(cx: &mut TestAppContext) {
+        let (_dir, root) = project_dir(&[("a.rs", "fn saved() {}")]);
+        let project = cx.new(|cx| Project::new(root.clone(), cx));
+        idle(&project, cx);
+        project.update(cx, |p, cx| {
+            let text = gleipnir_text::Buffer::new("fn typed() {}\nfn more() {}").snapshot();
+            p.index_text(&root.join("a.rs"), text, cx)
+        });
+        wait(cx, |cx| symbol_names(&project, cx) == ["typed", "more"]);
+        project.update(cx, |p, cx| p.reindex_from_disk(&root.join("a.rs"), cx));
+        wait(cx, |cx| symbol_names(&project, cx) == ["saved"]);
     }
 
     #[gpui::test]

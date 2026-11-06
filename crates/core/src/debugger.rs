@@ -319,7 +319,10 @@ pub struct Debugger {
     active: Option<LaunchId>,
     next_id: LaunchId,
     watches: Vec<String>,
-    buffers: HashMap<EntityId, Subscription>,
+    buffers: HashMap<EntityId, (gpui::WeakEntity<BufferModel>, Subscription)>,
+    /// The last text seen of each file with breakpoints, so they can follow a change made while
+    /// the file isn't open, like a branch switch.
+    known_text: HashMap<PathBuf, String>,
     _targets_task: Option<Task<()>>,
 }
 
@@ -355,6 +358,7 @@ impl Debugger {
             next_id: 1,
             watches: Vec::new(),
             buffers: HashMap::new(),
+            known_text: HashMap::new(),
             _targets_task: None,
         };
         this.refresh_targets(cx);
@@ -411,6 +415,13 @@ impl Debugger {
     }
 
     fn breakpoints_changed(&mut self, path: &Path, cx: &mut Context<Self>) {
+        if !self.known_text.contains_key(path)
+            && !self.breakpoints.in_file(path).is_empty()
+            && let Ok(text) = std::fs::read_to_string(path)
+        {
+            self.known_text
+                .insert(path.to_path_buf(), text.replace("\r\n", "\n"));
+        }
         self.send_breakpoints(path, cx);
         cx.emit(DebuggerEvent::BreakpointsChanged);
         cx.notify();
@@ -422,6 +433,14 @@ impl Debugger {
             return;
         }
         let subscription = cx.subscribe(buffer, |this, buffer, event, cx| {
+            if matches!(event, BufferEvent::Saved) {
+                let model = buffer.read(cx);
+                if let Some(path) = model.path().filter(|p| this.known_text.contains_key(*p)) {
+                    this.known_text
+                        .insert(path.to_path_buf(), model.buffer().text());
+                }
+                return;
+            }
             let BufferEvent::Edited { edits, .. } = event else {
                 return;
             };
@@ -440,12 +459,60 @@ impl Debugger {
                 this.breakpoints_changed(&path, cx);
             }
         });
-        self.buffers.insert(buffer.entity_id(), subscription);
+        self.buffers
+            .insert(buffer.entity_id(), (buffer.downgrade(), subscription));
         let id = buffer.entity_id();
         cx.observe_release(buffer, move |this, _, _| {
             this.buffers.remove(&id);
         })
         .detach();
+    }
+
+    /// Files changed on disk, perhaps by another program. Breakpoints in an open file follow its
+    /// buffer as it reloads; in a file that isn't open, they follow a diff of the old text and new.
+    pub fn files_changed(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        for path in paths {
+            if self.breakpoints.in_file(path).is_empty() {
+                continue;
+            }
+            let Ok(new) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            let new = new.replace("\r\n", "\n");
+            let open = self
+                .buffers
+                .values()
+                .filter_map(|(buffer, _)| buffer.upgrade())
+                .any(|b| b.read(cx).path() == Some(path.as_path()));
+            let old = self.known_text.insert(path.clone(), new.clone());
+            let (false, Some(old)) = (open, old) else {
+                continue;
+            };
+            let hunks = gleipnir_text::diff::diff_lines(&old, &new);
+            if hunks.is_empty() {
+                continue;
+            }
+            let moved: Vec<Breakpoint> = self
+                .breakpoints
+                .in_file(path)
+                .iter()
+                .map(|b| Breakpoint {
+                    line: gleipnir_text::diff::map_line(&hunks, b.line as usize) as u32,
+                    ..b.clone()
+                })
+                .collect();
+            for breakpoint in self.breakpoints.in_file(path).to_vec() {
+                self.breakpoints.remove(path, breakpoint.line);
+            }
+            for breakpoint in moved {
+                // Two landing on one line keep the first.
+                if self.breakpoints.get(path, breakpoint.line).is_none() {
+                    self.breakpoints.set(path, breakpoint);
+                }
+            }
+            self.statuses.remove(path);
+            self.breakpoints_changed(path, cx);
+        }
     }
 
     /// Tells every live session about a file's breakpoints.

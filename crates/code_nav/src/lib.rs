@@ -234,6 +234,18 @@ pub fn open_location(
     if record {
         workspace.record_position(cx);
     }
+    open_location_then(workspace, path, start, window, cx).detach();
+}
+
+/// Opens a location and resolves once the cursor is there, for callers that do something after,
+/// like handing focus back to a list being previewed from.
+pub fn open_location_then(
+    workspace: &mut Workspace,
+    path: PathBuf,
+    start: Utf16Point,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) -> gpui::Task<()> {
     let open = workspace.open_path(path, window, cx);
     cx.spawn(async move |_, cx| {
         let Ok(editor) = open.await else { return };
@@ -245,7 +257,6 @@ pub fn open_location(
             editor.jump_to(point.line, point.col, cx);
         });
     })
-    .detach();
 }
 
 fn word_at(buffer: &Entity<gleipnir_core::BufferModel>, offset: usize, cx: &App) -> Option<String> {

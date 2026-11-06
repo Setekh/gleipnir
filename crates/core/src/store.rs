@@ -16,6 +16,9 @@ type OpenResult = std::result::Result<Entity<BufferModel>, Arc<anyhow::Error>>;
 pub struct BufferStore {
     buffers: HashMap<PathBuf, WeakEntity<BufferModel>>,
     opening: HashMap<PathBuf, Shared<Task<OpenResult>>>,
+    /// Watches the folder of every open file, so a change on disk shows at once.
+    watcher: Option<gleipnir_index::DirWatcher>,
+    _watch: Option<Task<()>>,
     _poll: Option<Task<()>>,
 }
 
@@ -24,7 +27,51 @@ impl BufferStore {
         Self {
             buffers: HashMap::new(),
             opening: HashMap::new(),
+            watcher: None,
+            _watch: None,
             _poll: None,
+        }
+    }
+
+    /// Watches the folders of open files for changes from other programs, wherever they are.
+    pub fn start_watching(&mut self, cx: &mut Context<Self>) {
+        let Ok((watcher, mut changes)) = gleipnir_index::watch_dirs() else {
+            return;
+        };
+        self.watcher = Some(watcher);
+        for path in self.buffers.keys().cloned().collect::<Vec<_>>() {
+            self.watch_folder_of(&path);
+        }
+        self._watch = Some(cx.spawn(async move |this, cx| {
+            use futures::StreamExt as _;
+            while let Some(paths) = changes.next().await {
+                if this
+                    .update(cx, |this, cx| this.check_paths(&paths, cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn watch_folder_of(&mut self, path: &Path) {
+        if let (Some(watcher), Some(folder)) = (&mut self.watcher, path.parent()) {
+            watcher.add(folder).ok();
+        }
+    }
+
+    /// Checks the open buffers among some changed paths, or in changed folders, against disk.
+    pub fn check_paths(&mut self, paths: &[PathBuf], cx: &mut Context<Self>) {
+        for buffer in self.open_buffers() {
+            let affected = buffer.read(cx).path().is_some_and(|path| {
+                paths
+                    .iter()
+                    .any(|changed| changed == path || path.parent() == Some(changed.as_path()))
+            });
+            if affected {
+                buffer.update(cx, |buffer, cx| buffer.check_disk(cx));
+            }
         }
     }
 
@@ -67,6 +114,7 @@ impl BufferStore {
                 let (text, mtime) = result.map_err(Arc::new)?;
                 let buffer = cx
                     .new(|cx| BufferModel::with_mtime(&text, Some(path.clone()), Some(mtime), cx));
+                this.watch_folder_of(&path);
                 this.buffers.insert(path, buffer.downgrade());
                 Ok(buffer)
             })
@@ -119,8 +167,8 @@ impl BufferStore {
         }
     }
 
-    /// Starts checking for external changes on an interval. Temporary until file watching arrives
-    /// with the project index, which can also see changes in files that aren't open.
+    /// Starts checking for external changes on an interval: a safety net under watching, as watchers
+    /// can drop events, such as when a whole folder is replaced.
     pub fn start_polling(&mut self, interval: Duration, cx: &mut Context<Self>) {
         self._poll = Some(cx.spawn(async move |this, cx| {
             loop {
@@ -385,6 +433,41 @@ mod tests {
             assert!(is_dirty(&buffer, cx));
             assert_eq!(fs::read_to_string(&path).unwrap(), "a");
         }
+    }
+
+    #[gpui::test]
+    async fn a_watched_file_reloads_when_changed_elsewhere(cx: &mut TestAppContext) {
+        cx.executor().allow_parking();
+        let dir = tempfile::tempdir().unwrap();
+        let path = fs::canonicalize(dir.path()).unwrap().join("a.txt");
+        fs::write(&path, "one\ntwo\n").unwrap();
+        let store = cx.new(|cx| {
+            let mut store = BufferStore::new();
+            store.start_watching(cx);
+            store
+        });
+        let buffer = open(&store, &path, cx).await.unwrap();
+        let edits = Rc::new(RefCell::new(Vec::new()));
+        let seen = edits.clone();
+        cx.update(|cx| {
+            cx.subscribe(&buffer, move |_, event: &BufferEvent, _| {
+                if let BufferEvent::Edited { edits, .. } = event {
+                    seen.borrow_mut().extend(edits.iter().map(|e| e.start.line));
+                }
+            })
+            .detach()
+        });
+        // Long enough for the watcher to settle, and for the modification time to differ.
+        std::thread::sleep(Duration::from_millis(300));
+        fs::write(&path, "one\nTWO\n").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while text_of(&buffer, cx) != "one\nTWO\n" {
+            assert!(std::time::Instant::now() < deadline, "never reloaded");
+            cx.run_until_parked();
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Only the changed line was replaced.
+        assert_eq!(*edits.borrow(), [1]);
     }
 
     #[gpui::test]

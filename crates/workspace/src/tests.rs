@@ -619,3 +619,22 @@ fn breadcrumbs_run_from_the_project_root() {
         [("hosts".to_string(), PathBuf::from("/etc/hosts"))]
     );
 }
+
+#[gpui::test]
+fn symbols_typed_but_not_saved_are_searchable(cx: &mut TestAppContext) {
+    let (_dir, root) = project(&[("a.rs", "fn saved() {}\n")]);
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    open(&workspace, root.join("a.rs"), cx);
+    cx.simulate_keystrokes(&keys("mod-end"));
+    cx.simulate_input("fn typed_here() {}\n");
+    let project = cx.update(|_, cx| workspace.read(cx).project().cloned().unwrap());
+    run_until(cx, |cx| {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(100));
+        cx.update(|_, cx| {
+            project.update(cx, |p, _| {
+                p.symbols().iter().any(|e| e.symbol.name == "typed_here")
+            })
+        })
+    });
+}

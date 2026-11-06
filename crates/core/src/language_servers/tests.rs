@@ -18,6 +18,8 @@ struct FakeState {
     versions: Map<String, i64>,
     log: Vec<String>,
     initialized: u32,
+    /// Each `didChangeWatchedFiles`, as (file name, change type).
+    watched: Vec<Vec<(String, u64)>>,
 }
 
 /// Applies an LSP change to text, converting the UTF-16 range independently of our own code.
@@ -111,6 +113,19 @@ fn fake_launcher(state: Shared, crash_on: Option<&'static str>) -> Launcher {
                         let version = params["textDocument"]["version"].as_i64().unwrap();
                         let previous = state.versions.insert(uri, version).unwrap_or(0);
                         assert!(version > previous, "versions must increase");
+                    }
+                    "workspace/didChangeWatchedFiles" => {
+                        let changes = params["changes"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|c| {
+                                let uri = c["uri"].as_str().unwrap();
+                                let name = uri.rsplit('/').next().unwrap().to_string();
+                                (name, c["type"].as_u64().unwrap())
+                            })
+                            .collect();
+                        state.lock().unwrap().watched.push(changes);
                     }
                     "textDocument/didClose" => {
                         let uri = params["textDocument"]["uri"].as_str().unwrap().to_string();
@@ -525,4 +540,42 @@ fn rust_analyzer_counts_as_busy_until_it_has_loaded_the_project(cx: &mut TestApp
         busy: Some("loading the project".into()),
     });
     assert!(seen.borrow().contains(&loading), "{:?}", seen.borrow());
+}
+
+#[gpui::test]
+fn files_changed_elsewhere_are_reported_unless_open_or_irrelevant(cx: &mut TestAppContext) {
+    let s = setup(None, cx);
+    let open = s.root.join("a.rs");
+    let buffer = buffer("fn a() {}", &open, cx);
+    s.servers
+        .update(cx, |servers, cx| servers.register_buffer(&buffer, cx));
+    wait(cx, |_| server_text(&s, &open).is_some());
+
+    std::fs::write(s.root.join("b.rs"), "fn b() {}").unwrap();
+    std::fs::write(s.root.join("Cargo.toml"), "[package]").unwrap();
+    let changed: Vec<PathBuf> = [
+        "a.rs",
+        "b.rs",
+        "Cargo.toml",
+        "gone.rs",
+        "notes.txt",
+        "target/x.rs",
+    ]
+    .iter()
+    .map(|p| s.root.join(p))
+    .collect();
+    s.servers
+        .read_with(cx, |servers, _| servers.files_changed(&changed));
+    let state = s.state.clone();
+    wait(cx, |_| !state.lock().unwrap().watched.is_empty());
+    let watched = s.state.lock().unwrap().watched[0].clone();
+    // Changed is 2 and deleted is 3, in LSP's numbering.
+    assert_eq!(
+        watched,
+        [
+            ("b.rs".to_string(), 2),
+            ("Cargo.toml".to_string(), 2),
+            ("gone.rs".to_string(), 3),
+        ]
+    );
 }

@@ -113,6 +113,10 @@ pub fn install_tool(name: &str, spec: &ToolSpec, cx: &InstallContext) -> Result<
                     target.display()
                 );
             }
+            // An update replaces what it updates.
+            for (_, folder) in crate::tools::older_installs(name, spec, cx.managed_dir) {
+                fs::remove_dir_all(folder).ok();
+            }
             Ok(target)
         }
     }

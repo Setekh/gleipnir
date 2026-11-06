@@ -14,4 +14,4 @@ pub use search::{
     Cancel, FileHit, Query, SymbolEntry, SymbolFilter, SymbolHit, search_files, search_symbols,
 };
 pub use tree::{DirEntry, EntryKind, FileTree, Row, is_ignored, read_directory};
-pub use watch::{ProjectWatcher, watch};
+pub use watch::{DirWatcher, ProjectWatcher, watch, watch_dirs};

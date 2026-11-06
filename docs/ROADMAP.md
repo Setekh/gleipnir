@@ -45,8 +45,6 @@ Still open from M1:
   GPU submission or what reaches the display.
 - **IntelliJ's double-tap Option/Ctrl to clone a caret** uses Cmd+Alt+arrow or Ctrl+Alt+arrow for
   now. It can share the gesture detector from item 3.3.
-- **Saving over an external change doesn't prompt.** The status bar flags the conflict, and saving
-  overwrites the file. A proper dialog fits better with the workspace in M2.
 
 ## M2: Workspace shell
 
@@ -69,9 +67,6 @@ Still open from M2:
   current tab, and closing removes it, which covers moving one by hand.
 - **The tree selects one entry at a time.** Multi-select, and typing to jump to a name as IntelliJ
   does, aren't built.
-- **Only the Project panel exists,** so the right and bottom docks are tested with stand-in panels.
-- **Open files outside the project** are still polled every second for external changes. Files
-  inside it are watched.
 
 ## M3: Search Everywhere
 
@@ -91,9 +86,7 @@ about four seconds in the background, and a search over 100,000 paths takes unde
 
 Still open from M3:
 
-- **Symbols come from files on disk,** so unsaved edits show up in search once they're saved.
 - **There's no full-text search** (Find in Files) yet. It's on the list for later.
-- **Symbols from language servers** join the index in M5, as planned in item 5.9.
 
 ## M4: Packages and SDKs
 
@@ -113,12 +106,8 @@ checksum verified: gopls, delve, ols, js-debug and typescript-language-server.
 
 Still open from M4:
 
-- **Run targets and debug launches** come from each language's adapter, and are tested against
-  sample projects, but nothing runs or debugs them until M6.
 - **Third-party packages** aren't loaded yet. The registry reads manifests like any other, so this is
   a matter of where to find them, which is stage 2 in the architecture.
-- **Tools aren't updated** when a manifest's pinned version changes. The new version installs
-  alongside, and the old one stays until removed by hand.
 
 ## M5: Code intelligence
 
@@ -150,19 +139,11 @@ Cmd+] back and forward.
 
 Still open from M5:
 
-- **Find Usages doesn't preview**: moving through results doesn't show them in the editor; Enter or
-  a click opens one.
-- **Rename across files isn't one undo step.** Each open file undoes its own part; files that weren't
-  open are saved, and only version control takes those back.
-- **Files changed outside the editor** aren't reported to servers (`didChangeWatchedFiles`), so after
-  a branch switch a server may answer from old text until restarted (Code > Restart Language Server).
 - **Not built yet:** highlighting the usages of the name under the cursor, inlay hints and semantic
   highlighting.
-- **Symbols from servers in Search Everywhere** land on the right line, but the column can be off
-  on lines with non-ASCII text before the name, as servers count UTF-16 units.
-- **rust-analyzer reports type errors on save**, from `cargo check`, as it does everywhere; only its
+- **rust-analyzer reports type errors on save**, from `cargo check`, as it does everywhere (this is
+  how rust-analyzer works rather than something to fix); only its
   own diagnostics show while typing.
-- **JavaScript** shares the TypeScript server and has unit coverage, but no end-to-end script yet.
 
 ## M6: Debugger
 
@@ -205,8 +186,37 @@ Still open from M6:
   the program's stdin, and runs are without a terminal.
 - **Rust values look like C** under lldb, which has no Rust plugin; a formatter script like
   rust-lldb's would make strings and collections read naturally.
-- **Breakpoints don't move with edits made outside the editor**, like a `git checkout`.
 - **lldb-dap on Linux** is untested, as is all of Linux.
+
+## M7: Closing the open items
+
+Goal: everything left open by M1 to M6 that can be done on this machine. Linux on real hardware, CI
+and GPU-side frame timing stay open above, as they need an Omarchy machine or a remote.
+
+Done in the first batch:
+
+- **Changes made outside the editor** reach everything that cares. Open files' folders are watched,
+  so they reload at once wherever they are, with a 10-second poll left as a safety net. A reload
+  replaces only the lines that changed, worked out by a line diff, so cursors, breakpoints and
+  servers keep their places. Servers hear about files they don't have open
+  (`didChangeWatchedFiles`), and breakpoints in closed files follow a diff of their old text.
+- **Search Everywhere sees unsaved edits**: an open file's text is indexed again once typing
+  pauses, and read from disk again if the edits are thrown away.
+- **Symbols from servers** land on their name, whatever units the server counted the column in.
+- **Find Usages previews** each result in the editor as you move through the list.
+- **Rename and quick fixes across files undo in one step**, from any of the files, saving again
+  the files that weren't open.
+- **Tool updates**: when a manifest pins a newer version, Languages & SDKs offers to update, and
+  installing it removes the old one.
+- **JavaScript** is in the end-to-end `code` script.
+- Already done, and only out of date here: the prompt when saving over a change on disk (M2), the
+  panels beyond Project, symbols from servers in search (M5), and run targets that run (M6).
+
+Next: highlighting usages of the name under the cursor, inlay hints, semantic highlighting,
+double-tap Option/Ctrl to clone a caret, dragging tabs, multi-select and type-to-jump in the project
+tree, and Find in Files. Then the debugger's: editable run configurations and tests as targets,
+attaching, exception breakpoints, setting values, program input, readable Rust values, and
+third-party packages.
 
 ## Later
 

@@ -63,6 +63,9 @@ make_code_fixtures() {
     printf 'import { greet } from "./util.js";\n\nconsole.log(greet({ name: "a" }));\n' > "$dir/web/app.ts"
     mkdir -p "$dir/odin"
     printf 'package demo\n\nimport "core:fmt"\n\ndouble :: proc(n: int) -> int {\n\treturn n * 2\n}\n\nmain :: proc() {\n\tfmt.println(double(2))\n}\n' > "$dir/odin/main.odin"
+    mkdir -p "$dir/js"
+    printf 'function double(n) {\n  return n * 2;\n}\n\nmodule.exports = { double };\n' > "$dir/js/lib.js"
+    printf 'const lib = require("./lib");\n\nconsole.log(lib.double(2));\n' > "$dir/js/app.js"
     mkdir -p "$dir/scripts"
     printf 'function total(values: number[]): number {\n  let sum = 0;\n  for (const v of values) {\n    sum += v;\n  }\n  return sum;\n}\n\nconsole.log("total", total([1, 2, 3]));\n' > "$dir/scripts/count.ts"
 }

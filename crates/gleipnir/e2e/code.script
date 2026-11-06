@@ -105,6 +105,22 @@ action code_nav::GoToDeclarationOrUsages
 wait-match /editor/path web/util.ts
 expect-state /editor/cursor/0 4
 
+# JavaScript, through the same server: across a require, with hover and completion.
+open {dir}/js/app.js
+wait-state /language_servers/typescript running
+cursor 3:18
+action editor::ShowHover
+wait-match /editor/hover double(n: any): number
+key escape
+action code_nav::GoToDeclarationOrUsages
+wait-match /editor/path js/lib.js
+open {dir}/js/app.js
+key end
+key enter
+type lib.do
+wait-match /editor/completions double
+key escape
+
 # Odin, with ols.
 open {dir}/odin/main.odin
 wait-state /language_servers/odin running

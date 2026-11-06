@@ -225,6 +225,27 @@ impl UsagesPanel {
         &self.usages
     }
 
+    /// Shows the selected usage in the editor while the list keeps the keyboard, as moving
+    /// through results in IntelliJ's Find panel does.
+    fn preview_selected(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(Row::Item(index)) = self.nav.selected().and_then(|r| self.rows.get(r)) else {
+            return;
+        };
+        let usage = self.usages[*index].clone();
+        let focus = self.focus_handle.clone();
+        self.workspace
+            .update(cx, |workspace, cx| {
+                let open =
+                    crate::open_location_then(workspace, usage.path, usage.start, window, cx);
+                cx.spawn_in(window, async move |_, cx| {
+                    open.await;
+                    cx.update(|window, cx| window.focus(&focus, cx)).ok();
+                })
+                .detach();
+            })
+            .ok();
+    }
+
     fn open_row(&mut self, row: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(Row::Item(index)) = self.rows.get(row) else {
             return;
@@ -354,12 +375,14 @@ impl Render for UsagesPanel {
             .flex_col()
             .bg(theme.surface)
             .text_size(px(12.5))
-            .on_action(cx.listener(|this, _: &SelectNext, _, cx| {
+            .on_action(cx.listener(|this, _: &SelectNext, window, cx| {
                 this.nav.select_next();
+                this.preview_selected(window, cx);
                 cx.notify();
             }))
-            .on_action(cx.listener(|this, _: &SelectPrevious, _, cx| {
+            .on_action(cx.listener(|this, _: &SelectPrevious, window, cx| {
                 this.nav.select_previous();
+                this.preview_selected(window, cx);
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &Open, window, cx| {
