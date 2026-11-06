@@ -168,6 +168,12 @@ Still open from M5:
 
 Goal: IntelliJ-class debugging in all five languages.
 
+Status: built and passing on macOS, against a fake adapter in tests and the real ones end to end:
+`E2E_TOOLS=<managed tools folder> script/e2e debug` debugs Rust and Odin through lldb-dap, Go
+through delve and TypeScript through js-debug, and the headless tests in `crates/dap/tests` do the
+same per item 6.4 to 6.6, plus JavaScript and TypeScript compiled with source maps. What each adapter
+needed is in [DEBUGGERS.md](DEBUGGERS.md).
+
 | # | Item | Finished when |
 | --- | --- | --- |
 | 6.1 | `dap` client and session, tested with a fake adapter | Handles the full launch, stop, step and terminate cycle, and adapter crashes |
@@ -179,6 +185,28 @@ Goal: IntelliJ-class debugging in all five languages.
 | 6.7 | Debug panel: toolbar, threads and frames, lazy variables tree | Selecting a frame moves the editor and updates variables |
 | 6.8 | Console, watches, evaluate | Output streams live; expressions evaluate in the selected frame |
 | 6.9 | Inline values, conditional breakpoints, logpoints, run to cursor | Values appear inline at each stop; conditions are honoured |
+
+Shortcuts, IntelliJ's macOS ones: Ctrl+R run and Ctrl+D debug the chosen configuration, Ctrl+Alt+R
+and Ctrl+Alt+D choose one first, Ctrl+Shift+R and Ctrl+Shift+D run or debug the current file, Cmd+F2
+stop, F8 step over, F7 step into, Shift+F8 step out, Alt+F9 run to cursor, Cmd+Alt+R resume, Alt+F8
+evaluate, Cmd+F8 toggle a breakpoint, Cmd+Shift+F8 edit the breakpoint on this line or list them
+all, Cmd+4 the Run panel and Cmd+5 the Debug panel. A click beside a line number toggles a
+breakpoint, a right-click edits it, and the Run icon beside `main` runs or debugs.
+
+Still open from M6:
+
+- **Attaching** to a running process isn't offered; every session launches its program.
+- **Run configurations can't be edited**: arguments, environment and working folder are the
+  defaults each language's adapter gives. Tests aren't run targets yet.
+- **Exception breakpoints** use each adapter's defaults; there's no UI to choose which.
+- **Values can't be changed** while stopped (`setVariable`), and there's no memory or disassembly
+  view.
+- **Programs that read input** can't be typed to: the console takes expressions to evaluate, not
+  the program's stdin, and runs are without a terminal.
+- **Rust values look like C** under lldb, which has no Rust plugin; a formatter script like
+  rust-lldb's would make strings and collections read naturally.
+- **Breakpoints don't move with edits made outside the editor**, like a `git checkout`.
+- **lldb-dap on Linux** is untested, as is all of Linux.
 
 ## Later
 

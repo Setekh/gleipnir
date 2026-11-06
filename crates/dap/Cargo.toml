@@ -1,0 +1,21 @@
+[package]
+name = "gleipnir-dap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gleipnir_dap"
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+gleipnir-packages.workspace = true
+tempfile = "3"

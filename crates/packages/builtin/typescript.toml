@@ -42,6 +42,7 @@ useSyntaxServer = "never"
 
 [debugger]
 tool = "js-debug"
+adapter_id = "pwa-node"
 # js-debug is a Node program, so it's started with the project's Node.
 runtime = "sdk"
 args = ["{port}", "127.0.0.1"]

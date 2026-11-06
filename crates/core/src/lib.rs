@@ -1,12 +1,18 @@
 //! GPUI entities around the text and syntax models: open documents and how they reach the disk.
 
 mod buffer;
+mod debugger;
 mod language_servers;
 mod project;
 mod store;
 mod toolchains;
 
 pub use buffer::{BufferEvent, BufferModel, Diagnostic, DiskStatus, Severity};
+pub use debugger::{
+    AdapterLauncher, Breakpoint, BreakpointStatus, Breakpoints, ConsoleKind, ConsoleLine, Debugger,
+    DebuggerEvent, Launch, LaunchId, LaunchStatus, PreparedAdapter, ProcessCommand, ProcessHandle,
+    ProcessOutput, Session, WatchValue, is_local_scope, toolchain_adapter_launcher,
+};
 pub use language_servers::{
     GotoKind, LanguageServerEvent, LanguageServers, Launcher, Location, ServerStatus, SymbolHit,
     range_to_offsets, severity,

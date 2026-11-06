@@ -63,16 +63,19 @@ make_code_fixtures() {
     printf 'import { greet } from "./util.js";\n\nconsole.log(greet({ name: "a" }));\n' > "$dir/web/app.ts"
     mkdir -p "$dir/odin"
     printf 'package demo\n\nimport "core:fmt"\n\ndouble :: proc(n: int) -> int {\n\treturn n * 2\n}\n\nmain :: proc() {\n\tfmt.println(double(2))\n}\n' > "$dir/odin/main.odin"
+    mkdir -p "$dir/scripts"
+    printf 'function total(values: number[]): number {\n  let sum = 0;\n  for (const v of values) {\n    sum += v;\n  }\n  return sum;\n}\n\nconsole.log("total", total([1, 2, 3]));\n' > "$dir/scripts/count.ts"
 }
 
-# `code` drives real language servers, so it only runs when asked for. Servers that Gleipnir
-# installs itself are looked for in E2E_TOOLS, a managed tools folder from an earlier install.
+# `code` and `debug` drive real language servers and debuggers, so they only run when asked for.
+# Tools that Gleipnir installs itself are looked for in E2E_TOOLS, a managed tools folder from an
+# earlier install.
 scripts=${*:-editing workspace search toolchains perf}
 failed=0
 for name in $scripts; do
     # The folder is named after the script, which is what shows as the project's name.
     dir="$work/$name/$name"
-    if [ "$name" = code ]; then
+    if [ "$name" = code ] || [ "$name" = debug ]; then
         make_code_fixtures "$dir"
         if [ -n "${E2E_TOOLS:-}" ]; then
             mkdir -p "$work/$name/state"

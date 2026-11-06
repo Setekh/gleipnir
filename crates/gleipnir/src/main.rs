@@ -64,6 +64,7 @@ fn main() {
             gleipnir_search::bind_keys(cx);
             gleipnir_settings_ui::bind_keys(cx);
             gleipnir_code_nav::bind_keys(cx);
+            gleipnir_debugger_ui::bind_keys(cx);
             set_menus(cx);
 
             // Loaded last, so that it overrides the defaults.
@@ -93,6 +94,7 @@ fn main() {
                 gleipnir_search::add_to_workspace(workspace, window, cx);
                 gleipnir_settings_ui::add_to_workspace(workspace, window, cx);
                 gleipnir_code_nav::add_to_workspace(workspace, window, cx);
+                gleipnir_debugger_ui::add_to_workspace(workspace, window, cx);
             })));
 
             let window = open_project_window(target.root.clone(), false, cx);
@@ -186,10 +188,41 @@ fn set_menus(cx: &mut App) {
             disabled: false,
         },
         Menu {
+            name: "Run".into(),
+            items: {
+                use gleipnir_debugger_ui as d;
+                vec![
+                    MenuItem::action("Run", d::Run),
+                    MenuItem::action("Debug", d::Debug),
+                    MenuItem::action("Run…", d::RunConfiguration),
+                    MenuItem::action("Debug…", d::DebugConfiguration),
+                    MenuItem::action("Run This File", d::RunFile),
+                    MenuItem::action("Debug This File", d::DebugFile),
+                    MenuItem::action("Rerun", d::Rerun),
+                    MenuItem::action("Stop", d::Stop),
+                    MenuItem::separator(),
+                    MenuItem::action("Step Over", d::StepOver),
+                    MenuItem::action("Step Into", d::StepInto),
+                    MenuItem::action("Step Out", d::StepOut),
+                    MenuItem::action("Run to Cursor", d::RunToCursor),
+                    MenuItem::action("Resume", d::Resume),
+                    MenuItem::action("Pause", d::Pause),
+                    MenuItem::action("Evaluate Expression…", d::EvaluateExpression),
+                    MenuItem::separator(),
+                    MenuItem::action("Toggle Breakpoint", d::ToggleBreakpoint),
+                    MenuItem::action("View Breakpoints…", d::ViewBreakpoints),
+                    MenuItem::action("Remove All Breakpoints", d::RemoveAllBreakpoints),
+                ]
+            },
+            disabled: false,
+        },
+        Menu {
             name: "View".into(),
             items: vec![
                 MenuItem::action("Project", gleipnir_project_panel::Toggle),
                 MenuItem::action("Problems", gleipnir_code_nav::ShowProblems),
+                MenuItem::action("Run", gleipnir_debugger_ui::ShowRunPanel),
+                MenuItem::action("Debug", gleipnir_debugger_ui::ShowDebugPanel),
                 MenuItem::separator(),
                 MenuItem::action("Split Right", SplitRight),
                 MenuItem::action("Split Down", SplitDown),

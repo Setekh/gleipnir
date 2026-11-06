@@ -80,6 +80,15 @@ pub struct DebuggerSpec {
     pub transport: Transport,
     /// `sdk` runs the tool with the SDK's binary, for adapters that are scripts, like js-debug.
     pub runtime: Option<String>,
+    /// What to call the adapter in `initialize`, which some adapters check. The tool's name if
+    /// not given.
+    pub adapter_id: Option<String>,
+}
+
+impl DebuggerSpec {
+    pub fn adapter_id(&self) -> &str {
+        self.adapter_id.as_deref().unwrap_or(&self.tool)
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]

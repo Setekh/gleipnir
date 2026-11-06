@@ -1,0 +1,86 @@
+# Running and debugging with the real adapters: lldb-dap for Rust and Odin, delve for Go and
+# js-debug for TypeScript. Run with: E2E_TOOLS=<managed tools folder> script/e2e debug
+wait-timeout 120
+
+# Rust: a breakpoint from the shortcut, the stop with frames, variables and values beside the
+# code, a step, then running to the end.
+open {dir}/src/main.rs
+wait-match /panels/debug/targets shapes_demo
+cursor 5:5
+action debugger::ToggleBreakpoint
+expect-state /editor/breakpoints/0 5
+action debugger::DebugFile
+wait-state /panels/debug/launch/status Paused
+wait-state /editor/execution_line 5
+wait-match /editor/inline_values a: 4
+wait-match /panels/debug/variable_rows a = 4
+wait-match /panels/debug/launch/frames main
+screenshot {shots}/debug-rust-paused.png
+dump {shots}/debug-rust-paused.json
+action debugger::StepOver
+wait-state /editor/execution_line 6
+wait-match /editor/inline_values b: 9
+action debugger::Resume
+wait-match /panels/debug/launch/status Finished
+wait-match /panels/debug/launch/console 4 9
+wait-state /editor/execution_line null
+action debugger::RemoveAllBreakpoints
+
+# Go: stop inside a function, see its caller, step out of it.
+open {dir}/main.go
+cursor 6:2
+action debugger::ToggleBreakpoint
+action debugger::DebugFile
+wait-state /panels/debug/launch/status Paused
+wait-state /editor/execution_line 6
+wait-match /panels/debug/variable_rows n = 2
+wait-match /panels/debug/launch/frames main.main
+screenshot {shots}/debug-go-paused.png
+action debugger::StepOut
+wait-state /editor/execution_line 10
+action debugger::RemoveAllBreakpoints
+action debugger::Resume
+wait-match /panels/debug/launch/console 4 6
+wait-match /panels/debug/launch/status Finished
+
+# Run without the debugger: the output lands in the Run panel.
+action debugger::RunFile
+wait-match /panels/run/status Finished with exit code 0
+wait-match /panels/run/console 4 6
+
+# TypeScript through js-debug, which starts the real session as a child: a conditional
+# breakpoint inside a loop stops only when its condition holds.
+open {dir}/scripts/count.ts
+cursor 4:5
+action debugger::ToggleBreakpoint
+action debugger::ViewBreakpoints
+wait-state /modal BreakpointEditor
+type v\s===\s2
+key enter
+wait-state /modal null
+wait-match /panels/debug/breakpoints/0/condition v === 2
+action debugger::DebugFile
+wait-state /panels/debug/launch/status Paused
+wait-state /editor/execution_line 4
+wait-match /panels/debug/variable_rows v = 2
+wait-match /panels/debug/variable_rows sum = 1
+screenshot {shots}/debug-ts-paused.png
+action debugger::RemoveAllBreakpoints
+action debugger::Resume
+wait-match /panels/debug/launch/console total 6
+wait-match /panels/debug/launch/status Finished
+
+# Odin through lldb-dap, built with debug information first.
+open {dir}/odin/main.odin
+cursor 6:2
+action debugger::ToggleBreakpoint
+action debugger::DebugFile
+wait-state /panels/debug/launch/status Paused
+wait-state /editor/execution_line 6
+wait-match /panels/debug/variable_rows n = 2
+screenshot {shots}/debug-odin-paused.png
+action debugger::Resume
+wait-match /panels/debug/launch/console 4
+wait-match /panels/debug/launch/status Finished
+dump {shots}/debug-end.json
+quit

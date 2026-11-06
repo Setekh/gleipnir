@@ -31,6 +31,11 @@ pub struct Theme {
     pub editor_active_line: Hsla,
     pub editor_selection: Hsla,
     pub editor_cursor: Hsla,
+    pub breakpoint: Hsla,
+    /// The line execution is stopped on.
+    pub execution_line: Hsla,
+    /// The values the debugger shows beside the code.
+    pub inline_value: Hsla,
 
     pub syntax: SyntaxColors,
 
@@ -122,6 +127,9 @@ impl Theme {
             editor_active_line: hsla(rgba(0xffffff09)),
             editor_selection: hsla(rgba(0x4f7cac55)),
             editor_cursor: hsla(rgb(0xe0b65c)),
+            breakpoint: hsla(rgb(0xe5545e)),
+            execution_line: hsla(rgba(0x4f7cac40)),
+            inline_value: hsla(rgb(0x7f8ea3)),
 
             syntax: SyntaxColors {
                 attribute: hsla(rgb(0xb9a36b)),

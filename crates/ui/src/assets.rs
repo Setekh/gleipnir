@@ -15,6 +15,21 @@ pub enum Icon {
     Tree,
     Search,
     Problems,
+    Run,
+    Debug,
+    Stop,
+    Resume,
+    Pause,
+    StepOver,
+    StepInto,
+    StepOut,
+    Rerun,
+    Console,
+    Plus,
+    Minus,
+    Breakpoints,
+    RunToCursor,
+    Mute,
 }
 
 impl Icon {
@@ -28,11 +43,74 @@ impl Icon {
             Self::Tree => "icons/tree.svg",
             Self::Search => "icons/search.svg",
             Self::Problems => "icons/problems.svg",
+            Self::Run => "icons/run.svg",
+            Self::Debug => "icons/debug.svg",
+            Self::Stop => "icons/stop.svg",
+            Self::Resume => "icons/resume.svg",
+            Self::Pause => "icons/pause.svg",
+            Self::StepOver => "icons/step-over.svg",
+            Self::StepInto => "icons/step-into.svg",
+            Self::StepOut => "icons/step-out.svg",
+            Self::Rerun => "icons/rerun.svg",
+            Self::Console => "icons/console.svg",
+            Self::Plus => "icons/plus.svg",
+            Self::Minus => "icons/minus.svg",
+            Self::Breakpoints => "icons/breakpoints.svg",
+            Self::RunToCursor => "icons/run-cursor.svg",
+            Self::Mute => "icons/mute.svg",
         }
     }
 }
 
 const FILES: &[(&str, &[u8])] = &[
+    ("icons/run.svg", include_bytes!("../assets/icons/run.svg")),
+    (
+        "icons/debug.svg",
+        include_bytes!("../assets/icons/debug.svg"),
+    ),
+    ("icons/stop.svg", include_bytes!("../assets/icons/stop.svg")),
+    (
+        "icons/resume.svg",
+        include_bytes!("../assets/icons/resume.svg"),
+    ),
+    (
+        "icons/pause.svg",
+        include_bytes!("../assets/icons/pause.svg"),
+    ),
+    (
+        "icons/step-over.svg",
+        include_bytes!("../assets/icons/step-over.svg"),
+    ),
+    (
+        "icons/step-into.svg",
+        include_bytes!("../assets/icons/step-into.svg"),
+    ),
+    (
+        "icons/step-out.svg",
+        include_bytes!("../assets/icons/step-out.svg"),
+    ),
+    (
+        "icons/rerun.svg",
+        include_bytes!("../assets/icons/rerun.svg"),
+    ),
+    (
+        "icons/console.svg",
+        include_bytes!("../assets/icons/console.svg"),
+    ),
+    ("icons/plus.svg", include_bytes!("../assets/icons/plus.svg")),
+    (
+        "icons/minus.svg",
+        include_bytes!("../assets/icons/minus.svg"),
+    ),
+    (
+        "icons/breakpoints.svg",
+        include_bytes!("../assets/icons/breakpoints.svg"),
+    ),
+    (
+        "icons/run-cursor.svg",
+        include_bytes!("../assets/icons/run-cursor.svg"),
+    ),
+    ("icons/mute.svg", include_bytes!("../assets/icons/mute.svg")),
     (
         "icons/chevron-right.svg",
         include_bytes!("../assets/icons/chevron-right.svg"),

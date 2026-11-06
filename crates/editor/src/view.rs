@@ -67,6 +67,12 @@ pub struct EditorState {
     pub signature: Option<String>,
     /// Each as `line:column severity: message`, one-based.
     pub diagnostics: Vec<String>,
+    /// Lines with breakpoints, one-based.
+    pub breakpoints: Vec<usize>,
+    /// The line execution is stopped on, one-based.
+    pub execution_line: Option<usize>,
+    /// What's shown beside lines, as `line: text`, one-based, for the lines on screen.
+    pub inline_values: Vec<String>,
 }
 
 pub enum EditorEvent {
@@ -79,6 +85,15 @@ pub enum EditorEvent {
     SaveFailed(String),
     /// A Cmd+click, or Ctrl+click on Linux, on a name: go to where it's defined.
     GoToDefinition { offset: usize },
+    /// A click on a line number or beside it, with decorations shown: toggle a breakpoint.
+    GutterClicked { line: usize },
+    /// A click on a line's Run icon.
+    RunClicked { line: usize },
+    /// A right-click in the gutter, at a position in the window, for a menu.
+    GutterMenu {
+        line: usize,
+        position: gpui::Point<Pixels>,
+    },
 }
 
 impl EventEmitter<EditorEvent> for EditorView {}
@@ -107,6 +122,7 @@ pub struct EditorView {
     pub(crate) frame_times: Option<Vec<Duration>>,
     blink: Option<Task<()>>,
     pub(crate) semantics: crate::semantics::SemanticsState,
+    pub(crate) decorations: Option<Rc<dyn crate::decorations::DecorationProvider>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -140,8 +156,23 @@ impl EditorView {
             frame_times: None,
             blink: None,
             semantics: Default::default(),
+            decorations: None,
             _subscriptions: subscriptions,
         }
+    }
+
+    /// Shows a debugger's breakpoints, Run icons, execution line and values in this editor.
+    pub fn set_decorations(
+        &mut self,
+        provider: Rc<dyn crate::decorations::DecorationProvider>,
+        cx: &mut Context<Self>,
+    ) {
+        self.decorations = Some(provider);
+        cx.notify();
+    }
+
+    pub fn has_decorations(&self) -> bool {
+        self.decorations.is_some()
     }
 
     pub fn buffer(&self) -> &Entity<BufferModel> {
@@ -229,6 +260,22 @@ impl EditorView {
                     )
                 })
                 .collect(),
+            breakpoints: self.decorations.as_ref().map_or_else(Vec::new, |d| {
+                d.breakpoints(cx).iter().map(|b| b.line + 1).collect()
+            }),
+            execution_line: self
+                .decorations
+                .as_ref()
+                .and_then(|d| d.execution_line(cx))
+                .map(|(line, _)| line + 1),
+            inline_values: match (&self.decorations, &self.geometry) {
+                (Some(d), Some(g)) => d
+                    .inline_values(g.first_line..g.first_line + g.lines.len(), cx)
+                    .into_iter()
+                    .map(|(line, text)| format!("{}: {text}", line + 1))
+                    .collect(),
+                _ => Vec::new(),
+            },
         }
     }
 
@@ -637,10 +684,22 @@ impl EditorView {
     pub(crate) fn gutter_mouse_down(
         &mut self,
         line: usize,
+        zone: crate::decorations::GutterZone,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         window.focus(&self.focus_handle, cx);
+        if let Some(decorations) = &self.decorations {
+            let line = line.min(self.buffer.read(cx).buffer().line_count().saturating_sub(1));
+            let run = zone == crate::decorations::GutterZone::Run
+                && decorations.run_lines(cx).contains(&line);
+            cx.emit(if run {
+                EditorEvent::RunClicked { line }
+            } else {
+                EditorEvent::GutterClicked { line }
+            });
+            return;
+        }
         let buffer = self.buffer.read(cx).buffer();
         let range = ops::line_range_at(buffer, buffer.line_start(line));
         self.selections = SelectionSet::single(Selection::new(range.start, range.end));

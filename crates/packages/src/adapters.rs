@@ -37,6 +37,9 @@ pub struct RunTarget {
     /// The executable a debugger should launch, for compiled languages.
     pub program: Option<PathBuf>,
     pub cwd: PathBuf,
+    /// The file with the entry point, or for Go and Odin the package's folder, so the editor can
+    /// offer to run it from there.
+    pub source: Option<PathBuf>,
 }
 
 /// How to start a debug session: the arguments of DAP's `launch` request.
@@ -51,6 +54,26 @@ pub trait LanguageAdapter: Send + Sync {
     fn run_targets(&self, root: &Path) -> Vec<RunTarget>;
     /// The `launch` request for debugging a target.
     fn debug_launch(&self, target: &RunTarget) -> Result<DebugLaunch>;
+}
+
+/// The program and arguments that start a package's debug adapter, given where its tool is and,
+/// for adapters that are scripts, the SDK binary that runs them.
+pub fn debugger_command(
+    spec: &crate::manifest::DebuggerSpec,
+    tool: &Path,
+    sdk_binary: Option<&Path>,
+) -> Result<(PathBuf, Vec<String>)> {
+    match spec.runtime.as_deref() {
+        Some("sdk") => {
+            let Some(runtime) = sdk_binary else {
+                bail!("{} needs the SDK to run, and there isn't one", spec.tool)
+            };
+            let mut args = vec![tool.to_string_lossy().into_owned()];
+            args.extend(spec.args.iter().cloned());
+            Ok((runtime.to_path_buf(), args))
+        }
+        _ => Ok((tool.to_path_buf(), spec.args.clone())),
+    }
 }
 
 pub fn adapter_for(package_id: &str) -> Option<&'static dyn LanguageAdapter> {
@@ -165,31 +188,34 @@ impl LanguageAdapter for RustAdapter {
                 continue;
             };
             let dir = manifest.parent().unwrap_or(root);
-            let mut bins: Vec<String> = Vec::new();
+            let mut bins: Vec<(String, PathBuf)> = Vec::new();
             if dir.join("src/main.rs").is_file() {
-                bins.push(package.to_string());
+                bins.push((package.to_string(), dir.join("src/main.rs")));
             }
             if let Ok(entries) = fs::read_dir(dir.join("src/bin")) {
-                let mut names: Vec<String> = entries
+                let mut names: Vec<(String, PathBuf)> = entries
                     .filter_map(Result::ok)
                     .filter_map(|e| {
-                        e.path()
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().into_owned())
+                        let path = e.path();
+                        let stem = path.file_stem()?.to_string_lossy().into_owned();
+                        Some((stem, path))
                     })
                     .collect();
                 names.sort();
                 bins.extend(names);
             }
             if let Some(declared) = value.get("bin").and_then(|b| b.as_array()) {
-                bins.extend(
-                    declared
-                        .iter()
-                        .filter_map(|b| b.get("name")?.as_str().map(String::from)),
-                );
+                bins.extend(declared.iter().filter_map(|b| {
+                    let name = b.get("name")?.as_str()?.to_string();
+                    let path = b
+                        .get("path")
+                        .and_then(|p| p.as_str())
+                        .map_or_else(|| dir.join("src/main.rs"), |p| dir.join(p));
+                    Some((name, path))
+                }));
             }
-            bins.dedup();
-            for bin in bins {
+            bins.dedup_by(|a, b| a.0 == b.0);
+            for (bin, source) in bins {
                 targets.push(RunTarget {
                     package_id: "rust".into(),
                     name: bin.clone(),
@@ -210,6 +236,7 @@ impl LanguageAdapter for RustAdapter {
                     ],
                     program: Some(root.join("target/debug").join(&bin)),
                     cwd: root.to_path_buf(),
+                    source: Some(source),
                 });
             }
         }
@@ -253,14 +280,22 @@ impl LanguageAdapter for GoAdapter {
                 } else {
                     format!("./{}", relative.display())
                 };
+                // Named for people: the folder, rather than Go's `.` for the root package.
+                let name = if relative.as_os_str().is_empty() {
+                    root.file_name()
+                        .map_or_else(|| "main".into(), |n| n.to_string_lossy().into_owned())
+                } else {
+                    relative.display().to_string()
+                };
                 RunTarget {
                     package_id: "go".into(),
-                    name: package.clone(),
+                    name,
                     kind: RunTargetKind::Binary,
                     build: None,
                     run: vec!["go".into(), "run".into(), package],
                     program: Some(dir.clone()),
                     cwd: root.to_path_buf(),
+                    source: Some(dir.clone()),
                 }
             })
             .collect()
@@ -277,6 +312,8 @@ impl LanguageAdapter for GoAdapter {
                 "program": program,
                 "args": [],
                 "cwd": target.cwd,
+                // The program's output comes to us as events, rather than to delve's own stdout.
+                "outputMode": "remote",
             }),
         })
     }
@@ -330,6 +367,7 @@ impl LanguageAdapter for OdinAdapter {
                     run: vec![program.to_string_lossy().into_owned()],
                     program: Some(program),
                     cwd: root.to_path_buf(),
+                    source: Some(dir.clone()),
                 }
             })
             .collect()
@@ -356,6 +394,7 @@ impl TypeScriptAdapter {
             run: vec!["node".into(), file.to_string_lossy().into_owned()],
             program: Some(file.to_path_buf()),
             cwd: root.to_path_buf(),
+            source: Some(file.to_path_buf()),
         }
     }
 }
@@ -387,6 +426,7 @@ impl LanguageAdapter for TypeScriptAdapter {
                         run: vec!["npm".into(), "run".into(), name.clone()],
                         program: None,
                         cwd: root.to_path_buf(),
+                        source: None,
                     })
                     .collect()
             })
@@ -408,7 +448,16 @@ impl LanguageAdapter for TypeScriptAdapter {
             "name": target.name,
             "cwd": target.cwd,
             "sourceMaps": true,
+            // Where compiled files are, so breakpoints in TypeScript resolve through source maps
+            // before the compiled file has loaded.
+            "outFiles": [
+                format!("{}/**/*.(m|c|)js", target.cwd.display()),
+                "!**/node_modules/**",
+            ],
             "console": "internalConsole",
+            // What VS Code calls the workspace folder. js-debug builds its defaults from it, like
+            // where source maps may be, and without it can't resolve breakpoints through them.
+            "__workspaceFolder": target.cwd,
         });
         match (&target.program, target.kind) {
             (Some(program), _) => launch["program"] = json!(program),
@@ -489,7 +538,14 @@ mod tests {
             ("main.go", "// root\npackage main\n"),
         ]);
         let targets = GoAdapter.run_targets(dir.path());
-        assert_eq!(names(&targets), [".", "./cmd/server"]);
+        let root_name = dir
+            .path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(names(&targets), [root_name.as_str(), "cmd/server"]);
+        assert_eq!(targets[1].run, ["go", "run", "./cmd/server"]);
         let launch = GoAdapter
             .debug_launch(&targets[1])
             .unwrap()

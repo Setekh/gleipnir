@@ -492,3 +492,58 @@ fn perf_on_a_100k_line_file() {
     let _ = buffer.snapshot();
     println!("snapshot: {:?}", t.elapsed());
 }
+
+#[test]
+fn the_enclosing_function_is_found_in_every_language() {
+    let cases = [
+        (
+            Language::Rust,
+            "fn helper() {}\n\nfn main() {\n    let count = 3;\n}\n",
+        ),
+        (
+            Language::Go,
+            "package main\n\nfunc main() {\n\tcount := 3\n}\n",
+        ),
+        (
+            Language::Odin,
+            "package main\n\nmain :: proc() {\n\tcount := 3\n}\n",
+        ),
+        (
+            Language::TypeScript,
+            "function main(): void {\n  const count = 3;\n}\n",
+        ),
+        (
+            Language::JavaScript,
+            "const main = () => {\n  const count = 3;\n};\n",
+        ),
+    ];
+    for (language, source) in cases {
+        let (syntax, _) = parse(language, source);
+        let at = source.find("count").unwrap();
+        let range = syntax
+            .enclosing_function(at)
+            .unwrap_or_else(|| panic!("{language:?}"));
+        assert!(source[range.clone()].contains("count"), "{language:?}");
+        assert!(!source[range].contains("helper"), "{language:?}");
+    }
+}
+
+#[test]
+fn identifiers_skip_strings_comments_and_fields() {
+    let source =
+        "fn main() {\n    let total = count + point.x; // count\n    print(\"count\");\n}\n";
+    let (syntax, _) = parse(Language::Rust, source);
+    let names: Vec<&str> = syntax
+        .identifiers(0..source.len())
+        .into_iter()
+        .map(|r| &source[r])
+        .collect();
+    assert_eq!(names, ["main", "total", "count", "point", "print"]);
+    let second_line = source.find("let").unwrap()..source.find("print").unwrap();
+    let names: Vec<&str> = syntax
+        .identifiers(second_line)
+        .into_iter()
+        .map(|r| &source[r])
+        .collect();
+    assert_eq!(names, ["total", "count", "point"]);
+}

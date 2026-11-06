@@ -10,16 +10,19 @@ name = "gleipnir_core"
 [dependencies]
 anyhow.workspace = true
 futures.workspace = true
+gleipnir-dap.workspace = true
 gleipnir-index.workspace = true
 gleipnir-lsp.workspace = true
 gleipnir-packages.workspace = true
 gleipnir-syntax.workspace = true
 gleipnir-text.workspace = true
 gpui.workspace = true
+libc = "0.2"
 serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+gleipnir-dap = { workspace = true, features = ["test-support"] }
 proptest = "1"
 gpui = { workspace = true, features = ["test-support"] }
 tempfile = "3"

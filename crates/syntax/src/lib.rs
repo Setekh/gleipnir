@@ -183,6 +183,68 @@ impl Syntax {
         self.generation += 1;
     }
 
+    /// The innermost function, method, procedure or closure around `offset`.
+    pub fn enclosing_function(&self, offset: usize) -> Option<Range<usize>> {
+        const FUNCTIONS: &[&str] = &[
+            "function_item",
+            "closure_expression",
+            "function_declaration",
+            "method_declaration",
+            "func_literal",
+            "procedure_declaration",
+            "procedure",
+            "method_definition",
+            "arrow_function",
+            "function_expression",
+            "function",
+            "generator_function_declaration",
+        ];
+        let tree = self.tree.as_ref()?;
+        let mut node = tree.root_node().descendant_for_byte_range(offset, offset)?;
+        loop {
+            if FUNCTIONS.contains(&node.kind()) {
+                return Some(node.byte_range());
+            }
+            node = node.parent()?;
+        }
+    }
+
+    /// Every plain name in a range, as written: variables and parameters, not fields after a dot
+    /// or names in strings and comments.
+    pub fn identifiers(&self, range: Range<usize>) -> Vec<Range<usize>> {
+        let Some(tree) = self.tree.as_ref() else {
+            return Vec::new();
+        };
+        let mut found = Vec::new();
+        let mut cursor = tree.walk();
+        let mut descend = true;
+        loop {
+            let node = cursor.node();
+            let node_range = node.byte_range();
+            let overlaps = node_range.start < range.end && node_range.end > range.start;
+            if descend && overlaps {
+                if matches!(node.kind(), "identifier" | "shorthand_property_identifier") {
+                    found.push(node_range);
+                } else if cursor.goto_first_child() {
+                    continue;
+                }
+            }
+            if cursor.goto_next_sibling() {
+                descend = true;
+                continue;
+            }
+            loop {
+                if !cursor.goto_parent() {
+                    return found;
+                }
+                if cursor.goto_next_sibling() {
+                    descend = true;
+                    break;
+                }
+            }
+        }
+    }
+
     /// The next larger syntax node around `range`, which powers Extend Selection.
     pub fn expand_selection(&self, range: Range<usize>) -> Option<Range<usize>> {
         let tree = self.tree.as_ref()?;

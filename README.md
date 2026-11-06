@@ -5,7 +5,9 @@ An IDE written in Rust on [GPUI](https://gpui.rs), for TypeScript, JavaScript, O
 Status: a project-based editor with a file tree, tabs, split panes, multi-cursor editing,
 IntelliJ-style Search Everywhere, per-project SDKs with managed tool installs, and code intelligence
 from language servers: completion, documentation, go to declaration and implementations, usages,
-problems, rename, quick fixes and reformatting. Debugging is next. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+problems, rename, quick fixes and reformatting. Programs run and debug from the IDE in all five
+languages, IntelliJ style: breakpoints in the gutter (conditions, hit counts, logpoints), stepping,
+frames, a variables tree with watches, values shown beside the code, and a console. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 for the design and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
 
 ## Building
@@ -23,6 +25,8 @@ also need Xcode. On Arch or Omarchy, `sudo script/linux-deps` installs the syste
     script/e2e                  # drives the real app; needs a display
     PROFILE=release script/e2e perf
     E2E_TOOLS=~/path/to/state/tools script/e2e code   # with real language servers installed
+    E2E_TOOLS=~/path/to/state/tools script/e2e debug  # with lldb-dap, dlv and js-debug installed
+    GLEIPNIR_TOOLS=~/path/to/state/tools cargo test -p gleipnir-dap --test adapters   # headless
     script/linux-check          # builds and tests on Arch in Docker, from any machine
 
 Property tests run 256 cases by default. `PROPTEST_CASES=20000 cargo test -p gleipnir-text --release`
@@ -37,6 +41,10 @@ searches much harder, and has found real bugs that the default run missed.
 - `crates/settings_ui`: Languages & SDKs, for choosing SDKs and installing tools.
 - `crates/code_nav`: code intelligence from language servers: the editor's completion and
   documentation, navigation, the Find and Problems panels, rename, intentions and reformatting.
+- `crates/debugger_ui`: running and debugging: the Run and Debug panels, the run widget in the
+  status bar, breakpoints and values in the editor, and the breakpoint and Evaluate popups.
+- `crates/dap`: the debug adapter client: stdio and TCP adapters, child connections for js-debug,
+  the launch handshake and session state.
 - `crates/lsp`: the language server client: framing, requests with cancellation, and the
   capabilities we advertise.
 - `crates/packages`: language manifests (in `builtin/`), SDK detection, tool resolution and
@@ -45,7 +53,8 @@ searches much harder, and has found real bugs that the default run missed.
 - `crates/ui`: theme, icons, text input, context menu and list navigation.
 - `crates/core`: open buffers, file loading and saving, external change detection, the project
   (its files, symbol index and git status, kept current by watching it), and the language servers:
-  starting and restarting them, document sync, diagnostics and requests.
+  starting and restarting them, document sync, diagnostics and requests, and the debugger: run
+  targets, builds, launches, debug sessions and the project's breakpoints.
 - `crates/index`: the file tree model, file list, fuzzy matching and search, gitignore rules, git
   status, file watching and file operations.
 - `crates/syntax`: languages, background parsing, highlighting, structural selection and symbol

@@ -1934,6 +1934,7 @@ dependencies = [
  "anyhow",
  "gleipnir-code-nav",
  "gleipnir-core",
+ "gleipnir-debugger-ui",
  "gleipnir-editor",
  "gleipnir-packages",
  "gleipnir-project-panel",
@@ -1973,13 +1974,46 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures",
+ "gleipnir-dap",
  "gleipnir-index",
  "gleipnir-lsp",
  "gleipnir-packages",
  "gleipnir-syntax",
  "gleipnir-text",
  "gpui",
+ "libc",
  "proptest",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "gleipnir-dap"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "futures",
+ "gleipnir-packages",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "gleipnir-debugger-ui"
+version = "0.1.0"
+dependencies = [
+ "gleipnir-code-nav",
+ "gleipnir-core",
+ "gleipnir-dap",
+ "gleipnir-editor",
+ "gleipnir-packages",
+ "gleipnir-syntax",
+ "gleipnir-test-support",
+ "gleipnir-ui",
+ "gleipnir-workspace",
+ "gpui",
  "serde",
  "serde_json",
  "tempfile",

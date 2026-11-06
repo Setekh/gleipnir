@@ -256,6 +256,8 @@ pub struct DockSnapshot {
     pub visible: bool,
     pub size: f32,
     pub panels: Vec<String>,
+    /// The panel the dock shows.
+    pub active: Option<String>,
 }
 
 impl Workspace {
@@ -784,8 +786,12 @@ impl Workspace {
                         this.resolve_save_conflict(editor.clone(), window, cx)
                     }
                     EditorEvent::SaveFailed(message) => this.show_error(message.clone(), cx),
-                    // Features that know where things are defined subscribe to this themselves.
-                    EditorEvent::GoToDefinition { .. } => {}
+                    // Features that know where things are defined, or debug them, subscribe to
+                    // these themselves.
+                    EditorEvent::GoToDefinition { .. }
+                    | EditorEvent::GutterClicked { .. }
+                    | EditorEvent::RunClicked { .. }
+                    | EditorEvent::GutterMenu { .. } => {}
                 },
             ),
             cx.observe_in(&buffer, window, |this, _, window, cx| {
@@ -1526,6 +1532,7 @@ impl Workspace {
                     visible: dock.visible,
                     size: dock.size.into(),
                     panels: dock.panels.iter().map(|p| p.id(cx).to_string()).collect(),
+                    active: dock.active_panel().map(|p| p.id(cx).to_string()),
                 })
                 .collect(),
             message: self.message.as_ref().map(|(m, _)| m.to_string()),

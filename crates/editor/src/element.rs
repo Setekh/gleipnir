@@ -1,5 +1,6 @@
 //! Lays out and paints the visible part of the document.
 
+use crate::decorations::{BreakpointKind, BreakpointMark, GutterZone, MARKS_WIDTH};
 use crate::view::{EditorView, HighlightCache};
 use gleipnir_core::Severity;
 use gleipnir_syntax::highlights;
@@ -9,8 +10,8 @@ use gpui::{
     App, Bounds, ContentMask, CursorStyle, DispatchPhase, Element, ElementId, ElementInputHandler,
     Entity, Font, GlobalElementId, Hitbox, HitboxBehavior, Hsla, InspectorElementId, IntoElement,
     LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels, Point,
-    ScrollEvent, ShapedLine, SharedString, Size, Style, TextRun, UnderlineStyle, Window, fill,
-    font, point, px, relative, size,
+    ScrollEvent, ShapedLine, SharedString, Size, Style, TextRun, TransformationMatrix,
+    UnderlineStyle, Window, fill, font, point, px, relative, size,
 };
 use std::ops::Range;
 use std::rc::Rc;
@@ -151,8 +152,18 @@ impl IntoElement for EditorElement {
     }
 }
 
+/// The debugger's marks for the lines on screen, placed.
+struct Decorations {
+    breakpoints: Vec<(Pixels, BreakpointMark)>,
+    /// The execution line's top, and whether it's the innermost frame.
+    execution: Option<(Pixels, bool)>,
+    run_tops: Vec<Pixels>,
+    inline_values: Vec<(Point<Pixels>, ShapedLine)>,
+}
+
 pub(crate) struct Prepainted {
     geometry: Rc<FrameGeometry>,
+    decorations: Option<Decorations>,
     gutter_numbers: Vec<(Pixels, ShapedLine, Pixels)>,
     active_lines: Vec<Pixels>,
     selection_rects: Vec<Bounds<Pixels>>,
@@ -302,7 +313,10 @@ impl Element for EditorElement {
 
             // The gutter fits the largest line number, so widths don't jump around while typing.
             let digits = (line_count.max(1).ilog10() + 1).max(3) as f32;
-            let gutter_width = px(GUTTER_LEFT_PADDING + GUTTER_RIGHT_PADDING) + char_width * digits;
+            let provider = view.decorations.clone();
+            let marks_width = if provider.is_some() { MARKS_WIDTH } else { 0. };
+            let gutter_width =
+                px(GUTTER_LEFT_PADDING + marks_width + GUTTER_RIGHT_PADDING) + char_width * digits;
             let text_origin_x = bounds.left() + gutter_width;
             let text_width = (bounds.size.width - gutter_width).max(px(0.));
             let viewport_lines = (bounds.size.height / line_height).max(1.);
@@ -444,6 +458,55 @@ impl Element for EditorElement {
                 gutter_numbers.push((x, shaped_number, top));
             }
 
+            let decorations = provider.map(|provider| {
+                let top_of = |line: usize| bounds.top() + line_height * line as f32 - scroll.y;
+                let on_screen = |line: &usize| visible.contains(line);
+                let breakpoints = provider
+                    .breakpoints(cx)
+                    .into_iter()
+                    .filter(|b| on_screen(&b.line))
+                    .map(|b| (top_of(b.line), b))
+                    .collect();
+                let execution = provider
+                    .execution_line(cx)
+                    .filter(|(line, _)| on_screen(line))
+                    .map(|(line, top)| (top_of(line), top));
+                let run_tops = provider
+                    .run_lines(cx)
+                    .into_iter()
+                    .filter(on_screen)
+                    .map(top_of)
+                    .collect();
+                let inline_values = provider
+                    .inline_values(visible.clone(), cx)
+                    .into_iter()
+                    .filter(|(line, _)| on_screen(line))
+                    .map(|(line, text)| {
+                        let laid_out = &lines[line - first_line];
+                        let x = text_origin_x + laid_out.shaped.width + char_width * 2. - scroll.x;
+                        let text = SharedString::from(text);
+                        let run = TextRun {
+                            len: text.len(),
+                            font: font.clone(),
+                            color: theme.inline_value,
+                            background_color: None,
+                            underline: None,
+                            strikethrough: None,
+                        };
+                        let shaped = window
+                            .text_system()
+                            .shape_line(text, font_size, &[run], None);
+                        (point(x, top_of(line)), shaped)
+                    })
+                    .collect();
+                Decorations {
+                    breakpoints,
+                    execution,
+                    run_tops,
+                    inline_values,
+                }
+            });
+
             let geometry = Rc::new(FrameGeometry {
                 bounds,
                 text_origin_x,
@@ -516,6 +579,7 @@ impl Element for EditorElement {
 
             Prepainted {
                 geometry,
+                decorations,
                 gutter_numbers,
                 active_lines,
                 selection_rects,
@@ -562,6 +626,16 @@ impl Element for EditorElement {
             ));
         }
 
+        if let Some((top, _)) = prepainted.decorations.as_ref().and_then(|d| d.execution) {
+            window.paint_quad(fill(
+                Bounds::new(
+                    point(bounds.left(), top),
+                    size(bounds.size.width, line_height),
+                ),
+                theme.execution_line,
+            ));
+        }
+
         let text_bounds = Bounds::new(
             point(bounds.left() + gutter_width, bounds.top()),
             Size {
@@ -594,6 +668,20 @@ impl Element for EditorElement {
                         .ok();
                 }
                 paint_diagnostics(&self.view, &geometry, link, &theme, window, cx);
+                if let Some(decorations) = &prepainted.decorations {
+                    for (origin, value) in &decorations.inline_values {
+                        value
+                            .paint(
+                                *origin,
+                                line_height,
+                                gpui::TextAlign::Left,
+                                None,
+                                window,
+                                cx,
+                            )
+                            .ok();
+                    }
+                }
                 if focused && cursor_visible {
                     for cursor in &prepainted.cursors {
                         window.paint_quad(fill(*cursor, theme.editor_cursor));
@@ -605,6 +693,17 @@ impl Element for EditorElement {
         // Clipped, as a partly scrolled-off line would otherwise draw over whatever's above.
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             paint_gutter_marks(&self.view, &geometry, bounds, &theme, window, cx);
+            if let Some(decorations) = &prepainted.decorations {
+                paint_debug_marks(
+                    decorations,
+                    bounds,
+                    gutter_width,
+                    line_height,
+                    &theme,
+                    window,
+                    cx,
+                );
+            }
             for (x, number, top) in &prepainted.gutter_numbers {
                 number
                     .paint(
@@ -634,11 +733,40 @@ impl Element for EditorElement {
             view.update(cx, |view, cx| {
                 if event.position.x < hit_geometry.text_origin_x {
                     let line = hit_geometry.line_at_y(event.position.y);
-                    view.gutter_mouse_down(line, window, cx);
+                    let zone = if event.position.x
+                        >= hit_geometry.text_origin_x - px(GUTTER_RIGHT_PADDING)
+                    {
+                        GutterZone::Run
+                    } else {
+                        GutterZone::Marks
+                    };
+                    view.gutter_mouse_down(line, zone, window, cx);
                 } else {
                     let buffer = view.buffer.read(cx).buffer();
                     let offset = hit_geometry.offset_at(event.position, buffer);
                     view.mouse_down(offset, event.click_count, event.modifiers, window, cx);
+                }
+            });
+        });
+
+        let view = self.view.clone();
+        let hitbox = prepainted.hitbox.clone();
+        let hit_geometry = geometry.clone();
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble
+                || event.button != MouseButton::Right
+                || !hitbox.is_hovered(window)
+                || event.position.x >= hit_geometry.text_origin_x
+            {
+                return;
+            }
+            let line = hit_geometry.line_at_y(event.position.y);
+            view.update(cx, |view, cx| {
+                if view.decorations.is_some() {
+                    cx.emit(crate::view::EditorEvent::GutterMenu {
+                        line,
+                        position: event.position,
+                    });
                 }
             });
         });
@@ -847,6 +975,91 @@ fn paint_gutter_marks(
             ),
             severity_color(severity, theme),
         ));
+    }
+}
+
+/// Breakpoints in the marks column, Run icons beside the numbers, and the execution arrow.
+fn paint_debug_marks(
+    decorations: &Decorations,
+    bounds: Bounds<Pixels>,
+    gutter_width: Pixels,
+    line_height: Pixels,
+    theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let diameter = (line_height - px(6.)).min(px(12.));
+    let center_x = bounds.left() + px(GUTTER_LEFT_PADDING + MARKS_WIDTH / 2.);
+    let dot = |top: Pixels, diameter: Pixels| {
+        Bounds::new(
+            point(
+                center_x - diameter / 2.,
+                top + (line_height - diameter) / 2.,
+            ),
+            size(diameter, diameter),
+        )
+    };
+    for (top, mark) in &decorations.breakpoints {
+        let color = match mark.kind {
+            BreakpointKind::Log => theme.warning,
+            _ => theme.breakpoint,
+        };
+        let circle = dot(*top, diameter);
+        if !mark.enabled || mark.verified == Some(false) {
+            let color = if mark.enabled {
+                color
+            } else {
+                theme.text_faint
+            };
+            window.paint_quad(
+                gpui::outline(circle, color, gpui::BorderStyle::Solid)
+                    .corner_radii(diameter / 2.)
+                    .border_widths(px(1.5)),
+            );
+        } else {
+            window.paint_quad(fill(circle, color).corner_radii(diameter / 2.));
+        }
+        if mark.kind == BreakpointKind::Conditional {
+            let inner = diameter / 3.;
+            window.paint_quad(
+                fill(dot(*top, inner), theme.editor_background).corner_radii(inner / 2.),
+            );
+        }
+    }
+    let icon = |top: Pixels, x: Pixels, side: Pixels| {
+        Bounds::new(point(x, top + (line_height - side) / 2.), size(side, side))
+    };
+    if let Some((top, innermost)) = decorations.execution {
+        let side = px(10.);
+        let color = if innermost {
+            theme.accent
+        } else {
+            theme.text_muted
+        };
+        window
+            .paint_svg(
+                icon(top, center_x - side / 2., side),
+                "icons/run.svg".into(),
+                None,
+                TransformationMatrix::unit(),
+                color,
+                cx,
+            )
+            .ok();
+    }
+    for top in &decorations.run_tops {
+        let side = px(11.);
+        let x = bounds.left() + gutter_width - px(GUTTER_RIGHT_PADDING / 2.) - side / 2.;
+        window
+            .paint_svg(
+                icon(*top, x, side),
+                "icons/run.svg".into(),
+                None,
+                TransformationMatrix::unit(),
+                theme.git_added,
+                cx,
+            )
+            .ok();
     }
 }
 

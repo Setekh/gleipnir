@@ -67,7 +67,7 @@ editor                   EditorView, rendering, input, multi-cursor commands
    |
 ui                       theme, text input, virtual list, tree, popover, context menu
    |
-core                     GPUI entities around the services below: BufferStore, LanguageServers, DebugHub
+core                     GPUI entities around the services below: BufferStore, LanguageServers, Debugger
 - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 packages    manifests, package registry, SDK registry, tool resolution and installation
 lsp         JSON-RPC transport and typed LSP client
@@ -291,19 +291,43 @@ a server can't do something, such as implementations under ols.
 
 ## Debugging
 
-`dap` is a headless session state machine, driven the same way for every adapter and able to run
-under test without a UI. `debugger_ui` renders that state.
+`dap` is headless: a client that talks to adapters over stdio or TCP, the launch handshake, typed
+requests, and a state machine for a session's events. It runs the same under test as in the app,
+and `crates/dap/tests/adapters.rs` drives the real adapters with it, building a small program in
+each language, stopping at a breakpoint, reading a local and stepping.
 
-- **Transports:** stdio and TCP.
-- **Child sessions:** js-debug starts child sessions with a reverse `startDebugging` request, so a
-  session is modelled as a tree of connections from the outset. Treating this as a special case later
-  would be costly.
-- **Breakpoints** belong to the project rather than a session, so they persist and follow edits
-  through `transform`. They're re-sent at each session start.
-- **Run targets** come from `LanguageAdapter::run_targets`, for example cargo binaries and tests, Go
-  packages, an Odin package or the current JS/TS file. A target can have a build step that runs first.
-- **Inline values** are built on the syntax crate: variable identifiers in the current function are
-  matched with values from the stopped frame.
+`Debugger` (in `core`, owned by the Debug panel) holds what the window runs:
+
+- **Run targets** come from each language's adapter in `packages`: Cargo binaries, Go main
+  packages, Odin packages with a `main` procedure, package.json scripts, and any JS or TS file
+  directly. A target's `source` is its entry file or package folder, which maps a file to what
+  runs it, and puts a Run icon beside `main`.
+- **A launch** is one press of Run or Debug: a build if the target has one, then the program, on
+  its own or under an adapter. Its console collects the build's output, the program's, and the
+  debugger's messages. Running the same target again replaces its launch, stopping the old one.
+  Builds and plain runs start in their own process group, so stopping `go run` also stops the
+  program it started.
+- **Sessions** form a tree. js-debug answers the first launch by asking, with `startDebugging`, for
+  a second connection that debugs the actual program; that child does the stopping and stepping.
+  Whichever session stopped last has the focus: stepping, frames, variables and watches refer to it.
+- **Breakpoints** belong to the project, not a session. They're saved with the layout, sent at
+  each session's start and again whenever they change, and move with their line as the file is
+  edited: lines added or removed above shift them, and Enter before a line's text takes the
+  breakpoint down with it. A status per breakpoint records whether the running sessions could
+  place it.
+
+The handshake orders itself around the adapters' differences: lldb-dap and js-debug answer `launch`
+only after `configurationDone`, while delve answers first and sends `initialized` after. So the
+launch is sent without waiting, breakpoints go once `initialized` arrives, and the launch is
+awaited last.
+
+The editor knows nothing of debugging. It asks a `DecorationProvider` each frame for breakpoints,
+the execution line, Run icons and values to show beside lines, and reports gutter clicks as events.
+`debugger_ui` implements the provider: values come from the stopped frame's local scopes, matched
+to the names the syntax tree finds between the start of the running function and the stop.
+
+What each adapter needed, found by running them for real, is in
+[DEBUGGERS.md](DEBUGGERS.md).
 
 ## Testing
 
