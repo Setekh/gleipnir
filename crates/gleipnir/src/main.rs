@@ -129,6 +129,9 @@ fn main() {
             set_menus(cx);
 
             cx.on_action(|_: &Quit, cx| cx.quit());
+            // The local model's server goes with the app.
+            cx.on_app_quit(|_| async { gleipnir_suggest::llama::shutdown() })
+                .detach();
             cx.on_window_closed(|cx, _| {
                 if cx.windows().is_empty() {
                     cx.quit();
@@ -167,6 +170,7 @@ fn main() {
                 gleipnir_code_nav::add_to_workspace(workspace, window, cx);
                 gleipnir_debugger_ui::add_to_workspace(workspace, window, cx);
                 gleipnir_git_ui::add_to_workspace(workspace, window, cx);
+                gleipnir_suggest::add_to_workspace(workspace, window, cx);
             })));
 
             let window = open_project_window(target.root.clone(), false, cx);

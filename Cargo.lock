@@ -993,6 +993,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "cookie"
+version = "0.18.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
+dependencies = [
+ "percent-encoding",
+ "time",
+ "version_check",
+]
+
+[[package]]
+name = "cookie_store"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "15b2c103cf610ec6cae3da84a766285b42fd16aad564758459e6ecf128c75206"
+dependencies = [
+ "cookie",
+ "document-features",
+ "idna",
+ "indexmap",
+ "log",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "time",
+ "url",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1941,6 +1970,7 @@ dependencies = [
  "gleipnir-project-panel",
  "gleipnir-search",
  "gleipnir-settings-ui",
+ "gleipnir-suggest",
  "gleipnir-syntax",
  "gleipnir-ui",
  "gleipnir-workspace",
@@ -2154,6 +2184,25 @@ dependencies = [
  "gleipnir-workspace",
  "gpui",
  "tempfile",
+]
+
+[[package]]
+name = "gleipnir-suggest"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gleipnir-core",
+ "gleipnir-editor",
+ "gleipnir-packages",
+ "gleipnir-test-support",
+ "gleipnir-ui",
+ "gleipnir-workspace",
+ "gpui",
+ "libc",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "ureq",
 ]
 
 [[package]]
@@ -5769,6 +5818,7 @@ dependencies = [
  "powerfmt",
  "serde_core",
  "time-core",
+ "time-macros",
 ]
 
 [[package]]
@@ -5776,6 +5826,16 @@ name = "time-core"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e1c906769ad99c88eaa54e728060edef082f8e358ff32030cb7c7d315e81109"
+
+[[package]]
+name = "time-macros"
+version = "0.2.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7e689342a48d2ea927c87ea50cabf8594854bf940e9310208848d680d668ed85"
+dependencies = [
+ "num-conv",
+ "time-core",
+]
 
 [[package]]
 name = "tiny-keccak"
@@ -6190,11 +6250,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7be76686bdf7198002062423ca0d8cf9b75a27c8e1de804513b97e97b555d9d"
 dependencies = [
  "base64 0.23.1",
+ "cookie_store",
  "flate2",
  "log",
  "percent-encoding",
  "rustls",
  "rustls-pki-types",
+ "serde",
+ "serde_json",
  "ureq-proto",
  "utf8-zero",
  "webpki-roots",

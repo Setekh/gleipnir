@@ -195,7 +195,8 @@ impl EditorView {
     }
 
     pub fn has_popups(&self) -> bool {
-        self.semantics.completion.is_some()
+        self.suggestion.current.is_some()
+            || self.semantics.completion.is_some()
             || self.semantics.hover.is_some()
             || self.semantics.signature.is_some()
     }
@@ -231,6 +232,7 @@ impl EditorView {
 
     pub(crate) fn close_popups(&mut self, cx: &mut Context<Self>) -> bool {
         let had = self.has_popups();
+        self.clear_suggestion(cx);
         self.semantics.completion = None;
         self.semantics.completion_task = None;
         self.semantics.completion_requested_at = None;
@@ -246,6 +248,7 @@ impl EditorView {
 
     /// Called after a character is typed, to start or update completion and signature help.
     pub(crate) fn after_typing(&mut self, typed: char, cx: &mut Context<Self>) {
+        self.typed_for_suggestion(typed, cx);
         let Some(provider) = self.semantics.provider.clone() else {
             return;
         };
@@ -274,6 +277,7 @@ impl EditorView {
 
     /// Called after deleting, which narrows or ends a completion.
     pub(crate) fn after_deleting(&mut self, cx: &mut Context<Self>) {
+        self.request_suggestion(cx);
         if self.semantics.completion.is_some() {
             self.update_completions(cx);
         }
@@ -988,6 +992,12 @@ pub(crate) fn popup_bindings(cx: &mut App) {
         KeyBinding::new("enter", ConfirmCompletion, menu),
         KeyBinding::new("tab", ConfirmCompletion, menu),
         KeyBinding::new("escape", DismissPopups, Some("Editor && showing_popups")),
+        // A suggestion is taken with Tab, as Copilot's are, unless a completion list is open.
+        KeyBinding::new(
+            "tab",
+            AcceptSuggestion,
+            Some("Editor && has_suggestion && !showing_completions"),
+        ),
         KeyBinding::new("ctrl-space", ShowCompletions, Some("Editor")),
         KeyBinding::new("f2", NextProblem, Some("Editor")),
         KeyBinding::new("shift-f2", PreviousProblem, Some("Editor")),

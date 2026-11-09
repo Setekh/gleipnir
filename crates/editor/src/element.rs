@@ -783,6 +783,9 @@ impl Element for EditorElement {
                             .ok();
                     }
                 }
+                if focused {
+                    paint_suggestion(&self.view, &geometry, &theme, window, cx);
+                }
                 if focused && cursor_visible {
                     for cursor in &prepainted.cursors {
                         window.paint_quad(fill(*cursor, theme.editor_cursor));
@@ -1051,6 +1054,79 @@ fn paint_diagnostics(
     }
     for (origin, width, style) in underlines {
         window.paint_underline(origin, width, &style);
+    }
+}
+
+/// The grey suggestion after the cursor, and how likely it is, faint beside it.
+fn paint_suggestion(
+    view: &Entity<EditorView>,
+    geometry: &FrameGeometry,
+    theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let Some(suggestion) = view.read(cx).suggestion().cloned() else {
+        return;
+    };
+    let at = {
+        let buffer = view.read(cx).buffer.read(cx).buffer();
+        geometry.bounds_for_offset(suggestion.offset, buffer)
+    };
+    let Some(at) = at else {
+        return;
+    };
+    let font = editor_font(window, cx);
+    let font_size = px(theme.editor_font_size);
+    let shape = |text: String, color: Hsla, size: Pixels, window: &mut Window| {
+        let run = TextRun {
+            len: text.len(),
+            font: font.clone(),
+            color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        window
+            .text_system()
+            .shape_line(SharedString::from(text), size, &[run], None)
+    };
+    // Only the rest of this line shows; Tab takes all of it.
+    let first = suggestion
+        .text
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .replace('\t', "    ");
+    let ghost = shape(first, theme.text_faint, font_size, window);
+    ghost
+        .paint(
+            at.origin,
+            geometry.line_height,
+            gpui::TextAlign::Left,
+            None,
+            window,
+            cx,
+        )
+        .ok();
+    if let Some(score) = suggestion.score {
+        let label = format!("  {:.0}% · Tab", (score * 100.).clamp(0., 100.));
+        let badge = shape(
+            label,
+            theme.text_faint.opacity(0.7),
+            font_size * 0.8,
+            window,
+        );
+        let origin = point(at.origin.x + ghost.width, at.origin.y + font_size * 0.12);
+        badge
+            .paint(
+                origin,
+                geometry.line_height,
+                gpui::TextAlign::Left,
+                None,
+                window,
+                cx,
+            )
+            .ok();
     }
 }
 

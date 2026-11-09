@@ -48,6 +48,14 @@ pub struct EditorSettings {
     pub parameter_info_while_typing: bool,
     /// Parameter names and inferred types, written between the code.
     pub inlay_hints: bool,
+    /// Grey suggestions after the cursor, as Copilot shows them, made on this machine.
+    pub inline_suggestions: bool,
+    /// How likely a suggestion must be, from 0 to 1, to show.
+    pub suggestion_min_score: f32,
+    /// Whether a small code model, run locally by llama.cpp, suggests too.
+    pub local_model: bool,
+    /// Which model, by name.
+    pub suggestion_model: String,
 }
 
 impl Default for EditorSettings {
@@ -59,6 +67,10 @@ impl Default for EditorSettings {
             completion_while_typing: true,
             parameter_info_while_typing: true,
             inlay_hints: true,
+            inline_suggestions: true,
+            suggestion_min_score: 0.5,
+            local_model: true,
+            suggestion_model: "Qwen2.5-Coder 0.5B".into(),
         }
     }
 }

@@ -58,6 +58,7 @@ searches much harder, and has found real bugs that the default run missed.
   starting and restarting them, document sync, diagnostics and requests, and the debugger: run
   targets, builds, launches, debug sessions and the project's breakpoints.
 - `crates/git_ui`: the Commit window, the Git log and diffs.
+- `crates/suggest`: inline suggestions, from the file and from a local model run by llama.cpp.
 - `crates/index`: the file tree model, file list, fuzzy matching and search, gitignore rules, git
   status, file watching and file operations.
 - `crates/syntax`: languages, background parsing, highlighting, structural selection and symbol
@@ -85,6 +86,11 @@ make or tweak one by writing the file and switch to it in `settings.json`:
 
     [syntax]
     keyword = "#bb9af7"
+
+Grey suggestions appear after the cursor as you type, with how likely each is; Tab takes one.
+They come from the file itself, and from a small code model (Qwen2.5-Coder, 531 MB) that Gleipnir
+runs on your machine with llama.cpp, downloaded the first time it's needed. Nothing is sent
+anywhere. Settings → Editor turns them off, picks the model, or sets how sure they must be.
 
 Indentation follows the project where it says: `.editorconfig`, and for the files Prettier formats,
 Prettier's config (`.prettierrc` in JSON, JSON5, YAML or TOML, `prettier.config.js` and the like,

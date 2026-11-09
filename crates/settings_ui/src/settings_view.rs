@@ -192,6 +192,46 @@ fn rows() -> Vec<Row> {
             },
         },
         Row {
+            page: Page::Editor,
+            label: "Inline suggestions",
+            description: "Grey suggestions after the cursor, as Copilot shows them, taken with Tab. Made on this machine.",
+            control: Control::Toggle {
+                get: |s| s.editor.inline_suggestions,
+                set: |s, v| s.editor.inline_suggestions = v,
+            },
+        },
+        Row {
+            page: Page::Editor,
+            label: "Suggest with a local model",
+            description: "A small code model run by llama.cpp on this machine, installed the first time it's needed. Off, suggestions come from the file alone.",
+            control: Control::Toggle {
+                get: |s| s.editor.local_model,
+                set: |s, v| s.editor.local_model = v,
+            },
+        },
+        Row {
+            page: Page::Editor,
+            label: "Suggestion model",
+            description: "The 0.5B model is a 531 MB download and quick; the 1.5B one is 1.6 GB and better.",
+            control: Control::Choice {
+                get: |s, _| s.editor.suggestion_model.clone(),
+                options: |_| vec!["Qwen2.5-Coder 0.5B".into(), "Qwen2.5-Coder 1.5B".into()],
+                set: |s, v| s.editor.suggestion_model = v.to_string(),
+            },
+        },
+        Row {
+            page: Page::Editor,
+            label: "Minimum suggestion score",
+            description: "How likely a suggestion must be to show, from 0 to 1.",
+            control: Control::Number {
+                get: |s| s.editor.suggestion_min_score,
+                set: |s, v| s.editor.suggestion_min_score = (v * 20.).round() / 20.,
+                min: 0.,
+                max: 1.,
+                step: 0.05,
+            },
+        },
+        Row {
             page: Page::Languages,
             label: "Install missing tools automatically",
             description: "A language server or debugger that isn't installed is installed the first time it's needed.",

@@ -6,6 +6,7 @@ mod caret_gesture;
 mod decorations;
 mod element;
 mod semantics;
+mod suggestion;
 mod view;
 
 pub use actions::{
@@ -19,6 +20,7 @@ pub use semantics::{
     CompletionItem, CompletionKind, Completions, HoverInfo, SemanticTokens, SemanticsProvider,
     SignatureInfo, Triggers,
 };
+pub use suggestion::{InlineSuggester, InlineSuggestion};
 pub use view::{EditorEvent, EditorState, EditorView};
 
 #[cfg(test)]

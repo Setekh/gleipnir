@@ -83,6 +83,8 @@ pub struct EditorState {
     pub inline_values: Vec<String>,
     /// How lines differ from the last commit, as `line: added`, one-based.
     pub line_changes: Vec<String>,
+    /// The grey suggestion, as `text (87%, source)`.
+    pub suggestion: Option<String>,
     /// Tests' last results in the gutter, as `line: passed` or `line: failed`, one-based.
     pub run_results: Vec<String>,
 }
@@ -134,6 +136,7 @@ pub struct EditorView {
     pub(crate) frame_times: Option<Vec<Duration>>,
     blink: Option<Task<()>>,
     pub(crate) semantics: crate::semantics::SemanticsState,
+    pub(crate) suggestion: crate::suggestion::SuggestionState,
     pub(crate) decorations: Option<Rc<dyn crate::decorations::DecorationProvider>>,
     /// A text box, like a commit message: no line numbers, and no current line shown.
     pub(crate) plain: bool,
@@ -172,6 +175,7 @@ impl EditorView {
             frame_times: None,
             blink: None,
             semantics: Default::default(),
+            suggestion: Default::default(),
             decorations: None,
             plain: false,
             annotations: Default::default(),
@@ -322,6 +326,10 @@ impl EditorView {
                     .collect(),
                 _ => Vec::new(),
             },
+            suggestion: self.suggestion().map(|s| match s.score {
+                Some(score) => format!("{} ({:.0}%, {})", s.text, score * 100., s.source),
+                None => format!("{} ({})", s.text, s.source),
+            }),
             line_changes: model
                 .line_changes()
                 .iter()
@@ -398,6 +406,7 @@ impl EditorView {
     /// Anything that moves the cursor: keep it visible, make it solid, and end the undo group so
     /// that typing here doesn't merge with typing somewhere else.
     pub(crate) fn did_move(&mut self, cx: &mut Context<Self>) {
+        self.clear_suggestion(cx);
         self.semantics.completion = None;
         self.semantics.hover = None;
         self.check_signature(cx);
@@ -469,7 +478,7 @@ impl EditorView {
         result
     }
 
-    fn edit(
+    pub(crate) fn edit(
         &mut self,
         cx: &mut Context<Self>,
         command: impl FnOnce(&mut EditContext) -> Vec<AppliedEdit>,
@@ -485,6 +494,9 @@ impl EditorView {
         }
         if self.has_popups() {
             context.add("showing_popups");
+        }
+        if self.suggestion.current.is_some() {
+            context.add("has_suggestion");
         }
         if self.caret_gesture.active {
             context.add("cloning_carets");
@@ -1078,6 +1090,9 @@ impl Render for EditorView {
                     this.move_completion(-8, cx)
                 }),
             )
+            .on_action(cx.listener(|this, _: &AcceptSuggestion, _, cx| {
+                this.accept_suggestion(cx);
+            }))
             .on_action(cx.listener(|this, _: &DismissPopups, _, cx| {
                 this.close_popups(cx);
             }))

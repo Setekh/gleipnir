@@ -428,6 +428,25 @@ A commit is of the ticked files exactly, as IntelliJ's is: new ones are added, t
 <files>`, which leaves anything else staged out of it. Push sets the upstream on a branch's first
 push; Update Project is `git pull`, as the person's git config has it.
 
+### Inline suggestions
+
+The editor asks its suggester after each character typed at the end of a line, shows the answer
+in grey after the cursor with its score, takes it with Tab as one undo step, and drops it when the
+cursor moves; typing what it says keeps the rest. Two suggesters stand behind it. The file's own
+looks for the end of what's been typed elsewhere in the file and offers what most often follows it
+there, or the punctuation the sibling lines end with, scored by the share of the evidence that
+agrees; it's instant and needs nothing. The model's is llama.cpp's server running a small
+fill-in-the-middle code model (Qwen2.5-Coder), given the code before and after the cursor and asked
+for the rest of the line; its score is the probability of that exact text, the product of the
+odds the model gave each token. The file's answer shows at once when it's sure; otherwise the
+likelier of the two does.
+
+llama.cpp and the model are installed like any tool, pinned and checksummed (the model's download
+streams to disk and is hashed as it comes), when first wanted and only where installing is allowed.
+One server serves every window, on 127.0.0.1 and a free port; it's stopped at exit however
+Gleipnir ends, and one left by a crash is stopped on the next start, by the process id kept in the
+state folder.
+
 ### Project indentation
 
 Indentation is the language's, then the person's Code Style settings, then the project's:

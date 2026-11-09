@@ -61,6 +61,8 @@ actions!(
         SelectNextCompletionPage,
         SelectPreviousCompletionPage,
         DismissPopups,
+        /// Takes the grey suggestion after the cursor.
+        AcceptSuggestion,
         ShowHover,
         ShowSignatureHelp,
         NextProblem,

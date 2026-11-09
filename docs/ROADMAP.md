@@ -346,6 +346,31 @@ Still open from M10:
 - **The log has no graph** of how branches join, and no blame (annotate) in the editor.
 - **No interactive rebase**, squash or reword.
 
+## M11: Inline suggestions
+
+Goal: Copilot's grey suggestions as you type, with how likely each is, and nothing leaving the
+machine: cheap ones from the file itself, and a small code model run locally by llama.cpp.
+
+Status: built and passing on macOS. `script/e2e suggest` has a field among comma-ended fields
+offered its comma at 100% and taken with Tab, from the file alone. With the model, on a copy of the
+store that prompted this, `address2: types.maybe(Provisioning` was offered `Address),` at 98%,
+from Qwen2.5-Coder 0.5B under llama.cpp b11889, both installed by Gleipnir and checksummed;
+`GLEIPNIR_LLAMA_TOOLS=<tools folder> cargo test -p gleipnir-suggest` runs that against the real
+model. Warm requests take about 15 ms. Typing is no slower with suggestions on than off.
+
+Still open from M11:
+
+- **One line at a time.** Multi-line suggestions, and taking a suggestion a word at a time, aren't
+  there yet.
+- **Only the file at the cursor is context** for the model; other open files aren't sent to it.
+
+| # | Item | Finished when |
+| --- | --- | --- |
+| 11.1 | Grey text after the cursor with its score; Tab takes it, Esc drops it, typing what it says keeps it | A suggestion shows, is taken with Tab as one undo step, and goes when the cursor moves |
+| 11.2 | Suggestions without a model: how the same text goes on elsewhere in the file, and the punctuation sibling lines end with, scored by how often they agree | After `address2: types.maybe(ProvisioningAddress)` among lines ending in `,`, a `,` is offered |
+| 11.3 | A local model: llama.cpp's server and a small fill-in-the-middle code model, installed when first needed and checksummed, scored by the model's own odds | A line is suggested from the code before and after the cursor, with its probability |
+| 11.4 | Settings: on or off, which model, and how sure a suggestion must be to show | Each setting takes effect at once |
+
 ## Later
 
 Git integration, terminal panel, WASM plugins (stage 3), Windows.
