@@ -501,7 +501,9 @@ command apply, such as one choosing an account per folder; anything the IDE adds
 it, untouched. Other crates add to every agent's start through `add_agent_setup`: the agent
 crate's `launch.rs` gives Claude Code the window's MCP server with `--mcp-config` and a plugin
 holding the Gleipnir skill with `--plugin-dir` (written to the state folder, loaded for that
-session only), and Codex the server as `-c mcp_servers.gleipnir.*` overrides. The agent's own
+session only) and a line saying it's in Gleipnir with `--append-system-prompt`, and Codex the
+server as `-c mcp_servers.gleipnir.*` overrides and the skill's text as that session's
+`developer_instructions`, after any the person has set themselves. The agent's own
 configuration isn't touched. Gleipnir never installs an agent, signs one in or sits between it
 and its service. Agents' tabs are in their own tool window on the right, Agents (the same tab
 strip, as `AgentsPanel` around a `TerminalPanel`), which offers the agents when it's empty rather

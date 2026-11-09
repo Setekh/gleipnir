@@ -451,7 +451,7 @@ Still open from M12:
 | 12.4 | What the IDE knows, as tools: open files, cursor and selection, problems, test results, Git status, definitions and usages | Asked about "this", an agent reads the selection; asked to fix the problems, it reads them from the IDE |
 | 12.5 | Acting in the IDE, as tools: open a file at a line, edit an open file's text (unsaved edits kept, one undo step), run a test or configuration, and `propose_edit`, a diff reviewed change by change | An edit lands in the open buffer and Undo takes it back; a proposed edit is accepted in part |
 | 12.6 | Send to Agent (Cmd+Alt+K): the selection, as a file and lines reference, typed into the active agent tab | The reference arrives at the prompt, and the agent reads those lines |
-| 12.7 | Instructions for agents in Gleipnir, one text for all: the MCP server's own instructions, which every agent reads, and for Claude Code a skill in a plugin passed with `--plugin-dir`, so nothing is installed into the person's config | A new agent session uses the IDE's tools without being told to |
+| 12.7 | Instructions for agents in Gleipnir, one text for all: the MCP server's own instructions; for Claude Code a skill in a plugin passed with `--plugin-dir`, and a line saying where it runs; for Codex the skill's text as the session's developer instructions; so nothing is installed into the person's config | A new agent session uses the IDE's tools without being told to |
 | 12.8 | Codex: its tab, and the MCP server and instructions given to it its own way | A Codex tab's agent edits an open file through Gleipnir |
 
 ## Later
