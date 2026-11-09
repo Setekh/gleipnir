@@ -11,7 +11,8 @@ pub mod tree;
 pub mod watch;
 
 pub use git::{
-    DiffRow, DiffRowKind, GitState, GitStatus, LineChange, LineChangeKind, side_by_side,
+    DiffRow, DiffRowKind, GitState, GitStatus, LineChange, LineChangeKind, MergeChunk, MergeKind,
+    merge3, side_by_side,
 };
 pub use scan::{FileChanges, FileList, scan_files};
 pub use search::{

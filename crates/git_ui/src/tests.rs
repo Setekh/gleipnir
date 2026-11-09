@@ -220,3 +220,137 @@ fn a_conflict_is_settled_from_the_commit_window(cx: &mut TestAppContext) {
         "ours\n"
     );
 }
+
+#[gpui::test]
+fn a_diff_is_highlighted_and_puts_changes_back_one_at_a_time(cx: &mut TestAppContext) {
+    let (_dir, root, workspace, cx) = setup(cx);
+    let path = root.join("lib.rs");
+    std::fs::write(&path, "fn one() {}\nfn two() {}\nfn three() {}\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "lib"]);
+    std::fs::write(
+        &path,
+        "fn ONE() {}\nfn two() {}\nfn three() {}\nfn four() {}\n",
+    )
+    .unwrap();
+    cx.update(|window, cx| workspace.update(cx, |w, cx| show_file_diff(w, &path, window, cx)));
+    let view = cx
+        .update(|_, cx| workspace.read(cx).active_modal::<DiffView>())
+        .expect("the diff");
+    let (left, right) = cx.update(|_, cx| view.read(cx).highlight_count());
+    assert!(
+        left > 0 && right > 0,
+        "highlighted as Rust: {left}, {right}"
+    );
+    assert_eq!(cx.update(|_, cx| view.read(cx).change_rows()), [0, 3]);
+    // Putting back the added function leaves the renamed one.
+    cx.run_until_parked();
+    let revert = cx
+        .debug_bounds("diff-revert-3")
+        .expect("the second change's ⟲");
+    cx.simulate_click(revert.center(), Modifiers::none());
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "fn ONE() {}\nfn two() {}\nfn three() {}\n"
+    );
+    assert_eq!(cx.update(|_, cx| view.read(cx).change_rows()), [0]);
+    view.update(cx, |v, cx| v.revert_change(0, cx));
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        "fn one() {}\nfn two() {}\nfn three() {}\n"
+    );
+}
+
+#[gpui::test]
+fn the_log_shows_every_branch_and_cherry_picks_from_a_commits_menu(cx: &mut TestAppContext) {
+    let (_dir, root, workspace, cx) = setup(cx);
+    git(&root, &["switch", "-q", "-c", "side"]);
+    std::fs::write(root.join("c.txt"), "side\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "on side"]);
+    git(&root, &["switch", "-q", "main"]);
+    let log = cx.update(|_, cx| workspace.read(cx).panel::<LogPanel>(cx).unwrap());
+    cx.update(|_, cx| workspace.update(cx, |w, cx| w.show_panel(LOG_PANEL, cx)));
+    log.update(cx, |log, cx| log.refresh(cx));
+    run_until(cx, |cx| {
+        cx.update(|_, cx| log.read(cx).commits().len() == 2)
+    });
+    let side = cx.update(|_, cx| log.read(cx).commits()[0].clone());
+    assert_eq!(side.subject, "on side");
+    assert_eq!(side.refs, ["side"]);
+    cx.run_until_parked();
+    let row = cx.debug_bounds("log-commit-0").expect("the side commit");
+    cx.simulate_mouse_down(row.center(), gpui::MouseButton::Right, Modifiers::none());
+    let labels = cx.update(|_, cx| {
+        workspace
+            .read(cx)
+            .open_menu()
+            .map(|m| m.read(cx).labels())
+            .unwrap_or_default()
+    });
+    let pick = labels
+        .iter()
+        .position(|l| l == "Cherry-Pick")
+        .unwrap_or_else(|| panic!("{labels:?}"));
+    let item = cx.debug_bounds(format!("menu-item-{pick}").leak()).unwrap();
+    cx.simulate_click(item.center(), Modifiers::none());
+    run_until(cx, |_| root.join("c.txt").exists());
+    assert_eq!(git_ops::history(&root, 5).unwrap()[0].subject, "on side");
+}
+
+#[gpui::test]
+fn the_merge_window_merges_one_sided_changes_and_settles_conflicts(cx: &mut TestAppContext) {
+    let (_dir, root, workspace, cx) = setup(cx);
+    // a.txt is "one\ntwo\nthree\n". Ours changes one and three; theirs two and three.
+    git(&root, &["switch", "-q", "-c", "other"]);
+    std::fs::write(root.join("a.txt"), "one\nTWO\nthree-theirs\n").unwrap();
+    git(&root, &["commit", "-q", "-am", "theirs"]);
+    git(&root, &["switch", "-q", "main"]);
+    std::fs::write(root.join("a.txt"), "ONE\ntwo\nthree-ours\n").unwrap();
+    git(&root, &["commit", "-q", "-am", "ours"]);
+    assert!(git_ops::git(&root, &["merge", "other"]).is_err());
+    let panel = commit_panel(&workspace, cx);
+    cx.update(|_, cx| workspace.update(cx, |w, cx| w.show_panel(COMMIT_PANEL, cx)));
+    panel.update(cx, |p, cx| p.refresh(cx));
+    run_until(cx, |cx| {
+        cx.update(|_, cx| {
+            panel
+                .read(cx)
+                .files()
+                .first()
+                .is_some_and(|f| f.state == gleipnir_index::GitState::Conflicted)
+        })
+    });
+    cx.run_until_parked();
+    let merge = cx.debug_bounds("merge-0").expect("Merge…");
+    cx.simulate_click(merge.center(), Modifiers::none());
+    let view = cx
+        .update(|_, cx| workspace.read(cx).active_modal::<MergeView>())
+        .expect("the merge window");
+    assert_eq!(cx.update(|_, cx| view.read(cx).conflicts()), (1, 1));
+    assert_eq!(cx.update(|_, cx| view.read(cx).result()), None);
+    // Theirs changed lines two and three, ours three: with nothing unchanged between, that's
+    // one conflict, as git has it. Ours's change to line one merged by itself.
+    cx.update(|_, cx| view.update(cx, |v, cx| v.choose_all(Choice::Theirs, cx)));
+    assert_eq!(cx.update(|_, cx| view.read(cx).conflicts()), (1, 0));
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).result()).as_deref(),
+        Some("ONE\nTWO\nthree-theirs\n")
+    );
+    cx.run_until_parked();
+    let apply = cx.debug_bounds("merge-apply").expect("Apply");
+    cx.simulate_click(apply.center(), Modifiers::none());
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "ONE\nTWO\nthree-theirs\n"
+    );
+    run_until(cx, |cx| {
+        cx.update(|_, cx| {
+            panel
+                .read(cx)
+                .files()
+                .iter()
+                .all(|f| f.state != gleipnir_index::GitState::Conflicted)
+        })
+    });
+}

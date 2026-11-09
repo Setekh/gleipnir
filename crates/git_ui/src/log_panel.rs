@@ -21,6 +21,8 @@ pub struct LogPanel {
     root: Option<PathBuf>,
     workspace: WeakEntity<Workspace>,
     commits: Vec<CommitInfo>,
+    /// Every branch's commits, as IntelliJ's log starts, or only the current branch's.
+    all_branches: bool,
     selected: Option<usize>,
     files: Vec<ChangedFile>,
     task: Option<Task<()>>,
@@ -43,6 +45,7 @@ impl LogPanel {
             root: workspace.root().map(Path::to_path_buf),
             workspace: workspace.weak_handle(),
             commits: Vec::new(),
+            all_branches: true,
             selected: None,
             files: Vec::new(),
             task: None,
@@ -57,9 +60,10 @@ impl LogPanel {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let read = cx
-            .background_executor()
-            .spawn(async move { git_ops::history(&root, LOG_LENGTH) });
+        let read = cx.background_executor().spawn({
+            let all = self.all_branches;
+            async move { git_ops::history_of(&root, LOG_LENGTH, all) }
+        });
         self.task = Some(cx.spawn(async move |this, cx| {
             let commits = read.await.unwrap_or_default();
             this.update(cx, |this, cx| {
@@ -74,6 +78,95 @@ impl LogPanel {
             })
             .ok();
         }));
+    }
+
+    pub fn set_all_branches(&mut self, all: bool, cx: &mut Context<Self>) {
+        self.all_branches = all;
+        self.refresh(cx);
+    }
+
+    /// What can be done with a commit, as IntelliJ's log offers it.
+    fn open_commit_menu(
+        &mut self,
+        index: usize,
+        position: gpui::Point<gpui::Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.select(index, cx);
+        let Some(commit) = self.commits.get(index).cloned() else {
+            return;
+        };
+        let workspace = self.workspace.clone();
+        let run = |label: &'static str, command: fn(&Path, &str) -> anyhow::Result<String>| {
+            let (workspace, hash) = (workspace.clone(), commit.hash.clone());
+            move |_: &mut Window, cx: &mut App| {
+                let hash = hash.clone();
+                workspace
+                    .update(cx, |w, cx| {
+                        crate::run_git_task(w, label, move |root| command(root, &hash), cx)
+                    })
+                    .ok();
+            }
+        };
+        let named = |title: &'static str,
+                     command: fn(&Path, &str, &str) -> anyhow::Result<String>| {
+            let (workspace, hash) = (workspace.clone(), commit.hash.clone());
+            move |window: &mut Window, cx: &mut App| {
+                let hash = hash.clone();
+                workspace
+                    .update(cx, |w, cx| {
+                        w.ask_for_name(
+                            title,
+                            "Name",
+                            move |name, w, cx| {
+                                crate::run_git_task(
+                                    w,
+                                    "Working…",
+                                    move |root| command(root, &name, &hash),
+                                    cx,
+                                )
+                            },
+                            window,
+                            cx,
+                        )
+                    })
+                    .ok();
+            }
+        };
+        let hash = commit.hash.clone();
+        let menu = cx.new(|cx| {
+            gleipnir_ui::ContextMenu::new(cx)
+                .item("Copy Hash", None, move |_, cx| {
+                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(hash.clone()))
+                })
+                .separator()
+                .item(
+                    "Cherry-Pick",
+                    None,
+                    run("Cherry-picking…", git_ops::cherry_pick),
+                )
+                .item("Revert Commit", None, run("Reverting…", git_ops::revert))
+                .separator()
+                .item(
+                    "New Branch Here…",
+                    None,
+                    named("New branch here", |root, name, hash| {
+                        git_ops::git(root, &["switch", "-c", name, hash])?;
+                        Ok(format!("Created {name}"))
+                    }),
+                )
+                .item(
+                    "New Tag Here…",
+                    None,
+                    named("New tag here", |root, name, hash| {
+                        git_ops::tag(root, name, hash)
+                    }),
+                )
+        });
+        self.workspace
+            .update(cx, |w, cx| w.show_menu(menu, position, window, cx))
+            .ok();
     }
 
     pub fn commits(&self) -> &[CommitInfo] {
@@ -178,6 +271,20 @@ impl Render for LogPanel {
                     .gap(px(10.))
                     .when(selected, |d| d.bg(theme.selection))
                     .when(!selected, |d| d.hover(|s| s.bg(theme.hover)))
+                    // Branches and tags here, as IntelliJ labels them.
+                    .children(commit.refs.iter().map(|r| {
+                        let tag = r.starts_with("tag: ");
+                        let label = r.trim_start_matches("tag: ").replace("HEAD -> ", "");
+                        div()
+                            .flex_none()
+                            .px(px(5.))
+                            .rounded(px(3.))
+                            .text_size(px(11.))
+                            .border_1()
+                            .border_color(if tag { theme.warning } else { theme.accent })
+                            .text_color(if tag { theme.warning } else { theme.accent })
+                            .child(label)
+                    }))
                     .child(
                         div()
                             .flex_1()
@@ -208,6 +315,12 @@ impl Render for LogPanel {
                             .child(commit.short.clone()),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| this.select(index, cx)))
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                            this.open_commit_menu(index, event.position, window, cx)
+                        }),
+                    )
                     .into_any_element()
             })
             .collect();
@@ -249,20 +362,61 @@ impl Render for LogPanel {
             .text_color(theme.text)
             .child(
                 div()
-                    .id("log-commits")
                     .flex_1()
                     .min_w_0()
-                    .overflow_y_scroll()
-                    .py(px(4.))
-                    .when(commits.is_empty(), |d| {
-                        d.child(
-                            div()
-                                .p(px(12.))
-                                .text_color(theme.text_muted)
-                                .child("No commits"),
-                        )
-                    })
-                    .children(commits),
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .h(px(28.))
+                            .px(px(10.))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(12.))
+                            .border_b_1()
+                            .border_color(theme.border)
+                            .child(
+                                div()
+                                    .id("log-all-branches")
+                                    .debug_selector(|| "log-all-branches".into())
+                                    .cursor_pointer()
+                                    .child(if self.all_branches {
+                                        "☑ All branches"
+                                    } else {
+                                        "☐ All branches"
+                                    })
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        let all = !this.all_branches;
+                                        this.set_all_branches(all, cx)
+                                    })),
+                            )
+                            .child(
+                                div()
+                                    .id("log-refresh")
+                                    .cursor_pointer()
+                                    .text_color(theme.text_muted)
+                                    .child("Refresh")
+                                    .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("log-commits")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .py(px(4.))
+                            .when(commits.is_empty(), |d| {
+                                d.child(
+                                    div()
+                                        .p(px(12.))
+                                        .text_color(theme.text_muted)
+                                        .child("No commits"),
+                                )
+                            })
+                            .children(commits),
+                    ),
             )
             .child(
                 div()

@@ -184,16 +184,25 @@ const PRETTIER_FILES: &[&str] = &[
     ".prettierrc.json5",
     ".prettierrc.js",
     "prettier.config.js",
+    ".prettierrc.ts",
+    "prettier.config.ts",
     ".prettierrc.mjs",
     "prettier.config.mjs",
+    ".prettierrc.mts",
+    "prettier.config.mts",
     ".prettierrc.cjs",
     "prettier.config.cjs",
+    ".prettierrc.cts",
+    "prettier.config.cts",
     ".prettierrc.toml",
 ];
 
-/// Prettier's configs that are JavaScript, which only running them can read.
+/// Prettier's configs that are JavaScript or TypeScript, which only running them can read. Node
+/// runs TypeScript itself from version 23.6, by dropping the types.
 fn is_js_config(name: &str) -> bool {
-    name.ends_with(".js") || name.ends_with(".mjs") || name.ends_with(".cjs")
+    [".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"]
+        .iter()
+        .any(|e| name.ends_with(e))
 }
 
 /// What JavaScript configs evaluated to, by file and its time, so each runs once per change.
@@ -664,6 +673,15 @@ mod tests {
         assert_eq!(indent(&cjs, "a.ts"), (Some(6), None));
         assert_eq!(indent(&cjs, "a.json"), (Some(1), None));
         assert!(prewarm_prettier(cjs.path()));
+        // TypeScript, where Node can run it.
+        let ts = project(&[(
+            "prettier.config.ts",
+            "type Config = { tabWidth: number }\nconst config: Config = { tabWidth: 5 }\nexport default config\n",
+        )]);
+        let found = indent(&ts, "a.ts");
+        if found != (None, None) {
+            assert_eq!(found, (Some(5), None));
+        }
         // A config that throws is given up on, and a config further up isn't read in its place.
         let broken = project(&[
             (".prettierrc", "{\"tabWidth\": 9}"),

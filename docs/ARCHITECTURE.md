@@ -418,6 +418,12 @@ the project's git status changes, and compares its live text with it off the UI 
 after typing stops (`similar`'s line diff), so the gutter's change marks include unsaved edits.
 Rollback Lines puts a change's committed lines back as one undoable edit.
 
+Diffs and merges take their positions from the lengths of the diff's runs rather than from
+`similar`'s own indices, which around a deletion aren't always where the run is (a property test
+found this). A conflicted file's three versions come from git's index (`:1:`, `:2:`, `:3:`), and
+`merge3` merges them line by line as git does: what one side changed is taken, what both changed
+the same is taken once, and changes with nothing unchanged between them are a conflict.
+
 A commit is of the ticked files exactly, as IntelliJ's is: new ones are added, then `git commit --
 <files>`, which leaves anything else staged out of it. Push sets the upstream on a branch's first
 push; Update Project is `git pull`, as the person's git config has it.

@@ -243,14 +243,18 @@ impl CommitPanel {
         cx.notify();
     }
 
-    /// Shows a file's changes against the last commit.
+    /// Shows a file's changes against the last commit, or for a conflict, the merge window.
     pub fn show_diff(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
         let Some(file) = self.files.get(index).cloned() else {
             return;
         };
         self.workspace
             .update(cx, |workspace, cx| {
-                crate::show_file_diff(workspace, &file.path, window, cx)
+                if file.state == GitState::Conflicted {
+                    crate::open_merge(workspace, file, window, cx)
+                } else {
+                    crate::show_file_diff(workspace, &file.path, window, cx)
+                }
             })
             .ok();
     }
@@ -360,9 +364,26 @@ impl CommitPanel {
                     .child(folder),
             )
             .when(conflicted, |d| {
-                d.child(side_button("take-yours", "Yours", Some(true)))
-                    .child(side_button("take-theirs", "Theirs", Some(false)))
-                    .child(side_button("mark-resolved", "Resolved", None))
+                d.child(
+                    div()
+                        .id(SharedString::from(format!("merge-{index}")))
+                        .debug_selector(move || format!("merge-{index}"))
+                        .px(px(6.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(theme.accent)
+                        .text_color(theme.accent)
+                        .text_size(px(11.))
+                        .cursor_pointer()
+                        .child("Merge…")
+                        .on_click(cx.listener(move |this, _, window, cx| {
+                            cx.stop_propagation();
+                            this.show_diff(index, window, cx)
+                        })),
+                )
+                .child(side_button("take-yours", "Yours", Some(true)))
+                .child(side_button("take-theirs", "Theirs", Some(false)))
+                .child(side_button("mark-resolved", "Resolved", None))
             })
             .into_any_element()
     }

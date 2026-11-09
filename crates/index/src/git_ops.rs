@@ -25,6 +25,15 @@ pub struct CommitInfo {
     /// How long ago, as git says it: `3 days ago`.
     pub when: String,
     pub subject: String,
+    /// Branches and tags pointing at it, as git shows them: `HEAD -> main`, `tag: v1`.
+    pub refs: Vec<String>,
+}
+
+/// A stash, newest first: `stash@{0}`, and the message it was saved with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Stash {
+    pub name: String,
+    pub message: String,
 }
 
 /// Runs git in a folder: its output, or what it said when it failed.
@@ -160,6 +169,20 @@ pub fn take_side(dir: &Path, file: &ChangedFile, ours: bool) -> Result<()> {
     Ok(())
 }
 
+/// A conflicted file's three versions, as git keeps them while merging: the common base (empty
+/// if both sides added it), ours and theirs.
+pub fn conflict_versions(dir: &Path, file: &ChangedFile) -> Result<(String, String, String)> {
+    let top = toplevel(dir)?;
+    let stage = |n: u8| git(&top, &["show", &format!(":{n}:{}", file.relative)]);
+    Ok((stage(1).unwrap_or_default(), stage(2)?, stage(3)?))
+}
+
+/// Settles a conflict with merged text: writes it and stages it.
+pub fn resolve_with(dir: &Path, file: &ChangedFile, text: &str) -> Result<()> {
+    std::fs::write(&file.path, text)?;
+    mark_resolved(dir, file)
+}
+
 /// Marks a conflicted file resolved, as it is now, after it's been edited by hand.
 pub fn mark_resolved(dir: &Path, file: &ChangedFile) -> Result<()> {
     git(&toplevel(dir)?, &["add", "--", &file.relative])?;
@@ -170,7 +193,7 @@ pub fn mark_resolved(dir: &Path, file: &ChangedFile) -> Result<()> {
 pub fn push(dir: &Path) -> Result<String> {
     let has_upstream = git(dir, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_ok();
     if has_upstream {
-        git(dir, &["push"])?;
+        git(dir, &["push", "--follow-tags"])?;
     } else {
         let branch = git(dir, &["rev-parse", "--abbrev-ref", "HEAD"])?;
         let branch = branch.trim();
@@ -179,7 +202,7 @@ pub fn push(dir: &Path) -> Result<String> {
             .lines()
             .next()
             .context("there's no remote to push to")?;
-        git(dir, &["push", "-u", remote, branch])?;
+        git(dir, &["push", "--follow-tags", "-u", remote, branch])?;
     }
     Ok("Pushed".to_string())
 }
@@ -194,16 +217,25 @@ pub fn update(dir: &Path) -> Result<String> {
     })
 }
 
-/// The latest commits, newest first.
+/// The latest commits, newest first: of every branch and tag with `all`, else of the current
+/// branch.
 pub fn history(dir: &Path, limit: usize) -> Result<Vec<CommitInfo>> {
-    let output = git(
-        dir,
-        &[
-            "log",
-            &format!("-{limit}"),
-            "--format=%H%x1f%h%x1f%an%x1f%ar%x1f%s",
-        ],
-    )?;
+    history_of(dir, limit, false)
+}
+
+pub fn history_of(dir: &Path, limit: usize, all: bool) -> Result<Vec<CommitInfo>> {
+    let count = format!("-{limit}");
+    let mut args = vec![
+        "log",
+        count.as_str(),
+        // Children before their parents, whatever the times say, as a graph reads.
+        "--topo-order",
+        "--format=%H%x1f%h%x1f%an%x1f%ar%x1f%s%x1f%D",
+    ];
+    if all {
+        args.push("--all");
+    }
+    let output = git(dir, &args)?;
     Ok(output
         .lines()
         .filter_map(|line| {
@@ -214,9 +246,76 @@ pub fn history(dir: &Path, limit: usize) -> Result<Vec<CommitInfo>> {
                 author: parts.next()?.to_string(),
                 when: parts.next()?.to_string(),
                 subject: parts.next()?.to_string(),
+                refs: parts
+                    .next()
+                    .unwrap_or("")
+                    .split(", ")
+                    .filter(|r| !r.is_empty())
+                    .map(String::from)
+                    .collect(),
             })
         })
         .collect())
+}
+
+/// Applies a commit's changes on top of the current branch.
+pub fn cherry_pick(dir: &Path, hash: &str) -> Result<String> {
+    git(dir, &["cherry-pick", hash])?;
+    Ok(format!("Cherry-picked {}", short(hash)))
+}
+
+/// Makes a commit undoing another.
+pub fn revert(dir: &Path, hash: &str) -> Result<String> {
+    git(dir, &["revert", "--no-edit", hash])?;
+    Ok(format!("Reverted {}", short(hash)))
+}
+
+/// Tags a commit, with an annotated tag so a push takes it along.
+pub fn tag(dir: &Path, name: &str, hash: &str) -> Result<String> {
+    git(dir, &["tag", "-a", name, "-m", name, hash])?;
+    Ok(format!("Tagged {} as {name}", short(hash)))
+}
+
+/// Puts uncommitted changes, new files included, aside.
+pub fn stash(dir: &Path, message: &str) -> Result<String> {
+    let mut args = vec!["stash", "push", "--include-untracked"];
+    if !message.trim().is_empty() {
+        args.extend(["-m", message]);
+    }
+    let output = git(dir, &args)?;
+    if output.contains("No local changes") {
+        bail!("There are no changes to stash");
+    }
+    Ok("Stashed the changes".to_string())
+}
+
+/// The stashes there are, newest first.
+pub fn stashes(dir: &Path) -> Result<Vec<Stash>> {
+    Ok(git(dir, &["stash", "list", "--format=%gd%x1f%s"])?
+        .lines()
+        .filter_map(|line| {
+            let (name, message) = line.split_once('\u{1f}')?;
+            Some(Stash {
+                name: name.to_string(),
+                message: message.to_string(),
+            })
+        })
+        .collect())
+}
+
+/// Brings a stash's changes back: `pop` drops it after, `apply` keeps it.
+pub fn unstash(dir: &Path, name: &str, pop: bool) -> Result<String> {
+    git(dir, &["stash", if pop { "pop" } else { "apply" }, name])?;
+    Ok(format!("Unstashed {name}"))
+}
+
+pub fn drop_stash(dir: &Path, name: &str) -> Result<String> {
+    git(dir, &["stash", "drop", name])?;
+    Ok(format!("Dropped {name}"))
+}
+
+fn short(hash: &str) -> &str {
+    &hash[..hash.len().min(7)]
 }
 
 /// The files a commit changed, with how.
@@ -341,6 +440,11 @@ mod tests {
         assert!(merged.is_err());
         let files = changed_files(&root).unwrap();
         assert_eq!(files[0].state, GitState::Conflicted);
+        let (base, ours, theirs) = conflict_versions(&root, &files[0]).unwrap();
+        assert_eq!(
+            (base.as_str(), ours.as_str(), theirs.as_str()),
+            ("one\n", "ours\n", "theirs\n")
+        );
         take_side(&root, &files[0], false).unwrap();
         assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "theirs\n");
         assert_eq!(states(&root), [("a.txt".into(), GitState::Modified)]);
@@ -369,6 +473,55 @@ mod tests {
         assert_eq!(text_at(&root, &log[0].hash, "a.txt", true), "one\n");
         assert_eq!(text_at(&root, &log[0].hash, "a.txt", false), "two\n");
         assert_eq!(text_at(&root, &log[0].hash, "b.txt", false), "");
+    }
+
+    #[test]
+    fn cherry_picks_reverts_tags_and_the_log_of_every_branch() {
+        let (_dir, root) = repo();
+        run(&root, &["switch", "-q", "-c", "side"]);
+        fs::write(root.join("c.txt"), "side\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-q", "-m", "on side"]);
+        run(&root, &["switch", "-q", "main"]);
+        // The current branch's log hasn't it; every branch's has, labelled.
+        assert_eq!(history(&root, 10).unwrap().len(), 1);
+        let all = history_of(&root, 10, true).unwrap();
+        assert_eq!(all[0].subject, "on side");
+        assert_eq!(all[0].refs, ["side"]);
+        assert_eq!(all[1].refs, ["HEAD -> main"]);
+        cherry_pick(&root, &all[0].hash).unwrap();
+        assert_eq!(fs::read_to_string(root.join("c.txt")).unwrap(), "side\n");
+        let picked = history(&root, 1).unwrap().remove(0);
+        revert(&root, &picked.hash).unwrap();
+        assert!(!root.join("c.txt").exists());
+        tag(&root, "v1", &picked.hash).unwrap();
+        let tagged = history_of(&root, 10, true).unwrap();
+        assert!(
+            tagged
+                .iter()
+                .any(|c| c.refs.contains(&"tag: v1".to_string()))
+        );
+    }
+
+    #[test]
+    fn stashes_put_changes_aside_and_bring_them_back() {
+        let (_dir, root) = repo();
+        fs::write(root.join("a.txt"), "changed\n").unwrap();
+        fs::write(root.join("new.txt"), "new\n").unwrap();
+        stash(&root, "wip").unwrap();
+        assert!(states(&root).is_empty());
+        let list = stashes(&root).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].name, "stash@{0}");
+        assert!(list[0].message.ends_with("wip"), "{:?}", list[0]);
+        unstash(&root, &list[0].name, false).unwrap();
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "changed\n");
+        assert!(root.join("new.txt").exists());
+        // Applied, so it's still there to drop.
+        drop_stash(&root, "stash@{0}").unwrap();
+        assert!(stashes(&root).unwrap().is_empty());
+        rollback(&root, &changed_files(&root).unwrap()).unwrap();
+        assert!(stash(&root, "").is_err(), "nothing to stash");
     }
 
     #[test]

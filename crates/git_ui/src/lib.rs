@@ -4,14 +4,16 @@
 mod commit_panel;
 mod diff_view;
 mod log_panel;
+mod merge_view;
 
 pub use commit_panel::{COMMIT_PANEL, CommitPanel};
-pub use diff_view::DiffView;
+pub use diff_view::{DiffView, Revertible};
 pub use log_panel::{LOG_PANEL, LogPanel};
+pub use merge_view::{Choice, MergeView};
 
 use gleipnir_index::git_ops;
 use gleipnir_workspace::Workspace;
-use gpui::{App, AppContext as _, Context, KeyBinding, Window, actions};
+use gpui::{App, AppContext as _, Context, KeyBinding, Window, actions, px};
 use std::path::Path;
 
 actions!(
@@ -29,6 +31,10 @@ actions!(
         ShowDiff,
         /// Puts the changed lines at the cursor back as committed.
         RollbackLines,
+        /// Puts uncommitted changes aside, with a message.
+        StashChanges,
+        /// Brings stashed changes back, or drops them.
+        UnstashChanges,
     ]
 );
 
@@ -54,6 +60,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-enter", CommitAndKeep, Some("CommitPanel")),
     ]);
     diff_view::bind_keys(cx);
+    merge_view::bind_keys(cx);
 }
 
 pub fn add_to_workspace(
@@ -95,6 +102,125 @@ pub fn add_to_workspace(
         }
     });
     workspace.register_action(|workspace, _: &RollbackLines, _, cx| rollback_lines(workspace, cx));
+    workspace.register_action(|workspace, _: &StashChanges, window, cx| {
+        workspace.ask_for_name(
+            "Stash changes",
+            "Message (optional)",
+            |message, workspace, cx| {
+                run_git_task(
+                    workspace,
+                    "Stashing…",
+                    move |root| git_ops::stash(root, &message),
+                    cx,
+                )
+            },
+            window,
+            cx,
+        )
+    });
+    workspace.register_action(|workspace, _: &UnstashChanges, window, cx| {
+        open_stashes(workspace, window, cx)
+    });
+}
+
+/// Runs a git command that takes a while, off the UI thread, saying it's running and then how
+/// it went, and brings what shows git's state up to date.
+pub fn run_git_task(
+    workspace: &mut Workspace,
+    running: &'static str,
+    command: impl FnOnce(&Path) -> anyhow::Result<String> + Send + 'static,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(root) = workspace.root().map(Path::to_path_buf) else {
+        return;
+    };
+    workspace.show_message(running, cx);
+    let work = cx
+        .background_executor()
+        .spawn(async move { command(&root) });
+    cx.spawn(async move |this, cx| {
+        let result = work.await;
+        this.update(cx, |workspace, cx| {
+            match result {
+                Ok(message) => workspace.show_message(message, cx),
+                Err(error) => workspace.show_error(format!("{error:#}"), cx),
+            }
+            commit_panel::refresh_git_state(workspace, cx);
+            if let Some(log) = workspace.panel::<LogPanel>(cx) {
+                log.update(cx, |log, cx| log.refresh(cx));
+            }
+        })
+        .ok();
+    })
+    .detach();
+}
+
+/// The stashes, each opening what can be done with it: pop, apply or drop.
+fn open_stashes(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+    let Some(root) = workspace.root().map(Path::to_path_buf) else {
+        return;
+    };
+    let stashes = git_ops::stashes(&root).unwrap_or_default();
+    if stashes.is_empty() {
+        workspace.show_message("There are no stashes", cx);
+        return;
+    }
+    let position = gpui::point(window.viewport_size().width / 2. - px(160.), px(120.));
+    let handle = cx.weak_entity();
+    let menu = cx.new(|cx| {
+        stashes
+            .into_iter()
+            .fold(gleipnir_ui::ContextMenu::new(cx), |menu, stash| {
+                let handle = handle.clone();
+                let label = format!("{}: {}", stash.name, stash.message);
+                menu.item(label, None, move |window, cx| {
+                    let name = stash.name.clone();
+                    handle
+                        .update(cx, |workspace, cx| {
+                            stash_actions(workspace, name, position, window, cx)
+                        })
+                        .ok();
+                })
+            })
+    });
+    workspace.show_menu(menu, position, window, cx);
+}
+
+fn stash_actions(
+    workspace: &mut Workspace,
+    name: String,
+    position: gpui::Point<gpui::Pixels>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let handle = cx.weak_entity();
+    let action = |label: &'static str, pop: Option<bool>| {
+        let (handle, name) = (handle.clone(), name.clone());
+        move |_: &mut Window, cx: &mut App| {
+            let name = name.clone();
+            handle
+                .update(cx, |workspace, cx| {
+                    run_git_task(
+                        workspace,
+                        label,
+                        move |root| match pop {
+                            Some(pop) => git_ops::unstash(root, &name, pop),
+                            None => git_ops::drop_stash(root, &name),
+                        },
+                        cx,
+                    )
+                })
+                .ok();
+        }
+    };
+    let menu = cx.new(|cx| {
+        gleipnir_ui::ContextMenu::new(cx)
+            .item("Pop", None, action("Unstashing…", Some(true)))
+            .item("Apply", None, action("Unstashing…", Some(false)))
+            .separator()
+            .item("Drop", None, action("Dropping…", None))
+    });
+    workspace.show_menu(menu, position, window, cx);
 }
 
 /// Runs a git command that takes a while, saying it's running and then how it went.
@@ -125,6 +251,29 @@ fn run_in_background(
     .detach();
 }
 
+/// The merge window for a conflicted file.
+pub fn open_merge(
+    workspace: &mut Workspace,
+    file: gleipnir_index::git_ops::ChangedFile,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let Some(root) = workspace.root().map(Path::to_path_buf) else {
+        return;
+    };
+    let versions = match git_ops::conflict_versions(&root, &file) {
+        Ok(versions) => versions,
+        Err(error) => {
+            workspace.show_error(format!("{error:#}"), cx);
+            return;
+        }
+    };
+    let handle = cx.weak_entity();
+    workspace.toggle_modal(window, cx, move |_, cx| {
+        MergeView::new(root, file, versions, handle, cx)
+    });
+}
+
 /// A file's changes against the last commit: the open buffer's text, with unsaved edits, or the
 /// file on disk.
 pub fn show_file_diff(
@@ -150,8 +299,12 @@ pub fn show_file_diff(
         .unwrap_or(path)
         .display()
         .to_string();
+    let target = match buffer {
+        Some(buffer) => Revertible::Buffer(buffer),
+        None => Revertible::File(path.to_path_buf()),
+    };
     workspace.toggle_modal(window, cx, move |_, cx| {
-        DiffView::new(shown, ("Last commit", &committed), ("Now", &now), cx)
+        DiffView::new(shown, ("Last commit", &committed), ("Now", &now), cx).revertible(target)
     });
 }
 

@@ -334,12 +334,17 @@ IntelliJ's does, and there's a Git menu.
 | 10.5 | History: the log, and a commit's changed files and their diffs | Selecting a commit shows its files; a file shows its diff |
 | 10.6 | Conflicts: listed in the commit panel, accept yours or theirs, or open the file to resolve | Accepting a side resolves the file and stages it |
 
+Done after M10's first part: diffs highlighted as code, with ⟲ to put one change back at a time;
+a three-way merge window for conflicts (yours, the result, theirs; one-sided changes merged, each
+conflict settled by a side or both, Apply to save and stage), on a line merge that's property-tested;
+the log of every branch with branch and tag labels, and a commit's menu with Cherry-Pick, Revert,
+New Branch Here, New Tag Here and Copy Hash; Stash and Unstash; push taking annotated tags along;
+and Prettier configs in TypeScript.
+
 Still open from M10:
 
-- **Diffs aren't highlighted** as code, and a change can't be rolled back from inside the diff,
-  only from the editor (Cmd+Alt+Z) or the whole file from the Commit window.
-- **Conflicts are settled a file at a time**, by side; there's no three-way merge view.
-- **Stashes, tags, cherry-picks and the like** aren't there; the log is one branch's history.
+- **The log has no graph** of how branches join, and no blame (annotate) in the editor.
+- **No interactive rebase**, squash or reword.
 
 ## Later
 

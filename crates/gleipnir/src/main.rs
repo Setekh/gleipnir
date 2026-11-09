@@ -276,6 +276,9 @@ fn set_menus(cx: &mut App) {
                     MenuItem::action("Show Diff", g::ShowDiff),
                     MenuItem::action("Rollback Lines", g::RollbackLines),
                     MenuItem::separator(),
+                    MenuItem::action("Stash Changes…", g::StashChanges),
+                    MenuItem::action("Unstash Changes…", g::UnstashChanges),
+                    MenuItem::separator(),
                     MenuItem::action("Show Log", g::ShowLog),
                 ]
             },
