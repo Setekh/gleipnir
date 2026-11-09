@@ -5,7 +5,7 @@
 use gleipnir_core::{BufferModel, ProjectEvent};
 use gleipnir_editor::EditorView;
 use gleipnir_index::GitState;
-use gleipnir_index::git_ops::{self, ChangedFile};
+use gleipnir_index::git_ops::{self, ChangedFile, Operation};
 use gleipnir_ui::{FileIcon, Icon, Theme, file_icon};
 use gleipnir_workspace::{DockPosition, Panel, Workspace};
 use gpui::{
@@ -29,6 +29,8 @@ pub struct CommitPanel {
     amend: bool,
     /// What's running, like a commit, so it isn't started twice.
     busy: Option<&'static str>,
+    /// A rebase or merge stopped partway, to continue or abort once its conflicts are settled.
+    operation: Option<Operation>,
     refresh_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -62,6 +64,7 @@ impl CommitPanel {
             message,
             amend: false,
             busy: None,
+            operation: None,
             refresh_task: None,
             _subscriptions: subscriptions,
         };
@@ -78,12 +81,17 @@ impl CommitPanel {
         let Some(root) = self.root.clone() else {
             return;
         };
-        let read = cx
-            .background_executor()
-            .spawn(async move { git_ops::changed_files(&root) });
+        let read = cx.background_executor().spawn(async move {
+            (
+                git_ops::changed_files(&root),
+                git_ops::operation_in_progress(&root),
+            )
+        });
         self.refresh_task = Some(cx.spawn(async move |this, cx| {
-            let files = read.await.unwrap_or_default();
+            let (files, operation) = read.await;
+            let files = files.unwrap_or_default();
             this.update(cx, |this, cx| {
+                this.operation = operation;
                 let present: HashSet<&PathBuf> = files.iter().map(|f| &f.path).collect();
                 this.unticked.retain(|p| present.contains(p));
                 this.selected = this.selected.filter(|&i| i < files.len());
@@ -430,6 +438,7 @@ impl Panel for CommitPanel {
             "message": self.message_text(cx),
             "amend": self.amend,
             "busy": self.busy,
+            "operation": self.operation.map(Operation::doing),
         })
     }
 }
@@ -514,6 +523,40 @@ impl Render for CommitPanel {
                             .on_click(cx.listener(|this, _, _, cx| this.rollback(cx))),
                     ),
             )
+            // What's stopped partway, with how to carry on, as IntelliJ shows it.
+            .children(self.operation.map(|operation| {
+                div()
+                    .px(px(8.))
+                    .py(px(5.))
+                    .flex()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(6.))
+                    .bg(theme.git_conflicted.opacity(0.12))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .text_size(px(12.))
+                    .child(
+                        div()
+                            .flex_1()
+                            .child(format!("{} stopped", operation.doing())),
+                    )
+                    .child(
+                        toolbar_button("operation-continue", "Continue")
+                            .text_color(theme.accent)
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.workspace.update(cx, crate::continue_operation).ok();
+                            })),
+                    )
+                    .child(
+                        toolbar_button("operation-abort", "Abort").on_click(cx.listener(
+                            |this, _, _, cx| {
+                                this.workspace.update(cx, crate::abort_operation).ok();
+                            },
+                        )),
+                    )
+            }))
             .child(
                 div()
                     .id("commit-files")

@@ -2195,6 +2195,7 @@ dependencies = [
  "gleipnir-editor",
  "gleipnir-packages",
  "gleipnir-test-support",
+ "gleipnir-text",
  "gleipnir-ui",
  "gleipnir-workspace",
  "gpui",

@@ -341,10 +341,29 @@ the log of every branch with branch and tag labels, and a commit's menu with Che
 New Branch Here, New Tag Here and Copy Hash; Stash and Unstash; push taking annotated tags along;
 and Prettier configs in TypeScript.
 
+Done after that, closing what M10 left open:
+
+| # | Item | Finished when |
+| --- | --- | --- |
+| 10.7 | The log's graph: a coloured lane per branch, dots for commits, lines to their parents, merges joining in; only the rows on screen are drawn | A branch merged back shows in its own lane, meeting the first one at the fork and the merge |
+| 10.8 | Annotate with Git Blame, from the gutter's right-click menu, the Git menu or Find Action: the day and author beside each line, tinted newer to older; resting on one shows the commit, clicking chooses it in the log | Labels follow edits at once, and are blamed again against the unsaved text when typing stops |
+| 10.9 | Interactively Rebase from Here, from a commit's menu in the log: pick, reword, squash, fixup or drop each commit, reorder them, edit messages; a conflict stops it in the Commit window, with Continue and Abort | Real rebases on temporary repositories reword, squash, drop and reorder, and continue through conflicts |
+
+How each works is under Git in [ARCHITECTURE.md](ARCHITECTURE.md). `script/e2e git` now also checks
+the graph and turns blame on and off. In the rebase window, P, R, S, F and D set a commit's action,
+Alt+Up and Alt+Down move it, and Cmd+Enter starts. Labels in the gutter right-click for Show in Git
+Log, Copy Hash and Close Annotations.
+
+Fixed alongside: the Commit window's own `git status` could hold the index lock just as a commit
+started, which failed it now and then (`script/e2e git` showed it about one run in three); git is
+now always run with `GIT_OPTIONAL_LOCKS=0`, as the project's status already was.
+
 Still open from M10:
 
-- **The log has no graph** of how branches join, and no blame (annotate) in the editor.
-- **No interactive rebase**, squash or reword.
+- **Merges in a rebase**: rebasing from before a merge is refused, rather than flattening it;
+  `--rebase-merges` and the `edit` action aren't offered.
+- **Blame of older revisions** (annotating the previous revision from a label, as IntelliJ can) isn't
+  there, and a commit older than the log's 2,000 can't be chosen in it from a label.
 
 ## M11: Inline suggestions
 
@@ -358,11 +377,17 @@ from Qwen2.5-Coder 0.5B under llama.cpp b11889, both installed by Gleipnir and c
 `GLEIPNIR_LLAMA_TOOLS=<tools folder> cargo test -p gleipnir-suggest` runs that against the real
 model. Warm requests take about 15 ms. Typing is no slower with suggestions on than off.
 
+Several lines: after `for (const item of items) {`, the real model offers the body and the
+closing brace at 67%, in rows of their own; Cmd+Right takes a line of it and Option+Right a word.
+Shown `formatAddress`'s definition from another open file, it writes `formatAddress(order.address,
+', ')` with the separator argument it otherwise leaves out, in about 45 ms.
+
 Still open from M11:
 
-- **One line at a time.** Multi-line suggestions, and taking a suggestion a word at a time, aren't
-  there yet.
-- **Only the file at the cursor is context** for the model; other open files aren't sent to it.
+- **Long suggestions score low.** A score is the probability of the whole text, so several lines
+  rarely clear the default 50% and are cut back to those that do; a lower minimum shows more.
+- **Suggestions wait while a completion list is open**, as Tab picks from the list then.
+- **llama.cpp on Linux is untried**; only the release's layout was checked.
 
 | # | Item | Finished when |
 | --- | --- | --- |
@@ -370,6 +395,8 @@ Still open from M11:
 | 11.2 | Suggestions without a model: how the same text goes on elsewhere in the file, and the punctuation sibling lines end with, scored by how often they agree | After `address2: types.maybe(ProvisioningAddress)` among lines ending in `,`, a `,` is offered |
 | 11.3 | A local model: llama.cpp's server and a small fill-in-the-middle code model, installed when first needed and checksummed, scored by the model's own odds | A line is suggested from the code before and after the cursor, with its probability |
 | 11.4 | Settings: on or off, which model, and how sure a suggestion must be to show | Each setting takes effect at once |
+| 11.5 | Several lines, on a blank line or after a block's opener, in rows made for them; taken a word or a line at a time | A loop's body and closer are offered after its `{`, and Cmd+Right / Option+Right take a line / a word |
+| 11.6 | The model shown related pieces of the other open files | A function from another open file is called with its real parameters |
 
 ## Later
 

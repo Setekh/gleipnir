@@ -269,6 +269,7 @@ fn attach(
     let path_of = move |cx: &App| buffer.read(cx).path().map(Path::to_path_buf);
     let path_of = Rc::new(path_of);
     let debugger_for_events = debugger.clone();
+    let menu_editor = editor.downgrade();
     let events = cx.subscribe_in(editor, window, move |workspace, _, event, window, cx| {
         let Some(path) = path_of(cx) else { return };
         match event {
@@ -286,8 +287,17 @@ fn attach(
                     run_or_debug_menu(workspace, target, window, cx);
                 }
             }
-            EditorEvent::GutterMenu { line, .. } => {
-                modals::edit_breakpoint(workspace, path, *line as u32, window, cx)
+            EditorEvent::GutterMenu { line, position } => {
+                let existing = debugger_for_events
+                    .read(cx)
+                    .breakpoints()
+                    .get(&path, *line as u32)
+                    .is_some();
+                if existing {
+                    modals::edit_breakpoint(workspace, path, *line as u32, window, cx)
+                } else if let Some(editor) = menu_editor.upgrade() {
+                    gutter_menu(workspace, &editor, path, *line, *position, window, cx)
+                }
             }
             _ => {}
         }
@@ -304,6 +314,47 @@ fn attach(
         }
     });
     vec![events, repaint]
+}
+
+/// The gutter's menu on a line without a breakpoint: add one with settings, or annotate the file
+/// with who changed each line, from Git, if that's there.
+fn gutter_menu(
+    workspace: &mut Workspace,
+    editor: &Entity<EditorView>,
+    path: PathBuf,
+    line: usize,
+    position: gpui::Point<gpui::Pixels>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let handle = cx.weak_entity();
+    let annotated = editor.read(cx).has_gutter_text();
+    // By name, as Git's actions are another crate's.
+    let blame = cx.build_action("git::ToggleBlame", None).ok();
+    let menu = cx.new(|cx| {
+        let menu =
+            gleipnir_ui::ContextMenu::new(cx).item("Add Breakpoint…", None, move |window, cx| {
+                let path = path.clone();
+                handle
+                    .update(cx, |w, cx| {
+                        modals::edit_breakpoint(w, path, line as u32, window, cx)
+                    })
+                    .ok();
+            });
+        match blame {
+            Some(action) => menu.separator().item(
+                if annotated {
+                    "Close Annotations"
+                } else {
+                    "Annotate with Git Blame"
+                },
+                None,
+                move |window, cx| window.dispatch_action(action.boxed_clone(), cx),
+            ),
+            None => menu,
+        }
+    });
+    workspace.show_menu(menu, position, window, cx);
 }
 
 fn with_debugger(

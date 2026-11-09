@@ -1,15 +1,24 @@
-//! Git, as IntelliJ has it: the Commit tool window, the Git log, diffs, push and update, and
-//! rolling back changed lines from the editor.
+//! Git, as IntelliJ has it: the Commit tool window, the Git log with its graph, diffs, push and
+//! update, rolling back changed lines from the editor, blame in the gutter, and interactive
+//! rebase.
 
+mod blame;
 mod commit_panel;
 mod diff_view;
+mod graph;
 mod log_panel;
 mod merge_view;
+mod rebase;
+mod rebase_view;
 
+pub use blame::{Blame, BlameCommit, BlameParser, blame_text, gutter_text, parse_blame};
 pub use commit_panel::{COMMIT_PANEL, CommitPanel};
 pub use diff_view::{DiffView, Revertible};
+pub use graph::{GraphLine, GraphRow, Level, graph};
 pub use log_panel::{LOG_PANEL, LogPanel};
 pub use merge_view::{Choice, MergeView};
+pub use rebase::{RebaseAction, RebaseEntry, RebasePlan, plan as rebase_plan};
+pub use rebase_view::RebaseView;
 
 use gleipnir_index::git_ops;
 use gleipnir_workspace::Workspace;
@@ -35,6 +44,12 @@ actions!(
         StashChanges,
         /// Brings stashed changes back, or drops them.
         UnstashChanges,
+        /// Shows who last changed each line of the file, and when, beside it; or hides that.
+        ToggleBlame,
+        /// Carries on with a rebase or merge that stopped, once its conflicts are settled.
+        ContinueOperation,
+        /// Gives up a rebase or merge that stopped, putting things back as they were.
+        AbortOperation,
     ]
 );
 
@@ -61,6 +76,7 @@ pub fn bind_keys(cx: &mut App) {
     ]);
     diff_view::bind_keys(cx);
     merge_view::bind_keys(cx);
+    rebase_view::bind_keys(cx);
 }
 
 pub fn add_to_workspace(
@@ -82,6 +98,13 @@ pub fn add_to_workspace(
             panel.update(cx, |panel, cx| panel.refresh(cx));
             let message = panel.read(cx).message_focus(cx);
             window.focus(&message, cx);
+        }
+    });
+    // Cmd+Enter in the message box commits from there; from anywhere else, as from Find Action,
+    // it commits what the Commit window has.
+    workspace.register_action(|workspace, _: &CommitAndKeep, _, cx| {
+        if let Some(panel) = workspace.panel::<CommitPanel>(cx) {
+            panel.update(cx, |panel, cx| panel.commit(false, cx));
         }
     });
     workspace.register_action(|workspace, _: &ToggleCommitWindow, window, cx| {
@@ -121,10 +144,47 @@ pub fn add_to_workspace(
     workspace.register_action(|workspace, _: &UnstashChanges, window, cx| {
         open_stashes(workspace, window, cx)
     });
+    workspace.register_action(|workspace, _: &ToggleBlame, window, cx| {
+        blame::toggle_blame(workspace, window, cx)
+    });
+    workspace.register_action(|workspace, _: &ContinueOperation, _, cx| {
+        continue_operation(workspace, cx)
+    });
+    workspace
+        .register_action(|workspace, _: &AbortOperation, _, cx| abort_operation(workspace, cx));
+}
+
+/// Carries on with the rebase, merge or cherry-pick that stopped.
+pub(crate) fn continue_operation(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
+    run_git_task(
+        workspace,
+        "Continuing…",
+        |root| {
+            let result = git_ops::continue_operation(root);
+            rebase::finished(root);
+            result
+        },
+        cx,
+    )
+}
+
+/// Gives up the rebase, merge or cherry-pick that stopped.
+pub(crate) fn abort_operation(workspace: &mut Workspace, cx: &mut Context<Workspace>) {
+    run_git_task(
+        workspace,
+        "Aborting…",
+        |root| {
+            let result = git_ops::abort_operation(root);
+            rebase::finished(root);
+            result
+        },
+        cx,
+    )
 }
 
 /// Runs a git command that takes a while, off the UI thread, saying it's running and then how
-/// it went, and brings what shows git's state up to date.
+/// it went, and brings what shows git's state up to date. If git stopped partway, at a conflict,
+/// the Commit window opens to settle it.
 pub fn run_git_task(
     workspace: &mut Workspace,
     running: &'static str,
@@ -135,11 +195,12 @@ pub fn run_git_task(
         return;
     };
     workspace.show_message(running, cx);
-    let work = cx
-        .background_executor()
-        .spawn(async move { command(&root) });
+    let work = cx.background_executor().spawn(async move {
+        let result = command(&root);
+        (result, git_ops::operation_in_progress(&root))
+    });
     cx.spawn(async move |this, cx| {
-        let result = work.await;
+        let (result, stopped) = work.await;
         this.update(cx, |workspace, cx| {
             match result {
                 Ok(message) => workspace.show_message(message, cx),
@@ -148,6 +209,12 @@ pub fn run_git_task(
             commit_panel::refresh_git_state(workspace, cx);
             if let Some(log) = workspace.panel::<LogPanel>(cx) {
                 log.update(cx, |log, cx| log.refresh(cx));
+            }
+            if let Some(panel) = workspace.panel::<CommitPanel>(cx) {
+                panel.update(cx, |panel, cx| panel.refresh(cx));
+                if stopped.is_some() {
+                    workspace.show_panel(COMMIT_PANEL, cx);
+                }
             }
         })
         .ok();

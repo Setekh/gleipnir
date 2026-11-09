@@ -2,12 +2,13 @@
 //! file itself first, and from a small code model run locally by llama.cpp where there is one.
 
 pub mod llama;
+pub mod related;
 pub mod rules;
 
 use gleipnir_core::BufferModel;
 use gleipnir_editor::{InlineSuggester, InlineSuggestion};
 use gleipnir_workspace::Workspace;
-use gpui::{App, Context, Entity, Task, Window};
+use gpui::{App, Context, Entity, Task, WeakEntity, Window};
 use std::rc::Rc;
 
 /// Suggests from the file itself.
@@ -44,9 +45,48 @@ const MODEL_PAUSE: std::time::Duration = std::time::Duration::from_millis(120);
 /// A suggestion from the file this sure needn't wait for the model.
 const SURE_ENOUGH: f32 = 0.8;
 
+/// How many other open files, most recently used first, the model may be shown pieces of.
+const RELATED_FILES: usize = 6;
+
 /// Suggests from a small model run locally, starting it, and installing it where that's allowed,
-/// the first time it's wanted.
-pub struct ModelSuggester;
+/// the first time it's wanted. It's shown the code around the cursor, and related pieces of the
+/// files open beside it.
+pub struct ModelSuggester {
+    workspace: WeakEntity<Workspace>,
+}
+
+impl ModelSuggester {
+    /// The other files open in the workspace, most recently used first, as they are now.
+    fn other_files(
+        &self,
+        buffer: &Entity<BufferModel>,
+        cx: &App,
+    ) -> Vec<(String, gleipnir_text::Snapshot)> {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return Vec::new();
+        };
+        let workspace = workspace.read(cx);
+        let this = buffer.read(cx).path().map(|p| p.to_path_buf());
+        let root = workspace.root().map(|r| r.to_path_buf());
+        let store = workspace.store().read(cx);
+        workspace
+            .recent_files()
+            .iter()
+            .filter(|path| Some(*path) != this.as_ref())
+            .filter_map(|path| {
+                let other = store.get(path)?;
+                let name = root
+                    .as_deref()
+                    .and_then(|r| path.strip_prefix(r).ok())
+                    .unwrap_or(path)
+                    .to_string_lossy()
+                    .into_owned();
+                Some((name, other.read(cx).buffer().snapshot()))
+            })
+            .take(RELATED_FILES)
+            .collect()
+    }
+}
 
 impl InlineSuggester for ModelSuggester {
     fn suggest(
@@ -66,13 +106,22 @@ impl InlineSuggester for ModelSuggester {
             return Task::ready(None);
         };
         let snapshot = buffer.read(cx).buffer().snapshot();
+        let others = self.other_files(buffer, cx);
         let min_score = settings.editor.suggestion_min_score;
         let executor = cx.background_executor().clone();
         cx.background_executor().spawn(async move {
             // Dropped, as the next key replaces it, before it asks.
             executor.timer(MODEL_PAUSE).await;
             let text = snapshot.slice(0..snapshot.len());
-            let (line, score) = match llama::complete(port, &text, offset) {
+            let others: Vec<related::OtherFile> = others
+                .into_iter()
+                .map(|(name, other)| related::OtherFile {
+                    name,
+                    text: other.slice(0..other.len()),
+                })
+                .collect();
+            let related = related::related(&others, &text, offset);
+            let (line, score) = match llama::complete(port, &text, offset, &related, min_score) {
                 Ok(found) => found?,
                 Err(_) => {
                     llama::server_gone();
@@ -126,7 +175,9 @@ impl InlineSuggester for Suggesters {
 pub fn add_to_workspace(workspace: &mut Workspace, _: &mut Window, cx: &mut Context<Workspace>) {
     let suggester: Rc<dyn InlineSuggester> = Rc::new(Suggesters {
         file: FileSuggester,
-        model: ModelSuggester,
+        model: ModelSuggester {
+            workspace: workspace.weak_handle(),
+        },
     });
     workspace.add_editor_hook(move |_, editor, _, cx| {
         let suggester = suggester.clone();

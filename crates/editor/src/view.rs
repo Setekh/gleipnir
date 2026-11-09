@@ -87,6 +87,8 @@ pub struct EditorState {
     pub suggestion: Option<String>,
     /// Tests' last results in the gutter, as `line: passed` or `line: failed`, one-based.
     pub run_results: Vec<String>,
+    /// The text beside each line in the gutter, like who changed it, as `line: text`, one-based.
+    pub gutter_text: Vec<String>,
 }
 
 pub enum EditorEvent {
@@ -105,6 +107,13 @@ pub enum EditorEvent {
     RunClicked { line: usize },
     /// A right-click in the gutter, at a position in the window, for a menu.
     GutterMenu {
+        line: usize,
+        position: gpui::Point<Pixels>,
+    },
+    /// A click on the text shown beside a line in the gutter, like who last changed it.
+    GutterTextClicked { line: usize },
+    /// A right-click on that text, at a position in the window, for a menu.
+    GutterTextMenu {
         line: usize,
         position: gpui::Point<Pixels>,
     },
@@ -141,6 +150,12 @@ pub struct EditorView {
     /// A text box, like a commit message: no line numbers, and no current line shown.
     pub(crate) plain: bool,
     pub(crate) annotations: crate::annotations::Annotations,
+    /// Text beside each line in the gutter, like who last changed it.
+    pub(crate) gutter_text: Option<crate::gutter_text::GutterText>,
+    /// The line whose label the mouse is on, and where, for its details.
+    pub(crate) gutter_hover: Option<(usize, Point<Pixels>)>,
+    /// The widest label, in characters.
+    pub(crate) gutter_text_chars: usize,
     pub(crate) caret_gesture: crate::caret_gesture::CaretGesture,
     _subscriptions: Vec<Subscription>,
 }
@@ -179,6 +194,9 @@ impl EditorView {
             decorations: None,
             plain: false,
             annotations: Default::default(),
+            gutter_text: None,
+            gutter_hover: None,
+            gutter_text_chars: 0,
             caret_gesture: Default::default(),
             _subscriptions: subscriptions,
         }
@@ -350,6 +368,7 @@ impl EditorView {
                     })
                     .collect()
             }),
+            gutter_text: self.gutter_labels(),
         }
     }
 
@@ -382,6 +401,7 @@ impl EditorView {
                 self.expand_stack.clear();
             }
             self.annotations_edited(edits, cx);
+            self.gutter_text_edited(edits);
             cx.notify();
         }
     }
@@ -1009,6 +1029,7 @@ impl EntityInputHandler for EditorView {
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let popups = self.render_popups(window, cx);
+        let tooltip = self.render_gutter_tooltip(cx);
         macro_rules! motions {
             ($el:expr, $($action:ident => ($motion:expr, $extend:expr)),* $(,)?) => {
                 $el$(.on_action(cx.listener(|this, _: &$action, _, cx| {
@@ -1093,6 +1114,12 @@ impl Render for EditorView {
             .on_action(cx.listener(|this, _: &AcceptSuggestion, _, cx| {
                 this.accept_suggestion(cx);
             }))
+            .on_action(cx.listener(|this, _: &AcceptSuggestionWord, _, cx| {
+                this.accept_suggestion_part(crate::suggestion::SuggestionPart::Word, cx);
+            }))
+            .on_action(cx.listener(|this, _: &AcceptSuggestionLine, _, cx| {
+                this.accept_suggestion_part(crate::suggestion::SuggestionPart::Line, cx);
+            }))
             .on_action(cx.listener(|this, _: &DismissPopups, _, cx| {
                 this.close_popups(cx);
             }))
@@ -1149,5 +1176,6 @@ impl Render for EditorView {
         )
         .child(EditorElement::new(cx.entity()))
         .children(popups)
+        .children(tooltip)
     }
 }

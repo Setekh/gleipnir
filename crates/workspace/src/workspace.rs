@@ -942,7 +942,9 @@ impl Workspace {
                     EditorEvent::GoToDefinition { .. }
                     | EditorEvent::GutterClicked { .. }
                     | EditorEvent::RunClicked { .. }
-                    | EditorEvent::GutterMenu { .. } => {}
+                    | EditorEvent::GutterMenu { .. }
+                    | EditorEvent::GutterTextClicked { .. }
+                    | EditorEvent::GutterTextMenu { .. } => {}
                 },
             ),
             cx.observe_in(&buffer, window, |this, _, window, cx| {

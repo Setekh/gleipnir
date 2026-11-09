@@ -998,6 +998,25 @@ pub(crate) fn popup_bindings(cx: &mut App) {
             AcceptSuggestion,
             Some("Editor && has_suggestion && !showing_completions"),
         ),
+        // Or a word or a line of it at a time, with the keys that would move that far.
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "alt-right"
+            } else {
+                "ctrl-right"
+            },
+            AcceptSuggestionWord,
+            Some("Editor && has_suggestion && !showing_completions"),
+        ),
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "cmd-right"
+            } else {
+                "end"
+            },
+            AcceptSuggestionLine,
+            Some("Editor && has_suggestion && !showing_completions"),
+        ),
         KeyBinding::new("ctrl-space", ShowCompletions, Some("Editor")),
         KeyBinding::new("f2", NextProblem, Some("Editor")),
         KeyBinding::new("shift-f2", PreviousProblem, Some("Editor")),

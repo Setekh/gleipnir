@@ -337,6 +337,18 @@ fn a_breakpoint_can_be_given_a_condition_and_listed(cx: &mut TestAppContext) {
         })
     });
     let workspace = s.workspace.clone();
+    // Without a breakpoint there yet, the gutter's menu offers to add one.
+    let labels = s.cx.update(|_, cx| {
+        workspace
+            .read(cx)
+            .open_menu()
+            .map(|m| m.read(cx).labels())
+            .unwrap_or_default()
+    });
+    assert_eq!(labels[0], "Add Breakpoint…", "{labels:?}");
+    s.cx.run_until_parked();
+    let item = s.cx.debug_bounds("menu-item-0").expect("Add Breakpoint…");
+    s.cx.simulate_click(item.center(), gpui::Modifiers::none());
     let popup =
         s.cx.update(|_, cx| workspace.read(cx).active_modal::<BreakpointEditor>())
             .expect("the breakpoint popup");

@@ -354,3 +354,392 @@ fn the_merge_window_merges_one_sided_changes_and_settles_conflicts(cx: &mut Test
         })
     });
 }
+
+use gleipnir_workspace::Panel as _;
+
+fn commit_file(root: &Path, name: &str, text: &str, message: &str) {
+    std::fs::write(root.join(name), text).unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", message]);
+}
+
+fn subjects(root: &Path) -> Vec<String> {
+    git_ops::history(root, 20)
+        .unwrap()
+        .into_iter()
+        .map(|c| c.subject)
+        .collect()
+}
+
+#[gpui::test]
+fn the_log_draws_a_lane_for_a_branch_and_joins_it_at_the_merge(cx: &mut TestAppContext) {
+    let (_dir, root, workspace, cx) = setup(cx);
+    git(&root, &["switch", "-q", "-c", "side"]);
+    commit_file(&root, "c.txt", "side\n", "on side");
+    git(&root, &["switch", "-q", "main"]);
+    commit_file(&root, "d.txt", "main\n", "on main");
+    git(
+        &root,
+        &["merge", "-q", "--no-ff", "-m", "merge side", "side"],
+    );
+    let log = cx.update(|_, cx| workspace.read(cx).panel::<LogPanel>(cx).unwrap());
+    cx.update(|_, cx| workspace.update(cx, |w, cx| w.show_panel(LOG_PANEL, cx)));
+    log.update(cx, |log, cx| log.refresh(cx));
+    run_until(cx, |cx| {
+        cx.update(|_, cx| log.read(cx).commits().len() == 4)
+    });
+    let (subjects, lanes): (Vec<String>, Vec<usize>) = cx.update(|_, cx| {
+        let log = log.read(cx);
+        log.commits()
+            .iter()
+            .zip(log.graph())
+            .map(|(c, r)| (c.subject.clone(), r.lane))
+            .unzip()
+    });
+    // The merge in the first lane, each branch's own commit in a lane of its own, and the
+    // lanes meeting again at the first commit.
+    let lane = |subject: &str| lanes[subjects.iter().position(|s| s == subject).unwrap()];
+    assert_eq!(subjects[0], "merge side");
+    assert_eq!(lane("merge side"), 0);
+    assert_eq!(lane("first"), 0);
+    assert_ne!(lane("on side"), lane("on main"));
+    let widths: Vec<usize> =
+        cx.update(|_, cx| log.read(cx).graph().iter().map(|r| r.width).collect());
+    assert_eq!(widths, [2, 2, 2, 2]);
+    // The rows on screen are drawn, graph and all.
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("log-commit-3").is_some());
+}
+
+/// Opens a file in the workspace and waits for its editor.
+fn open(
+    workspace: &Entity<Workspace>,
+    path: &Path,
+    cx: &mut VisualTestContext,
+) -> Entity<gleipnir_editor::EditorView> {
+    let path = path.to_path_buf();
+    cx.update(|window, cx| workspace.update(cx, |w, cx| w.open_path(path, window, cx).detach()));
+    run_until(cx, |cx| {
+        cx.update(|_, cx| workspace.read(cx).active_editor(cx).is_some())
+    });
+    cx.update(|_, cx| workspace.read(cx).active_editor(cx).unwrap())
+}
+
+#[gpui::test]
+fn blame_labels_each_line_follows_edits_and_shows_the_commit_in_the_log(cx: &mut TestAppContext) {
+    let (_dir, root, workspace, cx) = setup(cx);
+    // a.txt is "one\ntwo\nthree\n" from "first"; "two" changes in a second commit.
+    commit_file(
+        &root,
+        "a.txt",
+        "one\nTWO\nthree\n",
+        "second\n\nWith a body.",
+    );
+    let editor = open(&workspace, &root.join("a.txt"), cx);
+    cx.dispatch_action(ToggleBlame);
+    let labels = |cx: &mut VisualTestContext| cx.update(|_, cx| editor.read(cx).gutter_labels());
+    run_until(cx, |cx| labels(cx).len() == 3);
+    let shown = labels(cx);
+    assert!(
+        shown[0].starts_with("1: ") && shown[0].ends_with(" t"),
+        "{shown:?}"
+    );
+    let details = cx
+        .update(|_, cx| editor.read(cx).gutter_details(1))
+        .unwrap();
+    assert!(details.contains("t <t@t>"), "{details}");
+    assert!(details.ends_with("second\n\nWith a body."), "{details}");
+    let group =
+        |line, cx: &mut VisualTestContext| cx.update(|_, cx| editor.read(cx).gutter_group(line));
+    assert_ne!(group(0, cx), group(1, cx));
+    assert_eq!(group(0, cx), group(2, cx));
+
+    // A line typed above moves the labels down at once, and has none itself.
+    let buffer = cx.update(|_, cx| editor.read(cx).buffer().clone());
+    cx.update(|_, cx| {
+        buffer.update(cx, |b, cx| {
+            b.apply_external_edits(vec![gleipnir_text::TextEdit::new(0..0, "new\n")], cx)
+        })
+    });
+    let shown = labels(cx);
+    assert_eq!(shown.len(), 3);
+    assert!(shown[0].starts_with("2: "), "{shown:?}");
+    // "TWO" typed over and put back: its label goes as it changes, and comes back once it's
+    // blamed again after typing stops, against the unsaved text.
+    let edit = |range: std::ops::Range<usize>, text: &str, cx: &mut VisualTestContext| {
+        let text = text.to_string();
+        cx.update(|_, cx| {
+            buffer.update(cx, |b, cx| {
+                b.apply_external_edits(vec![gleipnir_text::TextEdit::new(range, text)], cx)
+            })
+        })
+    };
+    edit(11..11, "x", cx);
+    edit(11..12, "", cx);
+    assert!(
+        cx.update(|_, cx| editor.read(cx).gutter_details(2))
+            .is_none()
+    );
+    run_until(cx, |cx| {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(500));
+        cx.update(|_, cx| editor.read(cx).gutter_details(2))
+            .is_some()
+    });
+    assert_ne!(group(2, cx), group(1, cx));
+    assert_eq!(group(1, cx), group(3, cx));
+    assert!(
+        cx.update(|_, cx| editor.read(cx).gutter_details(0))
+            .is_none()
+    );
+
+    // Clicking a label chooses its commit in the log.
+    let log = cx.update(|_, cx| workspace.read(cx).panel::<LogPanel>(cx).unwrap());
+    log.update(cx, |log, cx| log.refresh(cx));
+    run_until(cx, |cx| {
+        cx.update(|_, cx| log.read(cx).commits().len() == 2)
+    });
+    cx.update(|_, cx| {
+        editor.update(cx, |_, cx| {
+            cx.emit(gleipnir_editor::EditorEvent::GutterTextClicked { line: 2 })
+        })
+    });
+    run_until(cx, |cx| {
+        cx.update(|_, cx| log.read(cx).selected() == Some(0))
+    });
+
+    // And the same action takes the labels away.
+    cx.dispatch_action(ToggleBlame);
+    assert!(labels(cx).is_empty());
+}
+
+#[gpui::test]
+fn a_file_not_yet_committed_says_so_when_annotated(cx: &mut TestAppContext) {
+    let (_dir, root, workspace, cx) = setup(cx);
+    std::fs::write(root.join("new.txt"), "new\n").unwrap();
+    let editor = open(&workspace, &root.join("new.txt"), cx);
+    cx.dispatch_action(ToggleBlame);
+    run_until(cx, |cx| {
+        cx.update(|window, cx| workspace.read(cx).snapshot(window, cx).message)
+            .is_some_and(|m| m.starts_with("Couldn't annotate"))
+    });
+    assert!(!cx.update(|_, cx| editor.read(cx).has_gutter_text()));
+}
+
+/// Three commits on a.txt's first line, then one adding b2.txt, after "first".
+fn history_to_rebase(root: &Path) {
+    commit_file(root, "a.txt", "one v2\ntwo\nthree\n", "a two");
+    commit_file(root, "b2.txt", "bee two\n", "add b2");
+    commit_file(root, "a.txt", "one v3\ntwo\nthree\n", "a three");
+    commit_file(root, "c.txt", "see\n", "add c");
+}
+
+fn entries_from(root: &Path, subject: &str) -> (Vec<RebaseEntry>, rebase::RebaseRange) {
+    let hash = git_ops::history(root, 20)
+        .unwrap()
+        .into_iter()
+        .find(|c| c.subject == subject)
+        .unwrap()
+        .hash;
+    rebase::rebase_entries(root, &hash).unwrap()
+}
+
+#[test]
+fn a_rebase_rewords_squashes_fixes_up_drops_and_reorders_for_real() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["config", "user.name", "t"]);
+    git(&root, &["config", "user.email", "t@t"]);
+    commit_file(&root, "a.txt", "one\ntwo\nthree\n", "first");
+    history_to_rebase(&root);
+    let (mut entries, range) = entries_from(&root, "a two");
+    let shown: Vec<&str> = entries.iter().map(|e| e.subject.as_str()).collect();
+    assert_eq!(shown, ["a two", "add b2", "a three", "add c"]);
+    // Reword "a two", squash "a three" into it with "add b2" moved after, and drop "add c".
+    entries.swap(1, 2);
+    entries[0].action = RebaseAction::Reword;
+    entries[0].new_message = Some("a, rewritten\n\nWhy.".into());
+    entries[1].action = RebaseAction::Squash;
+    entries[3].action = RebaseAction::Drop;
+    let message = rebase::start(&root, &range, &entries).unwrap();
+    assert_eq!(message, "Rebased 4 commits");
+    assert_eq!(subjects(&root), ["add b2", "a, rewritten", "first"]);
+    assert_eq!(
+        git_ops::last_message(&root).unwrap(),
+        "add b2",
+        "the commits after keep their messages"
+    );
+    let squashed = git_ops::git(&root, &["log", "-1", "--format=%B", "HEAD~1"]).unwrap();
+    assert_eq!(squashed.trim_end(), "a, rewritten\n\nWhy.\n\na three");
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "one v3\ntwo\nthree\n"
+    );
+    assert!(!root.join("c.txt").exists());
+    assert!(git_ops::operation_in_progress(&root).is_none());
+    assert!(!root.join(".git/gleipnir-rebase").exists(), "tidied up");
+
+    // A fixup keeps the first message, and from the very first commit there's no parent.
+    let (mut entries, range) = entries_from(&root, "first");
+    entries[1].action = RebaseAction::Fixup;
+    rebase::start(&root, &range, &entries).unwrap();
+    assert_eq!(subjects(&root), ["add b2", "first"]);
+
+    // The branch moving on meanwhile stops it before it starts.
+    let (entries, range) = entries_from(&root, "add b2");
+    commit_file(&root, "d.txt", "dee\n", "more");
+    assert!(rebase::start(&root, &range, &entries).is_err());
+    assert_eq!(subjects(&root)[0], "more");
+}
+
+#[test]
+fn only_commits_on_the_branch_without_merges_after_them_can_be_rebased_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    git(&root, &["init", "-q", "-b", "main"]);
+    git(&root, &["config", "user.name", "t"]);
+    git(&root, &["config", "user.email", "t@t"]);
+    commit_file(&root, "a.txt", "a\n", "first");
+    git(&root, &["switch", "-q", "-c", "side"]);
+    commit_file(&root, "s.txt", "s\n", "on side");
+    git(&root, &["switch", "-q", "main"]);
+    let side = git_ops::git(&root, &["rev-parse", "side"]).unwrap();
+    let error = rebase::rebase_entries(&root, side.trim()).unwrap_err();
+    assert!(format!("{error}").contains("current branch"), "{error}");
+    git(&root, &["merge", "-q", "--no-ff", "-m", "merge", "side"]);
+    let first = git_ops::git(&root, &["rev-parse", "HEAD~1"]).unwrap();
+    let error = rebase::rebase_entries(&root, first.trim()).unwrap_err();
+    assert!(format!("{error}").contains("merges"), "{error}");
+}
+
+#[gpui::test]
+fn the_rebase_window_reorders_and_a_conflict_stops_it_for_the_commit_window(
+    cx: &mut TestAppContext,
+) {
+    let (_dir, root, workspace, cx) = setup(cx);
+    history_to_rebase(&root);
+    let hash = git_ops::history(&root, 20).unwrap()[3].hash.clone();
+    cx.update(|window, cx| {
+        workspace.update(cx, |w, cx| rebase_view::open_rebase(w, &hash, window, cx))
+    });
+    let view = cx
+        .update(|_, cx| workspace.read(cx).active_modal::<RebaseView>())
+        .expect("the rebase window");
+    let rows = |cx: &mut VisualTestContext| cx.update(|_, cx| view.read(cx).rows());
+    assert_eq!(rows(cx).len(), 4);
+    assert!(rows(cx)[0].starts_with("pick ") && rows(cx)[0].ends_with(" a two"));
+    // Keys on the list: down to "a three", which moves up above "add b2", then above "a
+    // two", which it can't apply on without a conflict.
+    cx.simulate_keystrokes("down down alt-up alt-up");
+    let shown: Vec<String> = rows(cx)
+        .iter()
+        .map(|r| {
+            r.split_once(' ')
+                .unwrap()
+                .1
+                .split_once(' ')
+                .unwrap()
+                .1
+                .to_string()
+        })
+        .collect();
+    assert_eq!(shown, ["a three", "a two", "add b2", "add c"]);
+    // Reword it, writing a new message in the box.
+    cx.simulate_keystrokes("r");
+    assert!(cx.update(|_, cx| view.read(cx).is_editing_message()));
+    assert_eq!(cx.update(|_, cx| view.read(cx).message_text(cx)), "a three");
+    view.update(cx, |v, cx| v.set_message("a three, reworded", cx));
+    cx.run_until_parked();
+    let start = cx.debug_bounds("rebase-start").expect("Start Rebasing");
+    cx.simulate_click(start.center(), Modifiers::none());
+    assert!(cx.update(|_, cx| workspace.read(cx).active_modal::<RebaseView>().is_none()));
+
+    // It stops at the conflict, which the Commit window lists, with Continue and Abort.
+    let panel = commit_panel(&workspace, cx);
+    run_until(cx, |cx| {
+        cx.update(|_, cx| {
+            panel
+                .read(cx)
+                .files()
+                .first()
+                .is_some_and(|f| f.state == gleipnir_index::GitState::Conflicted)
+        })
+    });
+    assert_eq!(
+        git_ops::operation_in_progress(&root),
+        Some(git_ops::Operation::Rebase)
+    );
+    assert_eq!(
+        cx.update(|_, cx| panel.read(cx).debug_state(cx))["operation"],
+        "Rebasing"
+    );
+    // Settled with the commit being applied, then continued; "a two" then conflicts the other
+    // way round, and is settled the same way.
+    settle_with_theirs_and_continue(&panel, cx);
+    run_until(cx, |cx| {
+        cx.update(|_, cx| {
+            panel
+                .read(cx)
+                .files()
+                .first()
+                .is_some_and(|f| f.state == gleipnir_index::GitState::Conflicted)
+        })
+    });
+    settle_with_theirs_and_continue(&panel, cx);
+    run_until(cx, |_| git_ops::operation_in_progress(&root).is_none());
+    // The reword was made once its commit was, conflict and all.
+    assert_eq!(
+        subjects(&root),
+        ["add c", "add b2", "a two", "a three, reworded", "first"]
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.join("a.txt")).unwrap(),
+        "one v2\ntwo\nthree\n"
+    );
+    run_until(cx, |cx| {
+        cx.update(|_, cx| panel.read(cx).debug_state(cx))["operation"].is_null()
+    });
+}
+
+/// Takes the side of the commit being applied for the one conflicted file, then continues.
+fn settle_with_theirs_and_continue(panel: &Entity<CommitPanel>, cx: &mut VisualTestContext) {
+    cx.run_until_parked();
+    let theirs = cx.debug_bounds("take-theirs-0").expect("Theirs");
+    cx.simulate_click(theirs.center(), Modifiers::none());
+    run_until(cx, |cx| {
+        cx.update(|_, cx| {
+            panel
+                .read(cx)
+                .files()
+                .iter()
+                .all(|f| f.state != gleipnir_index::GitState::Conflicted)
+        })
+    });
+    cx.run_until_parked();
+    let resume = cx.debug_bounds("operation-continue").expect("Continue");
+    cx.simulate_click(resume.center(), Modifiers::none());
+}
+
+#[gpui::test]
+fn abort_puts_a_stopped_rebase_back(cx: &mut TestAppContext) {
+    let (_dir, root, workspace, cx) = setup(cx);
+    history_to_rebase(&root);
+    let before = subjects(&root);
+    let (mut entries, range) = entries_from(&root, "a two");
+    entries.swap(0, 2);
+    let message = rebase::start(&root, &range, &entries).unwrap();
+    assert!(message.contains("stopped"), "{message}");
+    let panel = commit_panel(&workspace, cx);
+    panel.update(cx, |p, cx| p.refresh(cx));
+    run_until(cx, |cx| {
+        cx.update(|_, cx| panel.read(cx).debug_state(cx))["operation"] == "Rebasing"
+    });
+    cx.dispatch_action(AbortOperation);
+    run_until(cx, |_| git_ops::operation_in_progress(&root).is_none());
+    assert_eq!(subjects(&root), before);
+    assert!(!root.join(".git/gleipnir-rebase").exists());
+    run_until(cx, |cx| {
+        cx.update(|_, cx| panel.read(cx).debug_state(cx))["operation"].is_null()
+    });
+}

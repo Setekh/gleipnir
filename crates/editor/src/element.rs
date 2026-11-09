@@ -23,6 +23,8 @@ use std::time::{Duration, Instant};
 const MAX_DISPLAY_BYTES: usize = 20_000;
 const GUTTER_LEFT_PADDING: f32 = 12.0;
 const GUTTER_RIGHT_PADDING: f32 = 16.0;
+/// Space either side of the text beside each line, like who changed it.
+const GUTTER_TEXT_PADDING: f32 = 6.0;
 /// Keeps some context visible around the cursor when autoscrolling.
 const SCROLL_MARGIN_LINES: f32 = 3.0;
 const SCROLL_MARGIN_COLUMNS: f32 = 4.0;
@@ -67,6 +69,36 @@ pub(crate) struct LineGeometry {
     pub shown_bytes: usize,
 }
 
+/// How lines map to rows on screen: one each, but for the rows a multi-line suggestion adds
+/// after its line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Rows {
+    /// The line rows are added after, and how many.
+    pub added: Option<(usize, usize)>,
+}
+
+impl Rows {
+    /// The row a line is on.
+    pub fn row_of(self, line: usize) -> usize {
+        match self.added {
+            Some((after, rows)) if line > after => line + rows,
+            _ => line,
+        }
+    }
+
+    /// The line on a row, where an added row counts as the line it's after.
+    pub fn line_of_row(self, row: usize) -> usize {
+        match self.added {
+            Some((after, rows)) if row > after => row.saturating_sub(rows).max(after),
+            _ => row,
+        }
+    }
+
+    pub fn extra(self) -> usize {
+        self.added.map_or(0, |(_, rows)| rows)
+    }
+}
+
 /// Where everything landed in the last frame, for mapping the mouse and the IME back to text.
 pub(crate) struct FrameGeometry {
     pub bounds: Bounds<Pixels>,
@@ -79,16 +111,20 @@ pub(crate) struct FrameGeometry {
     pub page_lines: usize,
     pub tab_size: usize,
     pub line_count: usize,
+    pub rows: Rows,
 }
 
 impl FrameGeometry {
     fn line_at_y(&self, y: Pixels) -> usize {
         let relative = (y - self.bounds.top() + self.scroll.y) / self.line_height;
-        (relative.max(0.) as usize).min(self.line_count.saturating_sub(1))
+        let row = relative.max(0.) as usize;
+        self.rows
+            .line_of_row(row)
+            .min(self.line_count.saturating_sub(1))
     }
 
     pub(crate) fn line_top(&self, line: usize) -> Pixels {
-        self.bounds.top() + self.line_height * line as f32 - self.scroll.y
+        self.bounds.top() + self.line_height * self.rows.row_of(line) as f32 - self.scroll.y
     }
 
     /// The byte offset nearest a window position.
@@ -176,11 +212,15 @@ pub(crate) struct Prepainted {
     usage_rects: Vec<Bounds<Pixels>>,
     decorations: Option<Decorations>,
     gutter_numbers: Vec<(Pixels, ShapedLine, Pixels)>,
+    /// The text beside each line on screen: its top, the text, and how strongly to tint it.
+    gutter_labels: Vec<(Pixels, ShapedLine, f32)>,
     active_lines: Vec<Pixels>,
     selection_rects: Vec<Bounds<Pixels>>,
     cursors: Vec<Bounds<Pixels>>,
     hitbox: Hitbox,
     gutter_width: Pixels,
+    /// How much of the gutter, at its left, the text beside lines takes.
+    gutter_text_width: Pixels,
     started: Instant,
 }
 
@@ -364,14 +404,29 @@ impl Element for EditorElement {
             let provider = view.decorations.clone();
             let marks_width = if provider.is_some() { MARKS_WIDTH } else { 0. };
             let plain = view.plain;
+            let gutter_text_width = match &view.gutter_text {
+                Some(_) if !plain => {
+                    char_width * view.gutter_text_chars as f32 + px(GUTTER_TEXT_PADDING * 2.)
+                }
+                _ => px(0.),
+            };
             let gutter_width = if plain {
                 px(8.)
             } else {
-                px(GUTTER_LEFT_PADDING + marks_width + GUTTER_RIGHT_PADDING) + char_width * digits
+                gutter_text_width
+                    + px(GUTTER_LEFT_PADDING + marks_width + GUTTER_RIGHT_PADDING)
+                    + char_width * digits
             };
             let text_origin_x = bounds.left() + gutter_width;
             let text_width = (bounds.size.width - gutter_width).max(px(0.));
             let viewport_lines = (bounds.size.height / line_height).max(1.);
+            let rows = Rows {
+                added: if view.focus_handle.is_focused(window) {
+                    view.suggestion_rows(cx)
+                } else {
+                    None
+                },
+            };
 
             if view.autoscroll {
                 view.autoscroll = false;
@@ -379,7 +434,7 @@ impl Element for EditorElement {
                 let point = buffer.offset_to_point(head);
                 let margin =
                     line_height * SCROLL_MARGIN_LINES.min(((viewport_lines - 1.) / 2.).max(0.));
-                let top = line_height * point.line as f32;
+                let top = line_height * rows.row_of(point.line) as f32;
                 if std::mem::take(&mut view.autoscroll_center) {
                     view.scroll.y = top - (bounds.size.height - line_height) / 2.;
                 } else if top - margin < view.scroll.y {
@@ -399,14 +454,16 @@ impl Element for EditorElement {
             }
 
             // The last line may scroll up to the top of the viewport, but no further.
-            let max_scroll_y = line_height * line_count.saturating_sub(1) as f32;
+            let max_scroll_y = line_height * (line_count.saturating_sub(1) + rows.extra()) as f32;
             view.scroll.y = view.scroll.y.clamp(px(0.), max_scroll_y);
             view.scroll.x = view.scroll.x.max(px(0.));
             let scroll = view.scroll;
 
-            let first_line = (scroll.y / line_height).floor() as usize;
-            let last_line = ((scroll.y + bounds.size.height) / line_height).ceil() as usize;
-            let last_line = last_line.min(line_count);
+            let first_line = rows.line_of_row((scroll.y / line_height).floor() as usize);
+            let last_row = ((scroll.y + bounds.size.height) / line_height).ceil() as usize;
+            let last_line = (rows.line_of_row(last_row.saturating_sub(1)) + 1).min(line_count);
+            let top_of =
+                |line: usize| bounds.top() + line_height * rows.row_of(line) as f32 - scroll.y;
             let visible = first_line..last_line;
 
             let snapshot = model.snapshot();
@@ -458,9 +515,10 @@ impl Element for EditorElement {
             };
             let mut lines = Vec::with_capacity(visible.len());
             let mut gutter_numbers = Vec::with_capacity(visible.len());
+            let mut gutter_labels = Vec::new();
             let mut active_lines = Vec::new();
             for line_index in visible.clone() {
-                let top = bounds.top() + line_height * line_index as f32 - scroll.y;
+                let top = top_of(line_index);
                 let line_start = buffer.line_start(line_index);
                 let mut text = buffer.line(line_index);
                 if text.len() > MAX_DISPLAY_BYTES {
@@ -535,10 +593,30 @@ impl Element for EditorElement {
                 let x =
                     bounds.left() + gutter_width - px(GUTTER_RIGHT_PADDING) - shaped_number.width();
                 gutter_numbers.push((x, shaped_number, top));
+                if let Some(label) = view
+                    .gutter_text
+                    .as_ref()
+                    .and_then(|t| t.lines.get(line_index)?.as_ref())
+                {
+                    let run = TextRun {
+                        len: label.text.len(),
+                        font: font.clone(),
+                        color: theme.text_muted,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let shaped = window.text_system().shape_line(
+                        label.text.clone(),
+                        font_size,
+                        &[run],
+                        None,
+                    );
+                    gutter_labels.push((top, shaped, label.shade));
+                }
             }
 
             let decorations = provider.map(|provider| {
-                let top_of = |line: usize| bounds.top() + line_height * line as f32 - scroll.y;
                 let on_screen = |line: &usize| visible.contains(line);
                 let breakpoints = provider
                     .breakpoints(cx)
@@ -599,6 +677,7 @@ impl Element for EditorElement {
                 page_lines: viewport_lines as usize,
                 tab_size,
                 line_count,
+                rows,
             });
 
             // Selections, split across the lines they cover. Only what's on screen.
@@ -617,7 +696,7 @@ impl Element for EditorElement {
                 if start.line != end.line || !(first_line..last_line).contains(&start.line) {
                     continue;
                 }
-                let top = bounds.top() + line_height * start.line as f32 - scroll.y;
+                let top = top_of(start.line);
                 let left = x_of(start.line, start.col);
                 let right = x_of(start.line, end.col);
                 usage_rects.push(Bounds::new(
@@ -648,7 +727,7 @@ impl Element for EditorElement {
                             // Show the newline is selected too, so an empty line still registers.
                             x_of(line_index, usize::MAX) + char_width * 0.5
                         };
-                        let top = bounds.top() + line_height * line_index as f32 - scroll.y;
+                        let top = top_of(line_index);
                         selection_rects.push(Bounds::new(
                             point(left, top),
                             size((right - left).max(px(0.)), line_height),
@@ -657,7 +736,7 @@ impl Element for EditorElement {
                 }
                 let head = buffer.offset_to_point(selection.head);
                 if (first_line..last_line).contains(&head.line) {
-                    let top = bounds.top() + line_height * head.line as f32 - scroll.y;
+                    let top = top_of(head.line);
                     cursors.push(Bounds::new(
                         point(x_of(head.line, head.col), top),
                         size(px(2.), line_height),
@@ -679,11 +758,13 @@ impl Element for EditorElement {
                 decorations,
                 usage_rects,
                 gutter_numbers,
+                gutter_labels,
                 active_lines,
                 selection_rects,
                 cursors,
                 hitbox,
                 gutter_width,
+                gutter_text_width,
                 started,
             }
         })
@@ -761,8 +842,7 @@ impl Element for EditorElement {
                     window.paint_quad(fill(*rect, theme.editor_selection));
                 }
                 for (index, line) in geometry.lines.iter().enumerate() {
-                    let top = bounds.top() + line_height * (geometry.first_line + index) as f32
-                        - geometry.scroll.y;
+                    let top = geometry.line_top(geometry.first_line + index);
                     let origin = point(geometry.text_origin_x - geometry.scroll.x, top);
                     line.shaped
                         .paint(origin, line_height, gpui::TextAlign::Left, None, window, cx)
@@ -794,9 +874,37 @@ impl Element for EditorElement {
             },
         );
 
+        let gutter_text_width = prepainted.gutter_text_width;
+        // What the gutter had before the text beside lines was added moves right of it.
+        let marks_bounds = Bounds::new(
+            point(bounds.left() + gutter_text_width, bounds.top()),
+            size(
+                (bounds.size.width - gutter_text_width).max(px(0.)),
+                bounds.size.height,
+            ),
+        );
         // Clipped, as a partly scrolled-off line would otherwise draw over whatever's above.
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
-            paint_gutter_marks(&self.view, &geometry, bounds, &theme, window, cx);
+            for (top, label, shade) in &prepainted.gutter_labels {
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(bounds.left(), *top),
+                        size(gutter_text_width - px(2.), line_height),
+                    ),
+                    theme.accent.opacity(0.04 + 0.2 * shade.clamp(0., 1.)),
+                ));
+                label
+                    .paint(
+                        point(bounds.left() + px(GUTTER_TEXT_PADDING), *top),
+                        line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    )
+                    .ok();
+            }
+            paint_gutter_marks(&self.view, &geometry, marks_bounds, &theme, window, cx);
             paint_change_marks(
                 &self.view,
                 &geometry,
@@ -809,8 +917,8 @@ impl Element for EditorElement {
             if let Some(decorations) = &prepainted.decorations {
                 paint_debug_marks(
                     decorations,
-                    bounds,
-                    gutter_width,
+                    marks_bounds,
+                    gutter_width - gutter_text_width,
                     line_height,
                     &theme,
                     window,
@@ -844,7 +952,10 @@ impl Element for EditorElement {
                 return;
             }
             view.update(cx, |view, cx| {
-                if event.position.x < hit_geometry.text_origin_x {
+                if event.position.x < hit_geometry.bounds.left() + gutter_text_width {
+                    let line = hit_geometry.line_at_y(event.position.y);
+                    view.gutter_text_clicked(line, cx);
+                } else if event.position.x < hit_geometry.text_origin_x {
                     let line = hit_geometry.line_at_y(event.position.y);
                     let zone = if event.position.x
                         >= hit_geometry.text_origin_x - px(GUTTER_RIGHT_PADDING)
@@ -875,7 +986,12 @@ impl Element for EditorElement {
             }
             let line = hit_geometry.line_at_y(event.position.y);
             view.update(cx, |view, cx| {
-                if view.decorations.is_some() {
+                if event.position.x < hit_geometry.bounds.left() + gutter_text_width {
+                    cx.emit(crate::view::EditorEvent::GutterTextMenu {
+                        line,
+                        position: event.position,
+                    });
+                } else if view.decorations.is_some() {
                     cx.emit(crate::view::EditorEvent::GutterMenu {
                         line,
                         position: event.position,
@@ -893,6 +1009,10 @@ impl Element for EditorElement {
             }
             view.update(cx, |view, cx| {
                 if view.drag.is_none() {
+                    let over_label = hover_hitbox.is_hovered(window)
+                        && event.position.x < hit_geometry.bounds.left() + gutter_text_width;
+                    let line = over_label.then(|| hit_geometry.line_at_y(event.position.y));
+                    view.gutter_text_hovered(line, event.position, cx);
                     let over_text = hover_hitbox.is_hovered(window)
                         && event.position.x >= hit_geometry.text_origin_x;
                     let buffer = view.buffer.read(cx).buffer();
@@ -1090,13 +1210,10 @@ fn paint_suggestion(
             .text_system()
             .shape_line(SharedString::from(text), size, &[run], None)
     };
-    // Only the rest of this line shows; Tab takes all of it.
-    let first = suggestion
-        .text
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .replace('\t', "    ");
+    // The rest of this line after the cursor, and any lines after it in the rows made for them.
+    let spaces = " ".repeat(geometry.tab_size.max(1));
+    let mut lines = suggestion.text.split('\n');
+    let first = lines.next().unwrap_or_default().replace('\t', &spaces);
     let ghost = shape(first, theme.text_faint, font_size, window);
     ghost
         .paint(
@@ -1108,6 +1225,27 @@ fn paint_suggestion(
             cx,
         )
         .ok();
+    for (row, line) in lines.enumerate() {
+        let origin = point(
+            geometry.text_origin_x - geometry.scroll.x,
+            at.origin.y + geometry.line_height * (row + 1) as f32,
+        );
+        shape(
+            line.replace('\t', &spaces),
+            theme.text_faint,
+            font_size,
+            window,
+        )
+        .paint(
+            origin,
+            geometry.line_height,
+            gpui::TextAlign::Left,
+            None,
+            window,
+            cx,
+        )
+        .ok();
+    }
     if let Some(score) = suggestion.score {
         let label = format!("  {:.0}% · Tab", (score * 100.).clamp(0., 100.));
         let badge = shape(
@@ -1176,7 +1314,11 @@ fn paint_change_marks(
                 window.paint_quad(fill(
                     Bounds::new(
                         point(x, geometry.line_top(start)),
-                        size(px(3.), geometry.line_height * (end - start) as f32),
+                        size(
+                            px(3.),
+                            geometry.line_top(end - 1) + geometry.line_height
+                                - geometry.line_top(start),
+                        ),
                     ),
                     color,
                 ));

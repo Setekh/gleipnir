@@ -71,6 +71,8 @@ fn decorated<'a>(text: &str, cx: &'a mut TestAppContext) -> Decorated<'a> {
                 EditorEvent::GutterClicked { line } => format!("toggle {line}"),
                 EditorEvent::RunClicked { line } => format!("run {line}"),
                 EditorEvent::GutterMenu { line, .. } => format!("menu {line}"),
+                EditorEvent::GutterTextClicked { line } => format!("text {line}"),
+                EditorEvent::GutterTextMenu { line, .. } => format!("text menu {line}"),
                 _ => return,
             };
             seen.borrow_mut().push(text);
@@ -194,4 +196,74 @@ fn tapping_the_modifier_then_holding_it_makes_arrows_add_carets(cx: &mut TestApp
     cx.simulate_modifiers_change(held);
     cx.simulate_keystrokes(arrow);
     assert_eq!(heads(&editor, cx).len(), 1);
+}
+
+#[gpui::test]
+fn text_beside_lines_widens_the_gutter_shows_details_and_reports_clicks(cx: &mut TestAppContext) {
+    use crate::{GutterLabel, GutterText};
+    let mut d = decorated("one\ntwo\nthree", cx);
+    let geometry = |d: &mut Decorated| {
+        d.cx.run_until_parked();
+        d.editor
+            .read_with(d.cx, |e, _| e.geometry.clone().expect("a frame was drawn"))
+    };
+    let plain = geometry(&mut d).text_origin_x;
+    let label = |text: &str| {
+        Some(GutterLabel {
+            text: text.to_string().into(),
+            group: 0,
+            shade: 1.,
+        })
+    };
+    d.editor.update(d.cx, |e, cx| {
+        e.set_gutter_text(
+            Some(GutterText {
+                lines: vec![label("2024-01-02 Ada"), None, label("2024-01-02 Ada")],
+                details: vec!["1234abcd  Ada\n\nA message".into()],
+            }),
+            cx,
+        )
+    });
+    let g = geometry(&mut d);
+    assert!(g.text_origin_x > plain, "the gutter makes room");
+    assert_eq!(
+        d.state().gutter_text,
+        ["1: 2024-01-02 Ada", "3: 2024-01-02 Ada"]
+    );
+    let at = |line: usize| {
+        point(
+            g.bounds.left() + px(4.),
+            g.bounds.top() + g.line_height * line as f32 + px(2.),
+        )
+    };
+    // Resting on a label shows what it's about; a line without one shows nothing.
+    d.cx.simulate_mouse_move(at(0), None, Modifiers::none());
+    assert!(d.cx.debug_bounds("gutter-text-details").is_some());
+    d.cx.simulate_mouse_move(at(1), None, Modifiers::none());
+    assert!(d.cx.debug_bounds("gutter-text-details").is_none());
+    // Clicks on labels are reported, and a right-click asks for a menu.
+    d.cx.simulate_click(at(1), Modifiers::none());
+    d.cx.simulate_click(at(2), Modifiers::none());
+    d.cx.simulate_mouse_down(at(0), MouseButton::Right, Modifiers::none());
+    assert_eq!(*d.events.borrow(), ["text 2", "text menu 0"]);
+    // What was in the gutter before still works, moved over.
+    let target = point(
+        g.text_origin_x - px(8.),
+        g.bounds.top() + g.line_height + px(2.),
+    );
+    d.cx.simulate_click(target, Modifiers::none());
+    assert_eq!(d.events.borrow().last().unwrap(), "toggle 1");
+    // Typing a line above moves the labels down with their lines.
+    d.editor.update(d.cx, |e, cx| {
+        let buffer = e.buffer().clone();
+        buffer.update(cx, |b, cx| {
+            b.apply_external_edits(vec![gleipnir_text::TextEdit::new(0..0, "zero\n")], cx)
+        })
+    });
+    assert_eq!(
+        d.state().gutter_text,
+        ["2: 2024-01-02 Ada", "4: 2024-01-02 Ada"]
+    );
+    d.editor.update(d.cx, |e, cx| e.set_gutter_text(None, cx));
+    assert_eq!(geometry(&mut d).text_origin_x, plain);
 }

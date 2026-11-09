@@ -381,9 +381,150 @@ fn download(model: ModelChoice, to: &Path) -> Result<()> {
 const BEFORE: usize = 3000;
 const AFTER: usize = 1500;
 
-/// The rest of the line at the cursor, as the model would write it, with the probability of
-/// that exact text.
-pub fn complete(port: u16, text: &str, offset: usize) -> Result<Option<(String, f32)>> {
+/// The most lines a suggestion runs to.
+const MOST_LINES: usize = 10;
+
+/// What a suggestion at the cursor may be: the rest of the line, or, on a blank line or after
+/// one that opens a block, the lines that follow, at the indentation where they start.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shape {
+    Line,
+    /// Statements from a blank line, as deep as it's indented, until a line less so.
+    Statements {
+        indent: usize,
+    },
+    /// A block's body after its opener, deeper than the opener's line, and its closer.
+    Block {
+        indent: usize,
+    },
+}
+
+fn indent_of(line: &str) -> usize {
+    line.len() - line.trim_start_matches([' ', '\t']).len()
+}
+
+fn shape_at(text: &str, offset: usize) -> Shape {
+    let line_start = text[..offset].rfind('\n').map_or(0, |i| i + 1);
+    let before = &text[line_start..offset];
+    let indent = indent_of(before);
+    let typed = before.trim();
+    if typed.is_empty() {
+        Shape::Statements { indent }
+    } else if typed.ends_with(['{', '(', '[', ':']) {
+        Shape::Block { indent }
+    } else {
+        Shape::Line
+    }
+}
+
+/// How much of what the model wrote fits the shape, in bytes: whole lines, up to the first that
+/// leaves the block or statements, and no more than [`MOST_LINES`]. A last line that's the same
+/// as the code after the cursor goes too, as it's there already.
+fn fitting(content: &str, shape: Shape, suffix: &str) -> usize {
+    let mut end = content.find('\n').unwrap_or(content.len());
+    if shape == Shape::Line {
+        return end;
+    }
+    let mut lines = 1;
+    while end < content.len() && lines < MOST_LINES {
+        let next_end = content[end + 1..]
+            .find('\n')
+            .map_or(content.len(), |i| end + 1 + i);
+        let line = &content[end + 1..next_end];
+        if line.trim().is_empty() {
+            break;
+        }
+        let indent = indent_of(line);
+        let fits = match shape {
+            Shape::Statements { indent: at } => indent >= at,
+            Shape::Block { indent: at } => indent > at,
+            Shape::Line => false,
+        };
+        let closes = matches!(shape, Shape::Block { indent: at } if indent == at
+            && line.trim_start().starts_with(['}', ')', ']']));
+        if !fits && !closes {
+            break;
+        }
+        end = next_end;
+        lines += 1;
+        if closes {
+            break;
+        }
+    }
+    let next_code = suffix.lines().map(str::trim).find(|l| !l.is_empty());
+    if let Some(at) = content[..end].rfind('\n')
+        && next_code.is_some_and(|code| code == content[at + 1..end].trim())
+    {
+        end = at;
+    }
+    end
+}
+
+/// The model's reply, cut to fit the shape and, past its first line, to the lines it's at least
+/// `min_score` sure of all together. With that text's probability.
+fn suggestion_in(
+    reply: &Value,
+    shape: Shape,
+    suffix: &str,
+    min_score: f32,
+) -> Option<(String, f32)> {
+    let content = reply["content"].as_str()?;
+    let end = fitting(content, shape, suffix);
+    // Where each token starts in the content, with its odds, to add up those before a cut.
+    let mut tokens = Vec::new();
+    let mut at = 0;
+    for token in reply["completion_probabilities"]
+        .as_array()
+        .into_iter()
+        .flatten()
+    {
+        let logprob = token["logprob"].as_f64().filter(|l| l.is_finite());
+        tokens.push((at, logprob.unwrap_or(f64::NEG_INFINITY)));
+        at += token["token"].as_str().map_or(0, str::len);
+    }
+    let score_to = |cut: usize| -> f32 {
+        if tokens.is_empty() {
+            return 0.;
+        }
+        let logprob: f64 = tokens
+            .iter()
+            .take_while(|(start, _)| *start < cut)
+            .map(|(_, l)| l)
+            .sum();
+        logprob.exp() as f32
+    };
+    // Each line's end is a place to cut; the longest the model's sure enough of wins, and the
+    // first with words in it is offered either way, to be judged by its score.
+    let mut cut = None;
+    for (index, _) in content[..end]
+        .match_indices('\n')
+        .chain(std::iter::once((end, "")))
+    {
+        let text = content[..index].trim_end();
+        if text.trim().is_empty() {
+            continue;
+        }
+        let score = score_to(index);
+        if cut.is_none() || score >= min_score {
+            cut = Some((text.to_string(), score));
+        }
+        if score < min_score {
+            break;
+        }
+    }
+    cut
+}
+
+/// What follows the cursor, as the model would write it, with the probability of that exact
+/// text: the rest of the line, or several lines where a block or statements start, as many as
+/// it's at least `min_score` sure of. `related` is code from other files it's shown first.
+pub fn complete(
+    port: u16,
+    text: &str,
+    offset: usize,
+    related: &[crate::related::OtherFile],
+    min_score: f32,
+) -> Result<Option<(String, f32)>> {
     let floor = |mut at: usize| {
         while !text.is_char_boundary(at) {
             at -= 1;
@@ -392,19 +533,36 @@ pub fn complete(port: u16, text: &str, offset: usize) -> Result<Option<(String, 
     };
     let start = floor(offset.saturating_sub(BEFORE));
     let end = floor((offset + AFTER).min(text.len()));
-    let body = json!({
+    let shape = shape_at(text, offset);
+    let suffix = &text[offset..end];
+    let extra: Vec<Value> = related
+        .iter()
+        .map(|f| json!({ "filename": f.name, "text": f.text }))
+        .collect();
+    let mut body = json!({
         "input_prefix": &text[start..offset],
-        "input_suffix": &text[offset..end],
+        "input_suffix": suffix,
+        "input_extra": extra,
         "prompt": "",
-        "n_predict": 48,
         "temperature": 0,
         "top_k": 40,
         "samplers": ["top_k", "top_p", "infill"],
         "n_probs": 1,
-        // One line, as a suggestion is the rest of the line.
-        "stop": ["\n"],
         "cache_prompt": true,
     });
+    match shape {
+        Shape::Line => {
+            body["n_predict"] = json!(48);
+            body["stop"] = json!(["\n"]);
+        }
+        Shape::Statements { indent } | Shape::Block { indent } => {
+            // Lines until a blank one or one indented less, and not for long once one's done.
+            body["n_predict"] = json!(160);
+            body["stop"] = json!(["\n\n"]);
+            body["n_indent"] = json!(indent);
+            body["t_max_predict_ms"] = json!(250);
+        }
+    }
     let reply: Value = ureq::post(&format!("http://127.0.0.1:{port}/infill"))
         .config()
         .timeout_global(Some(Duration::from_secs(3)))
@@ -412,26 +570,7 @@ pub fn complete(port: u16, text: &str, offset: usize) -> Result<Option<(String, 
         .send_json(&body)?
         .body_mut()
         .read_json()?;
-    Ok(parse_completion(&reply))
-}
-
-/// The suggestion in a reply, and its probability: the product of its tokens' odds.
-fn parse_completion(reply: &Value) -> Option<(String, f32)> {
-    let content = reply["content"].as_str()?.trim_end().to_string();
-    if content.trim().is_empty() {
-        return None;
-    }
-    let logprob: f64 = reply["completion_probabilities"]
-        .as_array()
-        .map(|tokens| {
-            tokens
-                .iter()
-                .filter_map(|t| t["logprob"].as_f64())
-                .filter(|l| l.is_finite())
-                .sum()
-        })
-        .unwrap_or(f64::NEG_INFINITY);
-    Some((content, logprob.exp() as f32))
+    Ok(suggestion_in(&reply, shape, suffix, min_score))
 }
 
 /// Whether the error means the server's gone, so it should be started again.
@@ -449,19 +588,90 @@ pub fn server_gone() {
 mod tests {
     use super::*;
 
+    fn reply(tokens: &[(&str, f64)]) -> Value {
+        json!({
+            "content": tokens.iter().map(|(t, _)| *t).collect::<String>(),
+            "completion_probabilities": tokens
+                .iter()
+                .map(|(t, l)| json!({ "token": t, "logprob": l }))
+                .collect::<Vec<_>>(),
+        })
+    }
+
     #[test]
     fn a_reply_becomes_the_line_and_the_odds_of_all_of_it() {
-        let reply = json!({
-            "content": "Address),",
-            "completion_probabilities": [
-                { "token": "Address", "logprob": -0.1 },
-                { "token": "),", "logprob": -0.2 },
-            ],
-        });
-        let (text, score) = parse_completion(&reply).unwrap();
+        let found = suggestion_in(
+            &reply(&[("Address", -0.1), ("),", -0.2)]),
+            Shape::Line,
+            "",
+            0.5,
+        );
+        let (text, score) = found.unwrap();
         assert_eq!(text, "Address),");
         assert!((score - (-0.3f32).exp()).abs() < 1e-6, "{score}");
-        assert_eq!(parse_completion(&json!({ "content": "  " })), None);
+        let blank = suggestion_in(&json!({ "content": "  " }), Shape::Line, "", 0.5);
+        assert_eq!(blank, None);
+    }
+
+    #[test]
+    fn where_a_suggestion_may_run_to_more_lines() {
+        assert_eq!(
+            shape_at("  x = foo(", "  x = foo(".len()),
+            Shape::Block { indent: 2 }
+        );
+        assert_eq!(
+            shape_at("fn a() {\n    ", "fn a() {\n    ".len()),
+            Shape::Statements { indent: 4 }
+        );
+        assert_eq!(
+            shape_at("def f():", "def f():".len()),
+            Shape::Block { indent: 0 }
+        );
+        assert_eq!(
+            shape_at("  address: types.maybe(A", "  address: types.maybe(A".len()),
+            Shape::Line
+        );
+        assert_eq!(
+            shape_at("  address:", "  address:".len()),
+            Shape::Block { indent: 2 }
+        );
+    }
+
+    #[test]
+    fn lines_are_kept_while_they_stay_in_the_block() {
+        let block = Shape::Block { indent: 0 };
+        let body = "\n  let a = 1;\n  a\n}\nfn next() {}";
+        assert_eq!(&body[..fitting(body, block, "")], "\n  let a = 1;\n  a\n}");
+        // The closer's there already.
+        assert_eq!(
+            &body[..fitting(body, block, "\n}\n")],
+            "\n  let a = 1;\n  a"
+        );
+        let statements = Shape::Statements { indent: 2 };
+        let lines = "let a = 1;\n  return a;\n}";
+        assert_eq!(
+            &lines[..fitting(lines, statements, "")],
+            "let a = 1;\n  return a;"
+        );
+        assert_eq!(fitting("one\ntwo", Shape::Line, ""), 3);
+    }
+
+    #[test]
+    fn later_lines_are_offered_only_while_the_model_is_sure_of_them() {
+        let tokens = [
+            ("let a = 1;", -0.01),
+            ("\n    ", -0.01),
+            ("return a;", -0.05),
+            ("\n    ", -0.5),
+            ("unsure();", -2.0),
+        ];
+        let shape = Shape::Statements { indent: 4 };
+        let (text, score) = suggestion_in(&reply(&tokens), shape, "", 0.5).unwrap();
+        assert_eq!(text, "let a = 1;\n    return a;");
+        assert!((score - (-0.07f32).exp()).abs() < 1e-5, "{score}");
+        // The first line's offered whatever its odds, for the caller to judge.
+        let (text, _) = suggestion_in(&reply(&tokens), shape, "", 0.999).unwrap();
+        assert_eq!(text, "let a = 1;");
     }
 
     #[test]
@@ -472,6 +682,42 @@ mod tests {
         );
         assert_eq!(model_named("gone").name, "Qwen2.5-Coder 0.5B");
         assert!(!MODELS[0].sha256.is_empty() && MODELS[0].size > 0);
+    }
+
+    /// A function's body, several lines, from the real model; and how quick it is with pieces of
+    /// other files in front.
+    #[test]
+    fn the_real_model_writes_a_body_and_reads_other_files() {
+        let Some(tools) = std::env::var_os("GLEIPNIR_LLAMA_TOOLS").map(PathBuf::from) else {
+            eprintln!("skipped: set GLEIPNIR_LLAMA_TOOLS to a tools folder with llama.cpp in it");
+            return;
+        };
+        let mut server = start(&tools, MODELS[0]).unwrap();
+        let text = "interface Item {\n  price: number;\n}\n\nexport function total(items: Item[]): number {\n  let sum = 0;\n  for (const item of items) {\n  return sum;\n}\n";
+        let offset = text.find("items) {").unwrap() + "items) {".len();
+        let mut found = None;
+        for _ in 0..2 {
+            found = complete(server.port, text, offset, &[], 0.3).unwrap();
+        }
+        let (body, score) = found.expect("a body");
+        eprintln!("body ({score}):\n{body}");
+        assert!(body.contains('\n'), "{body}");
+
+        let other = crate::related::OtherFile {
+            name: "src/address.ts".into(),
+            text: "export interface Address {\n  street: string;\n  city: string;\n}\n\nexport function formatAddress(address: Address, separator: string): string {\n  return [address.street, address.city].join(separator);\n}\n".into(),
+        };
+        let text = "import { formatAddress } from './address';\n\nexport function label(order: Order): string {\n  return formatAddress(";
+        let related = crate::related::related(std::slice::from_ref(&other), text, text.len());
+        assert_eq!(related.len(), 1);
+        for _ in 0..3 {
+            let started = Instant::now();
+            let found = complete(server.port, text, text.len(), &related, 0.0).unwrap();
+            eprintln!("with another file, {:?}: {found:?}", started.elapsed());
+        }
+        let alone = complete(server.port, text, text.len(), &[], 0.0).unwrap();
+        eprintln!("without it: {alone:?}");
+        server.child.kill().ok();
     }
 
     /// Against the real thing, where `GLEIPNIR_LLAMA_TOOLS` names a tools folder that has it.
@@ -486,7 +732,7 @@ mod tests {
         let offset = text.find("(Provisioning\n").unwrap() + "(Provisioning".len();
         let mut found = None;
         for _ in 0..2 {
-            found = complete(server.port, text, offset).unwrap();
+            found = complete(server.port, text, offset, &[], 0.5).unwrap();
         }
         server.child.kill().ok();
         let (line, score) = found.expect("a suggestion");

@@ -1,7 +1,8 @@
 # Grey suggestions from the file itself, with no model (scripted runs install nothing): a field
-# among fields ending with commas is offered its comma, at 100%, and Tab takes it.
+# among fields ending with commas is offered its comma, at 100%, and Tab takes it. Then a field's
+# type is offered as the others have it, and Option+Right takes a word of it at a time.
 wait-idle
-write-file {dir}/store.ts export const Data = types.model({\n  name: types.maybe(types.string),\n  address: types.maybe(Address),\n  address2: types.maybe(Address\n  city: types.maybe(types.string),\n})\n
+write-file {dir}/store.ts export const Data = types.model({\n  name: types.maybe(types.string),\n  address: types.maybe(Address),\n  address2: types.maybe(Address\n  city: types.maybe(types.string),\n  zip: types.maybe(ty\n})\n
 open {dir}/store.ts
 cursor 4:200
 type )
@@ -9,3 +10,11 @@ wait-match /editor/suggestion , (100%, this file)
 screenshot {shots}/suggest-comma.png
 key tab
 wait-match /editor/text address2: types.maybe(Address),\n
+cursor 6:200
+type p
+wait-match /editor/suggestion es.string), (100%, this file)
+key alt-right
+wait-match /editor/text zip: types.maybe(types\n
+wait-match /editor/suggestion .string), (100%, this file)
+key tab
+wait-match /editor/text zip: types.maybe(types.string),\n

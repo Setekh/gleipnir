@@ -5,6 +5,7 @@ mod annotations;
 mod caret_gesture;
 mod decorations;
 mod element;
+mod gutter_text;
 mod semantics;
 mod suggestion;
 mod view;
@@ -16,6 +17,7 @@ pub use actions::{
 pub use annotations::InlayHint;
 pub use decorations::{BreakpointKind, BreakpointMark, DecorationProvider};
 pub use element::{editor_font, editor_font_family};
+pub use gutter_text::{GutterLabel, GutterText};
 pub use semantics::{
     CompletionItem, CompletionKind, Completions, HoverInfo, SemanticTokens, SemanticsProvider,
     SignatureInfo, Triggers,

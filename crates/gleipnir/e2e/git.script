@@ -29,3 +29,15 @@ screenshot {shots}/git-committed.png
 # The log has it.
 action git::ShowLog
 wait-match /panels/git-log/commits Change main
+
+# The log draws its graph; the newest commit is in the first lane.
+wait-match /panels/git-log/graph Change main: 0
+screenshot {shots}/git-log.png
+
+# Annotate: who last changed each line, and when, beside it in the gutter.
+action git::ToggleBlame
+wait-match /editor/gutter_text 1: 
+wait-match /editor/gutter_text e2e
+screenshot {shots}/git-blame.png
+action git::ToggleBlame
+wait-state /editor/gutter_text []

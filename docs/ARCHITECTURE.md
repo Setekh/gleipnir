@@ -428,17 +428,53 @@ A commit is of the ticked files exactly, as IntelliJ's is: new ones are added, t
 <files>`, which leaves anything else staged out of it. Push sets the upstream on a branch's first
 push; Update Project is `git pull`, as the person's git config has it.
 
+The log's graph (`git_ui::graph`) is worked out from each commit's parents, in the order the log
+lists them (`--topo-order`, children first). A lane waits for the commit named next in it; a
+commit takes the lane waiting for it, or the leftmost free one, and its first parent carries on
+there. A merge's other parents join a lane already waiting for them or start one, and several lanes
+waiting for one commit all end at its dot, which is how a fork shows. Lanes that end leave gaps the
+lanes to their right close, leaning over in that row. Each row keeps its lines from top to dot to
+bottom edge, so the log draws only the rows on screen, in a virtual list.
+
+Blame is `git blame --porcelain --contents -` with the editor's text on its input, so it describes
+what's on screen, unsaved edits included; whole messages come from one `git show` for all the
+commits. The editor has a general place for text beside lines (`GutterText`) and knows nothing of
+git: it moves the labels with each edit, blanks lines that change, shows a label's details on
+hover, and reports clicks. Git's side blames again a moment after typing stops, after a save and
+after a commit, and drops an answer about text that has changed since.
+
+Interactive rebase never opens an editor. The window builds the whole plan, and git is started
+with `GIT_SEQUENCE_EDITOR` set to copy our todo list over its own and `GIT_EDITOR=true`. New
+messages are written to files in the repository's git folder and applied by an `exec git commit
+--amend -F <file>` line after the commit they belong to; a squash is a `fixup` followed by such a
+line with the messages joined. So a rebase that stops at a conflict, and is continued later, even
+after a restart, still gets every message right. `rebase.missingCommitsCheck=error` and a check that
+HEAD hasn't moved since the window opened keep a commit from being lost. A stop lands in the
+Commit window like any conflict, with Continue (`--continue`, keeping git's messages) and Abort, as
+merges and cherry-picks that stop do too.
+
+Git runs with `GIT_OPTIONAL_LOCKS=0`, so reading the state, as `git status` does every time
+something changes, never holds the index lock a commit or rebase is about to need.
+
 ### Inline suggestions
 
-The editor asks its suggester after each character typed at the end of a line, shows the answer
-in grey after the cursor with its score, takes it with Tab as one undo step, and drops it when the
-cursor moves; typing what it says keeps the rest. Two suggesters stand behind it. The file's own
+The editor asks its suggester after each character typed or deleted at the end of a line, blank
+or not, shows the answer in grey after the cursor with its score, takes it with Tab as one undo
+step, or its next word or line, leaving the rest showing, and drops it when the cursor moves;
+typing what it says keeps the rest. A suggestion of several lines gets rows of its own under its
+line: the layout maps lines to rows (`Rows` in `element.rs`) rather than assuming one each, so
+clicks, the gutter and scrolling all account for them. Two suggesters stand behind it. The file's own
 looks for the end of what's been typed elsewhere in the file and offers what most often follows it
 there, or the punctuation the sibling lines end with, scored by the share of the evidence that
 agrees; it's instant and needs nothing. The model's is llama.cpp's server running a small
 fill-in-the-middle code model (Qwen2.5-Coder), given the code before and after the cursor and asked
-for the rest of the line; its score is the probability of that exact text, the product of the
-odds the model gave each token. The file's answer shows at once when it's sure; otherwise the
+for the rest of the line. On a blank line, or after one ending in `{`, `(`, `[` or `:`, it may
+write more lines: statements as deep as the blank line, or a block's body and its closer, cut at
+the first line that leaves them, and then to the lines it's at least the minimum score sure of all
+together. It's also shown, through llama.cpp's `input_extra`, the piece of each recently used open
+file that shares the most names with the code around the cursor (`related.rs`, 6 KB at most), so a
+function defined in another file is called with its real arguments. A score is the probability of
+that exact text, the product of the odds the model gave each token. The file's answer shows at once when it's sure; otherwise the
 likelier of the two does.
 
 llama.cpp and the model are installed like any tool, pinned and checksummed (the model's download

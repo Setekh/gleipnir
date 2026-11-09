@@ -27,6 +27,8 @@ pub struct CommitInfo {
     pub subject: String,
     /// Branches and tags pointing at it, as git shows them: `HEAD -> main`, `tag: v1`.
     pub refs: Vec<String>,
+    /// The commits it was made on: none for the first, two or more for a merge.
+    pub parents: Vec<String>,
 }
 
 /// A stash, newest first: `stash@{0}`, and the message it was saved with.
@@ -38,12 +40,45 @@ pub struct Stash {
 
 /// Runs git in a folder: its output, or what it said when it failed.
 pub fn git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    git_with(dir, args, &[], None)
+}
+
+/// Runs git with more in its environment, and text on its input if given.
+pub fn git_with(
+    dir: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    input: Option<&str>,
+) -> Result<String> {
+    let mut command = Command::new("git");
+    command
         .arg("-C")
         .arg(dir)
         .args(args)
-        .output()
-        .context("couldn't run git")?;
+        // Reading, as `status` does to list changes, mustn't take the index lock a commit
+        // started meanwhile needs; what does need it still takes it.
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .envs(env.iter().copied());
+    let output = match input {
+        None => command.output().context("couldn't run git")?,
+        Some(input) => {
+            use std::io::Write as _;
+            use std::process::Stdio;
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .context("couldn't run git")?;
+            let mut stdin = child.stdin.take().context("couldn't write to git")?;
+            let input = input.to_string();
+            // Written from another thread, so a large file can't fill both pipes and stall.
+            let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+            let output = child.wait_with_output().context("couldn't run git")?;
+            writer.join().ok();
+            output
+        }
+    };
     if !output.status.success() {
         let mut message = String::from_utf8_lossy(&output.stderr).trim().to_string();
         if message.is_empty() {
@@ -230,7 +265,7 @@ pub fn history_of(dir: &Path, limit: usize, all: bool) -> Result<Vec<CommitInfo>
         count.as_str(),
         // Children before their parents, whatever the times say, as a graph reads.
         "--topo-order",
-        "--format=%H%x1f%h%x1f%an%x1f%ar%x1f%s%x1f%D",
+        "--format=%H%x1f%h%x1f%an%x1f%ar%x1f%s%x1f%D%x1f%P",
     ];
     if all {
         args.push("--all");
@@ -251,6 +286,12 @@ pub fn history_of(dir: &Path, limit: usize, all: bool) -> Result<Vec<CommitInfo>
                     .unwrap_or("")
                     .split(", ")
                     .filter(|r| !r.is_empty())
+                    .map(String::from)
+                    .collect(),
+                parents: parts
+                    .next()
+                    .unwrap_or("")
+                    .split_whitespace()
                     .map(String::from)
                     .collect(),
             })
@@ -312,6 +353,84 @@ pub fn unstash(dir: &Path, name: &str, pop: bool) -> Result<String> {
 pub fn drop_stash(dir: &Path, name: &str) -> Result<String> {
     git(dir, &["stash", "drop", name])?;
     Ok(format!("Dropped {name}"))
+}
+
+/// Something git started and stopped partway through, to settle conflicts in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Operation {
+    Rebase,
+    Merge,
+    CherryPick,
+    Revert,
+}
+
+impl Operation {
+    /// What it's called in a sentence: `Rebasing`.
+    pub fn doing(self) -> &'static str {
+        match self {
+            Operation::Rebase => "Rebasing",
+            Operation::Merge => "Merging",
+            Operation::CherryPick => "Cherry-picking",
+            Operation::Revert => "Reverting",
+        }
+    }
+
+    fn command(self) -> &'static str {
+        match self {
+            Operation::Rebase => "rebase",
+            Operation::Merge => "merge",
+            Operation::CherryPick => "cherry-pick",
+            Operation::Revert => "revert",
+        }
+    }
+}
+
+/// The repository's own folder, `.git` or wherever a worktree keeps it.
+pub fn git_dir(dir: &Path) -> Result<PathBuf> {
+    Ok(PathBuf::from(
+        git(dir, &["rev-parse", "--absolute-git-dir"])?.trim_end(),
+    ))
+}
+
+/// A rebase, merge, cherry-pick or revert that's stopped, if there is one.
+pub fn operation_in_progress(dir: &Path) -> Option<Operation> {
+    let git_dir = git_dir(dir).ok()?;
+    let has = |name: &str| git_dir.join(name).exists();
+    if has("rebase-merge") || has("rebase-apply") {
+        Some(Operation::Rebase)
+    } else if has("MERGE_HEAD") {
+        Some(Operation::Merge)
+    } else if has("CHERRY_PICK_HEAD") {
+        Some(Operation::CherryPick)
+    } else if has("REVERT_HEAD") {
+        Some(Operation::Revert)
+    } else {
+        None
+    }
+}
+
+/// Carries on with what stopped, once its conflicts are settled, keeping the messages git
+/// prepared rather than asking for them in an editor.
+pub fn continue_operation(dir: &Path) -> Result<String> {
+    let operation = operation_in_progress(dir).context("Nothing is in progress")?;
+    let result = git_with(
+        dir,
+        &[operation.command(), "--continue"],
+        &[("GIT_EDITOR", "true")],
+        None,
+    );
+    match (result, operation_in_progress(dir)) {
+        (Ok(_), None) => Ok(format!("Finished {}", operation.command())),
+        (Ok(_), Some(_)) => Ok(format!("{} stopped again", operation.doing())),
+        (Err(error), _) => Err(error),
+    }
+}
+
+/// Gives up what stopped, putting things back as they were before it started.
+pub fn abort_operation(dir: &Path) -> Result<String> {
+    let operation = operation_in_progress(dir).context("Nothing is in progress")?;
+    git(dir, &[operation.command(), "--abort"])?;
+    Ok(format!("Aborted the {}", operation.command()))
 }
 
 fn short(hash: &str) -> &str {
@@ -536,5 +655,54 @@ mod tests {
         assert_eq!(push(&root).unwrap(), "Pushed");
         assert!(git(&root, &["rev-parse", "@{upstream}"]).is_ok());
         assert_eq!(update(&root).unwrap(), "Already up to date");
+    }
+
+    #[test]
+    fn the_log_names_each_commits_parents() {
+        let (_dir, root) = repo();
+        run(&root, &["switch", "-q", "-c", "side"]);
+        fs::write(root.join("c.txt"), "side\n").unwrap();
+        run(&root, &["add", "."]);
+        run(&root, &["commit", "-q", "-m", "on side"]);
+        run(&root, &["switch", "-q", "main"]);
+        run(&root, &["merge", "-q", "--no-ff", "-m", "merge", "side"]);
+        let log = history(&root, 10).unwrap();
+        let hash = |subject: &str| {
+            log.iter()
+                .find(|c| c.subject == subject)
+                .unwrap()
+                .hash
+                .clone()
+        };
+        assert_eq!(log[0].parents, [hash("first"), hash("on side")]);
+        assert_eq!(log.last().unwrap().parents, Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_stopped_merge_is_continued_or_aborted() {
+        let (_dir, root) = repo();
+        assert_eq!(operation_in_progress(&root), None);
+        assert!(continue_operation(&root).is_err());
+        let conflict = |root: &Path| {
+            run(root, &["switch", "-q", "-c", "other"]);
+            fs::write(root.join("a.txt"), "theirs\n").unwrap();
+            run(root, &["commit", "-q", "-am", "theirs"]);
+            run(root, &["switch", "-q", "main"]);
+            fs::write(root.join("a.txt"), "ours\n").unwrap();
+            run(root, &["commit", "-q", "-am", "ours"]);
+            assert!(git(root, &["merge", "other"]).is_err());
+        };
+        conflict(&root);
+        assert_eq!(operation_in_progress(&root), Some(Operation::Merge));
+        abort_operation(&root).unwrap();
+        assert_eq!(operation_in_progress(&root), None);
+        assert_eq!(fs::read_to_string(root.join("a.txt")).unwrap(), "ours\n");
+        // Settled, it continues without asking for a message.
+        assert!(git(&root, &["merge", "other"]).is_err());
+        let files = changed_files(&root).unwrap();
+        take_side(&root, &files[0], false).unwrap();
+        assert_eq!(continue_operation(&root).unwrap(), "Finished merge");
+        assert_eq!(operation_in_progress(&root), None);
+        assert_eq!(history(&root, 1).unwrap()[0].parents.len(), 2);
     }
 }
