@@ -97,11 +97,18 @@ fn bind_all_keys(cx: &mut App) -> Vec<String> {
     gleipnir_code_nav::bind_keys(cx);
     gleipnir_debugger_ui::bind_keys(cx);
     gleipnir_git_ui::bind_keys(cx);
+    gleipnir_terminal::bind_keys(cx);
     // Loaded last, so that it overrides the defaults.
     load_user_keymap(&gleipnir_workspace::user_keymap_path(), cx)
 }
 
 fn main() {
+    // `gleipnir mcp` is what coding agents start as Gleipnir's MCP server: a pipe to a window's
+    // socket, which must start at once, so it's handled before anything else is set up.
+    let mut args = std::env::args_os().skip(1);
+    if args.next().is_some_and(|first| first == "mcp") {
+        std::process::exit(gleipnir_agent::mcp_main(args.collect()));
+    }
     let target = launch_target(std::env::args_os().nth(1).map(PathBuf::from));
     let script = std::env::var_os("GLEIPNIR_SCRIPT").map(PathBuf::from);
     // Asking the login shell for its environment takes about a second, so start it now. An app
@@ -127,6 +134,8 @@ fn main() {
                 errors
             })));
             set_menus(cx);
+            // Agents started in the terminal get the window's tools.
+            gleipnir_agent::launch::init(cx);
 
             cx.on_action(|_: &Quit, cx| cx.quit());
             // The local model's server goes with the app.
@@ -171,6 +180,8 @@ fn main() {
                 gleipnir_debugger_ui::add_to_workspace(workspace, window, cx);
                 gleipnir_git_ui::add_to_workspace(workspace, window, cx);
                 gleipnir_suggest::add_to_workspace(workspace, window, cx);
+                gleipnir_agent::add_to_workspace(workspace, window, cx);
+                gleipnir_terminal::add_to_workspace(workspace, window, cx);
             })));
 
             let window = open_project_window(target.root.clone(), false, cx);
@@ -332,6 +343,11 @@ fn set_menus(cx: &mut App) {
                 MenuItem::action("Problems", gleipnir_code_nav::ShowProblems),
                 MenuItem::action("Run", gleipnir_debugger_ui::ShowRunPanel),
                 MenuItem::action("Debug", gleipnir_debugger_ui::ShowDebugPanel),
+                MenuItem::action("Terminal", gleipnir_terminal::ToggleTerminal),
+                MenuItem::action("New Terminal Tab", gleipnir_terminal::NewTerminal),
+                MenuItem::action("Agents", gleipnir_terminal::ToggleAgents),
+                MenuItem::action("Claude Code", gleipnir_terminal::OpenClaudeCode),
+                MenuItem::action("Codex", gleipnir_terminal::OpenCodex),
                 MenuItem::separator(),
                 MenuItem::action("Split Right", SplitRight),
                 MenuItem::action("Split Down", SplitDown),

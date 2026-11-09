@@ -1,9 +1,9 @@
 //! A launch's console: the build's and the program's output, the debugger's messages, and for a
 //! debug session, a line to evaluate expressions in.
 
-use crate::links::{find_links, resolve};
 use gleipnir_core::{ConsoleKind, ConsoleLine, Debugger, Launch, LaunchId};
 use gleipnir_ui::Theme;
+use gleipnir_ui::links::{find_links, resolve};
 use gleipnir_ui::text_input::TextInput;
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable, KeyBinding,

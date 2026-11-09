@@ -1013,6 +1013,38 @@ impl Workspace {
         editor
     }
 
+    /// Opens a file in a tab of the active pane without switching to it or moving focus, unless
+    /// a tab somewhere already shows it, for changes made from outside, like an AI agent's, that
+    /// should stay unsaved and in view for the person to save or undo. Resolves to its buffer.
+    pub fn open_in_background(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Entity<BufferModel>>> {
+        let open = self.store.update(cx, |store, cx| store.open(&path, cx));
+        cx.spawn_in(window, async move |this, cx| {
+            let buffer = open.await?;
+            this.update_in(cx, |this, window, cx| {
+                let shown = this.center.panes().iter().any(|pane| {
+                    pane.read(cx)
+                        .items()
+                        .iter()
+                        .any(|item| item.read(cx).buffer() == &buffer)
+                });
+                if !shown {
+                    let (editor, subscriptions) = this.build_item(buffer.clone(), window, cx);
+                    let pane = this.active_pane.clone();
+                    pane.update(cx, |pane, cx| {
+                        pane.add_background_item(editor, subscriptions, cx)
+                    });
+                    this.update_title(window, cx);
+                }
+                buffer
+            })
+        })
+    }
+
     pub fn new_untitled(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let buffer = cx.new(|cx| BufferModel::new("", None, cx));
         self.show_buffer(buffer, window, cx);

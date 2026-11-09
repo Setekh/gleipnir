@@ -11,6 +11,7 @@ capture = ["gpui/test-support", "gpui_platform/test-support", "dep:image"]
 
 [dependencies]
 anyhow.workspace = true
+gleipnir-agent.workspace = true
 gleipnir-code-nav.workspace = true
 gleipnir-core.workspace = true
 gleipnir-debugger-ui.workspace = true
@@ -20,6 +21,7 @@ gleipnir-packages.workspace = true
 gleipnir-search.workspace = true
 gleipnir-settings-ui.workspace = true
 gleipnir-git-ui.workspace = true
+gleipnir-terminal.workspace = true
 gleipnir-suggest.workspace = true
 gleipnir-syntax.workspace = true
 gleipnir-ui.workspace = true
@@ -28,3 +30,6 @@ gpui.workspace = true
 gpui_platform.workspace = true
 image = { version = "0.25", default-features = false, features = ["png"], optional = true }
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

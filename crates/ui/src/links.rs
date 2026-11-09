@@ -1,5 +1,5 @@
-//! Places in source files mentioned in a console's output, like a panic's `src/lib.rs:11:42` or
-//! Odin's `a_test.odin(14:2)`, so they can be clicked.
+//! Places in source files mentioned in output, a console's or a terminal's, like a panic's
+//! `src/lib.rs:11:42` or Odin's `a_test.odin(14:2)`, so they can be clicked.
 
 use std::ops::Range;
 use std::path::{Path, PathBuf};

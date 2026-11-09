@@ -120,6 +120,21 @@ impl Pane {
         cx.notify();
     }
 
+    /// Adds a tab after the active one, leaving the active one as it is, unless there's none.
+    pub(crate) fn add_background_item(
+        &mut self,
+        item: Entity<EditorView>,
+        subscriptions: Vec<Subscription>,
+        cx: &mut Context<Self>,
+    ) {
+        let active = self.active;
+        let was_empty = self.items.is_empty();
+        self.add_item(item, subscriptions, cx);
+        if !was_empty {
+            self.active = active;
+        }
+    }
+
     /// Adds a tab while restoring a layout. Files finish loading in any order, so this slots each
     /// into the position it was saved at, relative to those that have arrived.
     pub(crate) fn insert_restored(

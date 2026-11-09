@@ -2,6 +2,7 @@
 
 pub mod assets;
 pub mod context_menu;
+pub mod links;
 pub mod list;
 pub mod markdown;
 pub mod text_input;

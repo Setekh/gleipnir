@@ -38,6 +38,8 @@ pub enum Icon {
     Settings,
     Branch,
     Commit,
+    Terminal,
+    Agent,
 }
 
 impl Icon {
@@ -74,11 +76,21 @@ impl Icon {
             Self::Settings => "icons/settings.svg",
             Self::Branch => "icons/branch.svg",
             Self::Commit => "icons/commit.svg",
+            Self::Terminal => "icons/terminal.svg",
+            Self::Agent => "icons/agent.svg",
         }
     }
 }
 
 const FILES: &[(&str, &[u8])] = &[
+    (
+        "icons/agent.svg",
+        include_bytes!("../assets/icons/agent.svg"),
+    ),
+    (
+        "icons/terminal.svg",
+        include_bytes!("../assets/icons/terminal.svg"),
+    ),
     ("icons/run.svg", include_bytes!("../assets/icons/run.svg")),
     (
         "icons/debug.svg",

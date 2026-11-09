@@ -2,7 +2,9 @@
 //! are read again whenever they change, so a theme can be made or changed by hand or by an AI
 //! agent and is seen at once. The folder has a README saying how, written by Gleipnir.
 
-use crate::theme::{COLOR_KEYS, DARK_THEME, LIGHT_THEME, SYNTAX_KEYS, Theme, ThemeFile};
+use crate::theme::{
+    COLOR_KEYS, DARK_THEME, LIGHT_THEME, SYNTAX_KEYS, TERMINAL_KEYS, Theme, ThemeFile,
+};
 use gpui::Global;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -163,6 +165,10 @@ pub fn readme() -> String {
     for key in SYNTAX_KEYS {
         text.push_str(&format!("- `{key}`\n"));
     }
+    text.push_str("\n`[terminal]`, the 16 colors programs in the terminal ask for by name:\n\n");
+    for key in TERMINAL_KEYS {
+        text.push_str(&format!("- `{key}`\n"));
+    }
     text.push_str("\nThe example files say what each key colors.\n");
     text
 }
@@ -199,6 +205,10 @@ mod tests {
             let mut expected = SYNTAX_KEYS.to_vec();
             expected.sort();
             assert_eq!(syntax, expected, "{}", file.name);
+            let terminal: Vec<&str> = file.terminal.keys().map(String::as_str).collect();
+            let mut expected = TERMINAL_KEYS.to_vec();
+            expected.sort();
+            assert_eq!(terminal, expected, "{}", file.name);
         }
         assert!(Theme::light().is_light());
         assert!(!Theme::dark().is_light());
@@ -265,7 +275,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write_guide(dir.path()).unwrap();
         let readme = std::fs::read_to_string(dir.path().join("README.md")).unwrap();
-        for key in COLOR_KEYS.iter().chain(SYNTAX_KEYS) {
+        for key in COLOR_KEYS.iter().chain(SYNTAX_KEYS).chain(TERMINAL_KEYS) {
             assert!(readme.contains(&format!("`{key}`")), "{key}");
         }
         let example = dir.path().join("gleipnir-dark.example.toml");

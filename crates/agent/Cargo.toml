@@ -1,0 +1,32 @@
+[package]
+name = "gleipnir-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gleipnir_agent"
+
+[dependencies]
+futures.workspace = true
+gleipnir-code-nav.workspace = true
+gleipnir-core.workspace = true
+gleipnir-debugger-ui.workspace = true
+gleipnir-git-ui.workspace = true
+gleipnir-index.workspace = true
+gleipnir-packages.workspace = true
+gleipnir-terminal.workspace = true
+gleipnir-text.workspace = true
+gleipnir-workspace.workspace = true
+gpui.workspace = true
+libc = "0.2"
+serde_json.workspace = true
+
+[dev-dependencies]
+anyhow.workspace = true
+gleipnir-editor.workspace = true
+gleipnir-lsp.workspace = true
+gleipnir-test-support = { path = "../test_support" }
+gleipnir-ui.workspace = true
+gpui = { workspace = true, features = ["test-support"] }
+tempfile = "3"

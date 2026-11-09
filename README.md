@@ -62,6 +62,9 @@ searches much harder, and has found real bugs that the default run missed.
 - `crates/git_ui`: the Commit window, the Git log with its branch graph, diffs and merges, blame
   in the gutter, and interactive rebase.
 - `crates/suggest`: inline suggestions, from the file and from a local model run by llama.cpp.
+- `crates/agent`: Gleipnir's MCP server, which gives coding agents the IDE's tools, and
+  `gleipnir mcp`, which connects an agent to it.
+- `crates/terminal`: the terminal panel on alacritty_terminal, and coding agents' tabs in it.
 - `crates/index`: the file tree model, file list, fuzzy matching and search, gitignore rules, git
   status, file watching and file operations.
 - `crates/syntax`: languages, background parsing, highlighting, structural selection and symbol
@@ -92,9 +95,26 @@ make or tweak one by writing the file and switch to it in `settings.json`:
 
 Grey suggestions appear after the cursor as you type, with how likely each is; Tab takes one,
 Option+Right (Ctrl+Right on Linux) takes its next word, and Cmd+Right (End) its next line. On a
-blank line, or after one that opens a block, a suggestion can run to several lines. They come from the file itself, and from a small code model (Qwen2.5-Coder, 531 MB) that Gleipnir
-runs on your machine with llama.cpp, downloaded the first time it's needed, shown related pieces
-of your other open files too. Nothing is sent anywhere. Settings → Editor turns them off, picks the model, or sets how sure they must be.
+blank line, or after one that opens a block, a suggestion can run to several lines. They come
+from the file itself, and from a small code model (Qwen2.5-Coder, 531 MB) that Gleipnir runs on
+your machine with llama.cpp, downloaded the first time it's needed, shown related pieces of your
+other open files too. Nothing is sent anywhere. Settings → Editor turns them off, picks the model,
+or sets how sure they must be.
+
+The terminal (Alt+F12) has tabs of shells in the project folder; Cmd+T opens another, Cmd+W
+closes one, and Cmd-clicking a `path:line` in the output opens it. Its 16 colors are a theme's
+`[terminal]` section. Coding agents have a tool window of their own on the right, Agents, with
+tabs like the terminal's: Cmd+Esc opens Claude Code there, and its + menu Codex. Each is your own installed tool, started through your shell as typing its
+name would start it, signed in by you; Gleipnir installs none, and handles no credentials.
+Cmd+Alt+K types the editor's file and selected lines into the agent's tab, as
+`@src/main.rs#L10-20`.
+
+Coding agents such as Claude Code can work in the IDE through MCP. Each window serves tools on a
+socket only you can open: the open files and the selection, problems, test results, Git status,
+definitions and usages, running tests and programs, and edits made in open files (unsaved, one
+undo step) or proposed for you to accept change by change. An agent connects by running
+`gleipnir mcp`, with the window's socket in `GLEIPNIR_SOCKET`. Agents are your own installed
+programs, signed in by you: Gleipnir never sees their credentials or what they send.
 
 Indentation follows the project where it says: `.editorconfig`, and for the files Prettier formats,
 Prettier's config (`.prettierrc` in JSON, JSON5, YAML or TOML, `prettier.config.js` and the like,

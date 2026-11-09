@@ -4,13 +4,12 @@
 
 pub mod console;
 mod decorations;
-mod links;
 mod modals;
 mod panels;
 pub mod test_view;
 mod variables;
 
-pub use decorations::DebugDecorations;
+pub use decorations::{DebugDecorations, test_candidates};
 pub use modals::{
     BreakpointEditor, BreakpointList, EvaluateModal, RunSettingsModal, SetValueModal,
 };

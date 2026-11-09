@@ -13,7 +13,7 @@ mod rebase_view;
 
 pub use blame::{Blame, BlameCommit, BlameParser, blame_text, gutter_text, parse_blame};
 pub use commit_panel::{COMMIT_PANEL, CommitPanel};
-pub use diff_view::{DiffView, Revertible};
+pub use diff_view::{DiffView, Revertible, ReviewDecision, ReviewEvent};
 pub use graph::{GraphLine, GraphRow, Level, graph};
 pub use log_panel::{LOG_PANEL, LogPanel};
 pub use merge_view::{Choice, MergeView};

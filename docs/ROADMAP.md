@@ -398,6 +398,62 @@ Still open from M11:
 | 11.5 | Several lines, on a blank line or after a block's opener, in rows made for them; taken a word or a line at a time | A loop's body and closer are offered after its `{`, and Cmd+Right / Option+Right take a line / a word |
 | 11.6 | The model shown related pieces of the other open files | A function from another open file is called with its real parameters |
 
+## M12: A terminal, and coding agents in it
+
+Goal: a terminal panel like IntelliJ's, and coding agents (Claude Code first, then Codex) running
+in it as they would anywhere, but able to see and work in the IDE: what's selected, the problems,
+the tests, the open files, and edits made on the spot or offered for review.
+
+Each agent is the person's own installed CLI, signed in by them in its own way: Gleipnir never
+handles credentials, never stands between an agent and its service, and installs no agent by
+itself. It only adds tools, through MCP, which every such agent supports, and instructions telling
+an agent how to use them. The protocol Claude Code's `/ide` speaks with the VS Code and JetBrains
+plugins isn't used: it's undocumented for other editors and could change.
+
+Status: in progress. The terminal is built: `script/e2e terminal` opens a shell, types into it,
+stops a program with Ctrl+C, runs vim full-screen and quits it, and opens and closes tabs. Agent
+tabs start Claude Code and Codex through the login shell; Claude Code was seen starting in one,
+signed in with the person's own account. Send to Agent types `@file#L3-7` into the agent's tab. Agents have their own tool window on the right, which offers them
+when empty and never starts one unasked.
+
+Gleipnir's MCP server and its fifteen tools (12.3 to 12.5) are built. Each
+window listens on its own socket, and `script/e2e agent` calls the tools as an agent does, by
+starting `gleipnir mcp`: it lists the open files, reads the line the cursor is on, edits the open
+file, finds the edit there unsaved and undoes it, is refused a file outside the project, and shows
+a selection. The headless tests drive every tool against a real workspace, a fake language server
+and the real test runner, and two clients at once through the socket.
+
+Agent tabs give their agent the window's server: Claude Code with `--mcp-config` and the skill
+with `--plugin-dir`, Codex with `-c mcp_servers.gleipnir…` overrides, so nothing is written to
+either's configuration. In a real Claude Code tab, `/mcp` lists `gleipnir` connected with its 15
+tools, and the skill is offered as `/gleipnir:gleipnir`; neither check reached the model.
+
+Still open from M12:
+
+- **No agent has done real work through the tools yet.** Checking that would spend the person's
+  usage, so it's for them to try: ask Claude Code in its tab about "this", or to fix a problem.
+- **Codex's connection is untested live**: the check was interrupted by Codex's own update prompt.
+- **Typing in the terminal goes by keys**, without an input method, so composed characters (dead
+  keys, Chinese and the like) can't be typed there yet; Option's own characters can.
+- **Programs can't use the mouse** in the terminal (clicks in vim or htop); the wheel scrolls.
+
+- **A proposed edit waits 50 seconds for the person**, then answers "pending" with an id that
+  `get_proposal` waits on again, as Codex gives up on a tool call after a minute by default.
+- **A program run with `run_configuration`** is answered with its output so far once it ends or
+  the wait runs out; what it prints after that is only in the Run panel.
+- **Problems** are those the language servers have reported, which is mostly for open files.
+
+| # | Item | Finished when |
+| --- | --- | --- |
+| 12.1 | Terminal panel (Alt+F12): tabs, each a shell in the project folder, with colours, scrollback, selection, copy and paste, links to files, resizing; on alacritty_terminal (Apache-2.0) | A shell runs commands, full-screen programs like `vim` and `htop` draw properly, and a `path:line` printed by a build opens the file there |
+| 12.2 | Agent tabs: New Claude Code (and later Codex) tab, running the installed CLI in the project folder; a missing one says how to install it | A Claude Code tab starts `claude`, which asks to log in if it hasn't been |
+| 12.3 | Gleipnir's MCP server: each window listens on a socket only its user can open, and `gleipnir mcp` connects an agent to it; agent tabs pass it to their agent without writing to the project | An agent tab's agent lists Gleipnir's tools |
+| 12.4 | What the IDE knows, as tools: open files, cursor and selection, problems, test results, Git status, definitions and usages | Asked about "this", an agent reads the selection; asked to fix the problems, it reads them from the IDE |
+| 12.5 | Acting in the IDE, as tools: open a file at a line, edit an open file's text (unsaved edits kept, one undo step), run a test or configuration, and `propose_edit`, a diff reviewed change by change | An edit lands in the open buffer and Undo takes it back; a proposed edit is accepted in part |
+| 12.6 | Send to Agent (Cmd+Alt+K): the selection, as a file and lines reference, typed into the active agent tab | The reference arrives at the prompt, and the agent reads those lines |
+| 12.7 | Instructions for agents in Gleipnir, one text for all: the MCP server's own instructions, which every agent reads, and for Claude Code a skill in a plugin passed with `--plugin-dir`, so nothing is installed into the person's config | A new agent session uses the IDE's tools without being told to |
+| 12.8 | Codex: its tab, and the MCP server and instructions given to it its own way | A Codex tab's agent edits an open file through Gleipnir |
+
 ## Later
 
-Git integration, terminal panel, WASM plugins (stage 3), Windows.
+WASM plugins (stage 3), Windows.

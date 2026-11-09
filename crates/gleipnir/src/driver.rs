@@ -34,6 +34,8 @@
 //!     screenshot <path>           writes a PNG, if built with `--features capture`
 //!     scroll-bench <frames>       scrolls a frame at a time, reporting per-frame editor cost
 //!     type-bench <count>          types and undoes, reporting per-keystroke cost
+//!     mcp <tool> <json>           calls an MCP tool as an agent would, through `gleipnir mcp`
+//!     expect-mcp <text>           the last tool's answer contains the text
 //!     quit
 
 use anyhow::{Context as _, Result, anyhow, bail};
@@ -46,6 +48,53 @@ use std::time::{Duration, Instant};
 
 /// How long `wait-state` waits, in seconds.
 static WAIT_SECONDS: AtomicU64 = AtomicU64::new(10);
+
+/// The last `mcp` command's answer: its text, after `error: ` if the tool failed.
+static LAST_TOOL_ANSWER: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+/// Calls one tool through `gleipnir mcp`, this same binary, as an agent would: it initializes,
+/// calls, and closes its input, then reads every answer.
+fn call_tool(socket: &Path, tool: &str, arguments: serde_json::Value) -> Result<String> {
+    use std::io::Write as _;
+    let mut child = std::process::Command::new(std::env::current_exe()?)
+        .arg("mcp")
+        .env("GLEIPNIR_SOCKET", socket)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()?;
+    let requests = [
+        serde_json::json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "protocolVersion": "2025-06-18", "capabilities": {},
+                        "clientInfo": { "name": "gleipnir-e2e" } } }),
+        serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }),
+        serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": { "name": tool, "arguments": arguments } }),
+    ];
+    let mut stdin = child.stdin.take().context("no stdin")?;
+    for request in requests {
+        writeln!(stdin, "{request}")?;
+    }
+    drop(stdin);
+    let output = child.wait_with_output()?;
+    let text = String::from_utf8(output.stdout)?;
+    let answer: serde_json::Value = text
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|message| message["id"] == 2)
+        .with_context(|| format!("no answer to the call in {text:?}"))?;
+    let content: Vec<&str> = answer["result"]["content"]
+        .as_array()
+        .context("the answer has no content")?
+        .iter()
+        .filter_map(|c| c["text"].as_str())
+        .collect();
+    let failed = answer["result"]["isError"] == true;
+    Ok(format!(
+        "{}{}",
+        if failed { "error: " } else { "" },
+        content.join("\n")
+    ))
+}
 
 pub fn run(script: PathBuf, window: WindowHandle<Workspace>, cx: &mut App) {
     cx.spawn(async move |cx: &mut AsyncApp| {
@@ -553,6 +602,31 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
                     "completions shown {after:?} after the first key, typing took {typed:?}"
                 ),
                 None => println!("completions never showed"),
+            }
+        }
+        "mcp" => {
+            // `mcp <tool> <arguments>`: calls a tool as an agent would, by starting `gleipnir mcp`
+            // on the window's socket, and keeps the answer for `expect-mcp`.
+            let (tool, arguments) = rest.split_once(' ').unwrap_or((rest, "{}"));
+            let arguments: serde_json::Value =
+                serde_json::from_str(arguments).context("the arguments aren't JSON")?;
+            let socket = with_workspace(window, cx, |workspace, _, cx| {
+                gleipnir_agent::socket_path(workspace, cx)
+            })?
+            .context("the window has no socket for agents")?;
+            let tool = tool.to_string();
+            // In the background, as the window answers the call meanwhile.
+            let answer = cx
+                .background_executor()
+                .spawn(async move { call_tool(&socket, &tool, arguments) })
+                .await?;
+            *LAST_TOOL_ANSWER.lock().unwrap() = answer;
+        }
+        "expect-mcp" => {
+            let answer = LAST_TOOL_ANSWER.lock().unwrap().clone();
+            let expected = unescape(rest);
+            if !answer.contains(&expected) {
+                bail!("{expected:?} not in the tool's answer {answer:?}");
             }
         }
         "quit" => std::process::exit(0),

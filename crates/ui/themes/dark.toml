@@ -103,3 +103,22 @@ type = "#72d3c2"
 variable = "#d7dae0"
 # Built-in variables: self, this.
 variable_builtin = "#e3a65d"
+
+[terminal]
+# The terminal's colors, as programs ask for them by name.
+black = "#22262c"
+red = "#ef6f6c"
+green = "#8fc27a"
+yellow = "#e0b65c"
+blue = "#82b6ee"
+magenta = "#d492d6"
+cyan = "#72d3c2"
+white = "#d7dae0"
+bright_black = "#5d6573"
+bright_red = "#f58f8c"
+bright_green = "#a9d895"
+bright_yellow = "#ecc97d"
+bright_blue = "#a1c9f4"
+bright_magenta = "#e2afe3"
+bright_cyan = "#93e2d5"
+bright_white = "#f4f5f7"

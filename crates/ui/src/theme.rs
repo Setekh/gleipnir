@@ -42,6 +42,9 @@ pub struct Theme {
     pub inline_value: Hsla,
 
     pub syntax: SyntaxColors,
+    /// The terminal's 16 colors, in ANSI's order: black, red, green, yellow, blue, magenta, cyan,
+    /// white, then their bright versions.
+    pub terminal: [Hsla; 16],
 
     pub ui_font: &'static str,
     pub ui_font_size: f32,
@@ -118,6 +121,8 @@ pub struct ThemeFile {
     pub colors: std::collections::BTreeMap<String, String>,
     #[serde(default)]
     pub syntax: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
+    pub terminal: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
@@ -195,6 +200,26 @@ syntax_keys!(
     "variable" => variable, "variable_builtin" => variable_builtin,
 );
 
+/// Every key a theme's `[terminal]` can set, in ANSI's order.
+pub const TERMINAL_KEYS: &[&str] = &[
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "white",
+    "bright_black",
+    "bright_red",
+    "bright_green",
+    "bright_yellow",
+    "bright_blue",
+    "bright_magenta",
+    "bright_cyan",
+    "bright_white",
+];
+
 /// A color written `#rrggbb` or `#rrggbbaa`.
 pub fn parse_color(text: &str) -> Option<Hsla> {
     let hex = text.trim().strip_prefix('#')?;
@@ -244,6 +269,16 @@ impl Theme {
                     "syntax.{key} isn't a kind of code a theme can color"
                 ));
             }
+        }
+        for (key, value) in &file.terminal {
+            let color = parse_color(value).ok_or_else(|| {
+                format!("terminal.{key}: {value:?} isn't a color like \"#1a2b3c\"")
+            })?;
+            let index = TERMINAL_KEYS
+                .iter()
+                .position(|k| k == key)
+                .ok_or_else(|| format!("terminal.{key} isn't one of the terminal's colors"))?;
+            self.terminal[index] = color;
         }
         Ok(())
     }

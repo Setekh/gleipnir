@@ -58,7 +58,7 @@ and can be tested without a window.
 ```text
 gleipnir                 binary: startup, wiring, keymap defaults
    |
-   +-- project_panel   search   code_nav   debugger_ui   settings_ui
+   +-- project_panel   search   code_nav   debugger_ui   settings_ui   git_ui   agent
    |        (each feature contributes panels and actions to the workspace)
    |
 workspace                window layout, docks, tool rail, split panes, tabs, action registry
@@ -483,6 +483,44 @@ One server serves every window, on 127.0.0.1 and a free port; it's stopped at ex
 Gleipnir ends, and one left by a crash is stopped on the next start, by the process id kept in the
 state folder.
 
+### Terminal
+
+`crates/terminal` runs each tab's program on a pseudo-terminal with alacritty_terminal
+(Apache-2.0), whose reader thread parses the output into a grid; the session hears of new output
+over a channel and redraws once per batch. The view draws the grid itself, in the editor's font:
+runs of cells styled alike are shaped together and placed at their columns, a wide character on
+its own so the rest stay aligned, with backgrounds, the selection and the cursor as quads. Keys go
+to the program as xterm sends them (`keys.rs`), after the IDE's own bindings: those the shell
+should have, like Ctrl with a letter, Tab and the arrows, are bound to `NoAction` in the
+`Terminal` context so the IDE's bindings for them stand aside. Colors are the theme's 16, xterm's
+cube and grays for the rest, and any a program sets. A shell's tab closes when it exits.
+
+Coding agents are tabs too (`agents.rs`). An agent is started through the person's login shell,
+interactively, as `$SHELL -l -i -c 'claude "$@"'`, so their `PATH` and any function wrapping the
+command apply, such as one choosing an account per folder; anything the IDE adds is passed after
+it, untouched. Other crates add to every agent's start through `add_agent_setup`: the agent
+crate's `launch.rs` gives Claude Code the window's MCP server with `--mcp-config` and a plugin
+holding the Gleipnir skill with `--plugin-dir` (written to the state folder, loaded for that
+session only), and Codex the server as `-c mcp_servers.gleipnir.*` overrides. The agent's own
+configuration isn't touched. Gleipnir never installs an agent, signs one in or sits between it
+and its service. Agents' tabs are in their own tool window on the right, Agents (the same tab
+strip, as `AgentsPanel` around a `TerminalPanel`), which offers the agents when it's empty rather
+than starting one.
+
+Using Claude Code this way is what Anthropic documents: its legal and compliance page allows "an
+end user … signing in to the unmodified Claude Code binary with their own Claude subscription",
+and its VS Code page says to "run `claude` in the editor's integrated terminal" where there's no
+extension. So that it stays that way, Gleipnir doesn't cross these lines, for any agent:
+
+- It never reads, stores, copies or forwards an agent's credentials or tokens, and offers no
+  sign-in of its own; the agent signs in through its maker's own flow.
+- It never types a prompt or presses Enter for the person, and never runs an agent headless
+  (`claude -p` and the like). Send to Agent types a reference and stops.
+- It never proxies an agent's traffic or points it elsewhere (`ANTHROPIC_BASE_URL` and the like),
+  and the MCP server never calls a model service.
+- It doesn't modify, bundle or install an agent, and uses agents' names only as plain text, with
+  icons of its own.
+
 ### Project indentation
 
 Indentation is the language's, then the person's Code Style settings, then the project's:
@@ -493,12 +531,57 @@ JavaScript configs (`prettier.config.js` and the like) are run with Node, as Pre
 remembered until they change; a project's are run in the background as it opens, so opening a file
 doesn't wait. Changing any of these files re-indents the open files.
 
+## Coding agents
+
+Agents like Claude Code and Codex are the person's own programs, signed in by them and run in
+Gleipnir's terminal. Gleipnir offers them tools through MCP and nothing more: it never sees their
+credentials or their traffic. The `agent` crate is the MCP server.
+
+- **One socket per window.** Each window with a project listens on a Unix socket in
+  `/tmp/gleipnir-<uid>`, a folder only its owner can enter (0700, checked to be ours and not a
+  link), the socket itself 0600. The folder is short on purpose: a socket's path can't be longer
+  than 104 bytes on macOS, and the temporary and state folders can be. A socket is named
+  `<pid>-<n>.sock` and removed when its window closes and when Gleipnir exits; ones a crash leaves
+  are removed at the next start, once their process is gone.
+- **`gleipnir mcp` is only a pipe.** An agent starts it as a stdio MCP server; it connects to the
+  socket named by `GLEIPNIR_SOCKET` and copies bytes both ways. It's handled at the top of `main`,
+  before GPUI, so it starts at once. `mcp_config_json` writes the configuration Claude Code's
+  `--mcp-config` takes, and `socket_path` gives a window's socket to whatever starts agents.
+- **The socket speaks MCP itself**: JSON-RPC 2.0, one message per line, as MCP's stdio transport
+  does. It's written by hand over serde_json (`rpc.rs`): the part of MCP that tools need is small,
+  and the official Rust SDK would bring tokio and much more besides. Each connection has a thread
+  reading and one writing. `initialize`, `ping`, `tools/list` and malformed messages are answered
+  there; tool calls go over a channel to the window, where each runs as a task of its own, so a
+  slow one, like a review, holds up no other, and answers go back as they finish. Arguments are
+  checked (`tools.rs`) before the workspace is touched, and a tool that fails answers with
+  `isError` and why, which the agent reads and can act on.
+- **Tools work on what the window has.** Paths are from the project root, and anything that
+  resolves outside it, by `..` or through a link, is refused. Lines and columns count from 1,
+  columns in characters. Reading takes an open file's buffer, with its unsaved edits, or else the
+  disk. `edit_file` makes its replacement in the buffer with `apply_external_edits`, one undo step,
+  and leaves it unsaved; a file that isn't open gets a tab beside the active one, without taking
+  focus (`Workspace::open_in_background`), as an unsaved change has to be somewhere the person can
+  see, save or undo it. Lookups ask the language servers, by position, or by a name found first in
+  the project's own symbol index. Tests run through the debugger as the gutter's Run icons run
+  them, and their results come from the same `TestRun` the Run panel shows.
+- **Proposed edits are reviewed in the diff view.** `propose_edit` opens git_ui's `DiffView` in
+  review mode: the file as it is on the left, the proposal on the right, ✓ and ✕ on each change,
+  and Accept All and Reject All. Accepting a change edits the buffer as an undoable step. If the
+  file changed meanwhile, as from another agent's edit, nothing is taken from the stale diff: the
+  proposal is carried over to the file as it is now with `merge3`, as git would, so the other
+  edit isn't undone, and changes that clash with it are left out. Proposals wait
+  their turn while another popup is open. The call waits for the person's decision, but only 50
+  seconds by default, and then answers "pending" with an id that `get_proposal` waits on again:
+  agents give up on a tool call after a while (Codex after a minute, unless configured), and an
+  answer sent after that would be lost, while asking again costs nothing.
+
 ## Testing
 
 | Layer | Approach |
 | --- | --- |
 | `text`, `syntax`, `index`, `packages` | Unit tests, property tests for edit and transform invariants |
 | `lsp`, `dap` | Scripted fake servers for protocol and failure cases |
+| MCP server | Our own client: the protocol line by line, tool calls against a real workspace, the socket with several clients at once, and the built `gleipnir mcp` as a subprocess. Never a real agent, which would spend the person's account |
 | Real servers and adapters | Integration tests against sample projects per language, reporting a skip when a tool is missing |
 | UI logic | GPUI's test support, simulating keystrokes without a window |
 | End to end | `script/e2e`: a scripted driver on the real app sends keys, asserts on state and takes screenshots. See `crates/gleipnir/src/driver.rs` |
