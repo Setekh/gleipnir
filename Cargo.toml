@@ -25,6 +25,7 @@ gleipnir-packages = { path = "crates/packages" }
 gleipnir-project-panel = { path = "crates/project_panel" }
 gleipnir-search = { path = "crates/search" }
 gleipnir-settings-ui = { path = "crates/settings_ui" }
+gleipnir-git-ui = { path = "crates/git_ui" }
 gleipnir-syntax = { path = "crates/syntax" }
 gleipnir-text = { path = "crates/text" }
 gleipnir-ui = { path = "crates/ui" }

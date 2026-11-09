@@ -4,12 +4,15 @@ pub mod find;
 pub mod fs_ops;
 pub mod fuzzy;
 pub mod git;
+pub mod git_ops;
 pub mod scan;
 pub mod search;
 pub mod tree;
 pub mod watch;
 
-pub use git::{GitState, GitStatus};
+pub use git::{
+    DiffRow, DiffRowKind, GitState, GitStatus, LineChange, LineChangeKind, side_by_side,
+};
 pub use scan::{FileChanges, FileList, scan_files};
 pub use search::{
     Cancel, FileHit, Query, SymbolEntry, SymbolFilter, SymbolHit, search_files, search_symbols,

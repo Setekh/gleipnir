@@ -57,6 +57,7 @@ searches much harder, and has found real bugs that the default run missed.
   (its files, symbol index and git status, kept current by watching it), and the language servers:
   starting and restarting them, document sync, diagnostics and requests, and the debugger: run
   targets, builds, launches, debug sessions and the project's breakpoints.
+- `crates/git_ui`: the Commit window, the Git log and diffs.
 - `crates/index`: the file tree model, file list, fuzzy matching and search, gitignore rules, git
   status, file watching and file operations.
 - `crates/syntax`: languages, background parsing, highlighting, structural selection and symbol
@@ -86,8 +87,8 @@ make or tweak one by writing the file and switch to it in `settings.json`:
     keyword = "#bb9af7"
 
 Indentation follows the project where it says: `.editorconfig`, and for the files Prettier formats,
-Prettier's config (`.prettierrc` in JSON, JSON5, YAML or TOML, or `package.json`'s `prettier`),
-over the language's own and the Code Style settings.
+Prettier's config (`.prettierrc` in JSON, JSON5, YAML or TOML, `prettier.config.js` and the like,
+or `package.json`'s `prettier`), over the language's own and the Code Style settings.
 
 Key bindings added in Settings, or by hand, are kept in `~/.config/gleipnir/keymap.conf`, one per
 line:

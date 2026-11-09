@@ -37,6 +37,7 @@ pub enum Icon {
     RerunFailed,
     Settings,
     Branch,
+    Commit,
 }
 
 impl Icon {
@@ -72,6 +73,7 @@ impl Icon {
             Self::RerunFailed => "icons/rerun-failed.svg",
             Self::Settings => "icons/settings.svg",
             Self::Branch => "icons/branch.svg",
+            Self::Commit => "icons/commit.svg",
         }
     }
 }
@@ -152,6 +154,10 @@ const FILES: &[(&str, &[u8])] = &[
     (
         "icons/branch.svg",
         include_bytes!("../assets/icons/branch.svg"),
+    ),
+    (
+        "icons/commit.svg",
+        include_bytes!("../assets/icons/commit.svg"),
     ),
     (
         "icons/run-passed.svg",

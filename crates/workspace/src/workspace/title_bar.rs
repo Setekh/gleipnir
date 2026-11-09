@@ -283,7 +283,24 @@ impl Workspace {
                             }
                         }
                     };
-                    let mut menu = ContextMenu::new(cx).item(
+                    // What IntelliJ's branch popup starts with, run by name, as Git's actions
+                    // are a feature's of their own.
+                    let named = |name: &'static str| {
+                        move |window: &mut Window, cx: &mut gpui::App| {
+                            if let Ok(action) = cx.build_action(name, None) {
+                                window.dispatch_action(action, cx);
+                            }
+                        }
+                    };
+                    let mut menu = ContextMenu::new(cx);
+                    if cx.build_action("git::Commit", None).is_ok() {
+                        menu = menu
+                            .item("Update Project…", None, named("git::UpdateProject"))
+                            .item("Commit…", None, named("git::Commit"))
+                            .item("Push…", None, named("git::Push"))
+                            .separator();
+                    }
+                    let mut menu = menu.item(
                         "New Branch…",
                         None,
                         on(Box::new(|w, window, cx| w.new_branch(None, window, cx))),

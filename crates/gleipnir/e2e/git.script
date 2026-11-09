@@ -1,0 +1,31 @@
+# Git as IntelliJ has it, against the fixture's repository: marks in the gutter as a file is
+# edited, the change as a diff, a commit of what's ticked, the marks clearing, and the log.
+wait-idle
+open {dir}/main.rs
+cursor 2:5
+type // changed\n
+# Enter keeps the indent, so the old line survives and only the new one is added.
+wait-match /editor/line_changes 2: added
+screenshot {shots}/git-gutter.png
+do Save
+
+# The change side by side.
+action git::ShowDiff
+wait-state /modal DiffView
+screenshot {shots}/git-diff.png
+key escape
+
+# The Commit window lists it, ticked; a message and Cmd+Enter commit it.
+action git::Commit
+wait-match /panels/commit/files [x] Modified main.rs
+type Change main
+action git::CommitAndKeep
+wait-state /panels/commit/busy null
+wait-state /panels/commit/message
+wait-state /panels/commit/files []
+wait-state /editor/line_changes []
+screenshot {shots}/git-committed.png
+
+# The log has it.
+action git::ShowLog
+wait-match /panels/git-log/commits Change main

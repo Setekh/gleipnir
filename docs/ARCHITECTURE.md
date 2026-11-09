@@ -407,14 +407,30 @@ truth; the keys a file may set come from one list in `theme.rs`, which also writ
 Gleipnir puts in the themes folder alongside full examples, so instructions can't drift from the
 code. A file with a mistake is left out, with the key and value that's wrong, shown in Settings.
 
+### Git
+
+Git is run, not reimplemented, so every repository format and setting works as it does in a
+terminal; what git says when it refuses is what's shown. `index::git_ops` holds the commands, each
+tested against a real repository, and `git_ui` the Commit window, the log and the diff view.
+
+An open file keeps its committed text (`git show HEAD:path`), read again after a save and whenever
+the project's git status changes, and compares its live text with it off the UI thread a moment
+after typing stops (`similar`'s line diff), so the gutter's change marks include unsaved edits.
+Rollback Lines puts a change's committed lines back as one undoable edit.
+
+A commit is of the ticked files exactly, as IntelliJ's is: new ones are added, then `git commit --
+<files>`, which leaves anything else staged out of it. Push sets the upstream on a branch's first
+push; Update Project is `git pull`, as the person's git config has it.
+
 ### Project indentation
 
 Indentation is the language's, then the person's Code Style settings, then the project's:
 `.editorconfig` (every file from the one marked `root` down, nearest last, with its globs), and for
 files Prettier formats, the nearest Prettier config, with its `overrides`. Prettier's wins where it
 says something, and tabs or spaces it doesn't mention come from EditorConfig, as in Prettier.
-JavaScript configs (`prettier.config.js` and the like) would need the project's code to run, so
-they aren't read. Changing any of these files re-indents the open files.
+JavaScript configs (`prettier.config.js` and the like) are run with Node, as Prettier does, and
+remembered until they change; a project's are run in the background as it opens, so opening a file
+doesn't wait. Changing any of these files re-indents the open files.
 
 ## Testing
 

@@ -307,9 +307,39 @@ same project; `type-timed` now names any key slower than a frame.
 
 Still open in M9:
 
-- **Prettier configs in JavaScript** (`prettier.config.js` and the like) aren't read, as that means
-  running the project's code.
-- **Git beyond branches**: committing, history, diffs and conflicts wait for Git integration.
+- Prettier configs in JavaScript are read now, by running them with Node as Prettier does, ahead
+  of time when a project opens; TypeScript ones (`prettier.config.ts`) still aren't.
+
+## M10: Git
+
+Goal: IntelliJ's everyday Git: see what changed as you edit, commit it, push and pull, look back,
+and settle conflicts, without a terminal.
+
+Status: built and passing on macOS. Each git operation is tested against a real repository (a push
+to a local bare remote, a real merge conflict), the Git windows through the UI, and `script/e2e
+git` drives the real app: a change marked in the gutter as it's typed, its diff, a commit from the
+Commit window, the marks clearing, and the commit in the log.
+
+Shortcuts, IntelliJ's: Cmd+K commit, Cmd+Shift+K push, Cmd+T update project, Cmd+0 the Commit
+window, Cmd+9 the Git log, Cmd+Alt+Z rollback lines, Cmd+Enter in the message to commit, and F7 and
+Shift+F7 through a diff's changes. The branch menu starts with Update Project, Commit and Push, as
+IntelliJ's does, and there's a Git menu.
+
+| # | Item | Finished when |
+| --- | --- | --- |
+| 10.1 | Change marks in the gutter against the last commit, kept current while typing | Added, changed and deleted lines show their marks as edits are made, and clear on commit |
+| 10.2 | Commit panel (Cmd+K): changed files to tick, a message, Commit, Commit and Push, Amend | A commit of the ticked files leaves the others changed |
+| 10.3 | A file's changes as a diff, from the commit panel and the gutter, with Rollback | Rolling back a change restores the committed lines |
+| 10.4 | Push (Cmd+Shift+K) and Update Project (Cmd+T), with git's messages | Both run in the background and say how it went |
+| 10.5 | History: the log, and a commit's changed files and their diffs | Selecting a commit shows its files; a file shows its diff |
+| 10.6 | Conflicts: listed in the commit panel, accept yours or theirs, or open the file to resolve | Accepting a side resolves the file and stages it |
+
+Still open from M10:
+
+- **Diffs aren't highlighted** as code, and a change can't be rolled back from inside the diff,
+  only from the editor (Cmd+Alt+Z) or the whole file from the Commit window.
+- **Conflicts are settled a file at a time**, by side; there's no three-way merge view.
+- **Stashes, tags, cherry-picks and the like** aren't there; the log is one branch's history.
 
 ## Later
 

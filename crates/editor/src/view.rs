@@ -81,6 +81,8 @@ pub struct EditorState {
     pub execution_line: Option<usize>,
     /// What's shown beside lines, as `line: text`, one-based, for the lines on screen.
     pub inline_values: Vec<String>,
+    /// How lines differ from the last commit, as `line: added`, one-based.
+    pub line_changes: Vec<String>,
     /// Tests' last results in the gutter, as `line: passed` or `line: failed`, one-based.
     pub run_results: Vec<String>,
 }
@@ -133,6 +135,8 @@ pub struct EditorView {
     blink: Option<Task<()>>,
     pub(crate) semantics: crate::semantics::SemanticsState,
     pub(crate) decorations: Option<Rc<dyn crate::decorations::DecorationProvider>>,
+    /// A text box, like a commit message: no line numbers, and no current line shown.
+    pub(crate) plain: bool,
     pub(crate) annotations: crate::annotations::Annotations,
     pub(crate) caret_gesture: crate::caret_gesture::CaretGesture,
     _subscriptions: Vec<Subscription>,
@@ -169,6 +173,7 @@ impl EditorView {
             blink: None,
             semantics: Default::default(),
             decorations: None,
+            plain: false,
             annotations: Default::default(),
             caret_gesture: Default::default(),
             _subscriptions: subscriptions,
@@ -182,6 +187,12 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         self.decorations = Some(provider);
+        cx.notify();
+    }
+
+    /// Makes this a plain text box, without line numbers or the current line marked.
+    pub fn set_plain(&mut self, plain: bool, cx: &mut Context<Self>) {
+        self.plain = plain;
         cx.notify();
     }
 
@@ -311,6 +322,18 @@ impl EditorView {
                     .collect(),
                 _ => Vec::new(),
             },
+            line_changes: model
+                .line_changes()
+                .iter()
+                .map(|c| {
+                    let kind = match c.kind {
+                        gleipnir_index::LineChangeKind::Added => "added",
+                        gleipnir_index::LineChangeKind::Modified => "modified",
+                        gleipnir_index::LineChangeKind::Deleted => "deleted",
+                    };
+                    format!("{}: {kind}", c.lines.start + 1)
+                })
+                .collect(),
             run_results: self.decorations.as_ref().map_or_else(Vec::new, |d| {
                 d.run_results(cx)
                     .into_iter()

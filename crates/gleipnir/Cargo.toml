@@ -19,6 +19,7 @@ gleipnir-project-panel.workspace = true
 gleipnir-packages.workspace = true
 gleipnir-search.workspace = true
 gleipnir-settings-ui.workspace = true
+gleipnir-git-ui.workspace = true
 gleipnir-syntax.workspace = true
 gleipnir-ui.workspace = true
 gleipnir-workspace.workspace = true

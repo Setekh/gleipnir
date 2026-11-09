@@ -100,7 +100,7 @@ make_test_fixtures() {
 # only run when asked for.
 # They install the tools they need as the app does, into E2E_TOOLS, a managed tools folder kept
 # between runs (target/e2e-tools unless given). The others never install anything.
-scripts=${*:-editing workspace search toolchains themes perf}
+scripts=${*:-editing workspace search toolchains themes git perf}
 failed=0
 for name in $scripts; do
     # The folder is named after the script, which is what shows as the project's name.

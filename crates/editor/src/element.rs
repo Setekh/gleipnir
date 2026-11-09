@@ -363,8 +363,12 @@ impl Element for EditorElement {
             let digits = (line_count.max(1).ilog10() + 1).max(3) as f32;
             let provider = view.decorations.clone();
             let marks_width = if provider.is_some() { MARKS_WIDTH } else { 0. };
-            let gutter_width =
-                px(GUTTER_LEFT_PADDING + marks_width + GUTTER_RIGHT_PADDING) + char_width * digits;
+            let plain = view.plain;
+            let gutter_width = if plain {
+                px(8.)
+            } else {
+                px(GUTTER_LEFT_PADDING + marks_width + GUTTER_RIGHT_PADDING) + char_width * digits
+            };
             let text_origin_x = bounds.left() + gutter_width;
             let text_width = (bounds.size.width - gutter_width).max(px(0.));
             let viewport_lines = (bounds.size.height / line_height).max(1.);
@@ -504,8 +508,11 @@ impl Element for EditorElement {
                 });
 
                 let is_active = head_lines.contains(&line_index);
-                if active_heads.contains(&line_index) {
+                if active_heads.contains(&line_index) && !plain {
                     active_lines.push(top);
+                }
+                if plain {
+                    continue;
                 }
                 let number = SharedString::from((line_index + 1).to_string());
                 let color = if is_active {
@@ -787,6 +794,15 @@ impl Element for EditorElement {
         // Clipped, as a partly scrolled-off line would otherwise draw over whatever's above.
         window.with_content_mask(Some(ContentMask { bounds }), |window| {
             paint_gutter_marks(&self.view, &geometry, bounds, &theme, window, cx);
+            paint_change_marks(
+                &self.view,
+                &geometry,
+                bounds,
+                gutter_width,
+                &theme,
+                window,
+                cx,
+            );
             if let Some(decorations) = &prepainted.decorations {
                 paint_debug_marks(
                     decorations,
@@ -1035,6 +1051,61 @@ fn paint_diagnostics(
     }
     for (origin, width, style) in underlines {
         window.paint_underline(origin, width, &style);
+    }
+}
+
+/// How the lines differ from the last commit, at the gutter's inner edge beside the code, as
+/// IntelliJ marks them: a bar for added and changed lines, a wedge between lines where some
+/// were deleted.
+fn paint_change_marks(
+    view: &Entity<EditorView>,
+    geometry: &FrameGeometry,
+    bounds: Bounds<Pixels>,
+    gutter_width: Pixels,
+    theme: &Theme,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    use gleipnir_index::LineChangeKind;
+    let changes = view.read(cx).buffer.read(cx).line_changes().clone();
+    let first = geometry.first_line;
+    let last = first + geometry.lines.len();
+    let x = bounds.left() + gutter_width - px(3.);
+    for change in changes.iter() {
+        match change.kind {
+            LineChangeKind::Deleted => {
+                let line = change.lines.start;
+                if line < first || line > last {
+                    continue;
+                }
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(x - px(3.), geometry.line_top(line) - px(2.)),
+                        size(px(6.), px(4.)),
+                    ),
+                    theme.git_deleted,
+                ));
+            }
+            kind => {
+                let start = change.lines.start.max(first);
+                let end = change.lines.end.min(last);
+                if start >= end {
+                    continue;
+                }
+                let color = if kind == LineChangeKind::Added {
+                    theme.git_added
+                } else {
+                    theme.git_modified
+                };
+                window.paint_quad(fill(
+                    Bounds::new(
+                        point(x, geometry.line_top(start)),
+                        size(px(3.), geometry.line_height * (end - start) as f32),
+                    ),
+                    color,
+                ));
+            }
+        }
     }
 }
 

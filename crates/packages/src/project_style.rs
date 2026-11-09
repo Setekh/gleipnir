@@ -182,8 +182,113 @@ const PRETTIER_FILES: &[&str] = &[
     ".prettierrc.yaml",
     ".prettierrc.yml",
     ".prettierrc.json5",
+    ".prettierrc.js",
+    "prettier.config.js",
+    ".prettierrc.mjs",
+    "prettier.config.mjs",
+    ".prettierrc.cjs",
+    "prettier.config.cjs",
     ".prettierrc.toml",
 ];
+
+/// Prettier's configs that are JavaScript, which only running them can read.
+fn is_js_config(name: &str) -> bool {
+    name.ends_with(".js") || name.ends_with(".mjs") || name.ends_with(".cjs")
+}
+
+/// What JavaScript configs evaluated to, by file and its time, so each runs once per change.
+type JsConfigCache =
+    std::collections::HashMap<PathBuf, (Option<std::time::SystemTime>, Option<Value>)>;
+
+fn js_config_cache() -> &'static std::sync::Mutex<JsConfigCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<JsConfigCache>> = std::sync::OnceLock::new();
+    CACHE.get_or_init(Default::default)
+}
+
+/// How long a JavaScript config may take to run before it's given up on.
+const JS_CONFIG_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Runs a JavaScript Prettier config with Node, as Prettier does, for what it exports: an
+/// object, or a function or promise giving one. Remembered until the file changes.
+pub fn evaluate_js_config(path: &Path) -> Option<Value> {
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    if let Some((seen, value)) = js_config_cache().lock().ok()?.get(path)
+        && *seen == modified
+    {
+        return value.clone();
+    }
+    let value = run_js_config(path);
+    js_config_cache()
+        .lock()
+        .ok()?
+        .insert(path.to_path_buf(), (modified, value.clone()));
+    value
+}
+
+fn run_js_config(path: &Path) -> Option<Value> {
+    const SCRIPT: &str = "const { pathToFileURL } = await import('node:url');\n\
+        const module = await import(pathToFileURL(process.argv[1]).href);\n\
+        let config = module.default ?? module;\n\
+        if (typeof config === 'function') config = config();\n\
+        config = await config;\n\
+        process.stdout.write(JSON.stringify(config ?? {}));\n";
+    let env = crate::env::user_env();
+    let node = env.which("node")?;
+    let mut child = std::process::Command::new(node)
+        .args(["--input-type=module", "-e", SCRIPT])
+        .arg(path)
+        .current_dir(path.parent()?)
+        .env_clear()
+        .envs(env.vars())
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let started = std::time::Instant::now();
+    loop {
+        match child.try_wait().ok()? {
+            Some(status) if status.success() => break,
+            Some(_) => return None,
+            None if started.elapsed() > JS_CONFIG_TIMEOUT => {
+                child.kill().ok();
+                return None;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(10)),
+        }
+    }
+    let mut out = String::new();
+    std::io::Read::read_to_string(child.stdout.as_mut()?, &mut out).ok()?;
+    serde_json::from_str::<Value>(&out)
+        .ok()
+        .filter(Value::is_object)
+}
+
+/// Runs a project's JavaScript Prettier configs ahead of time, so opening a file needn't wait
+/// for Node. Meant for a background thread when a project opens; returns whether it ran any.
+pub fn prewarm_prettier(root: &Path) -> bool {
+    let mut ran = false;
+    let mut folders = vec![(root.to_path_buf(), 0)];
+    while let Some((dir, depth)) = folders.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.filter_map(Result::ok) {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let path = entry.path();
+            if path.is_dir() {
+                if depth < 3 && !name.starts_with('.') && name != "node_modules" && name != "target"
+                {
+                    folders.push((path, depth + 1));
+                }
+            } else if PRETTIER_FILES.contains(&name.as_str()) && is_js_config(&name) {
+                evaluate_js_config(&path);
+                ran = true;
+            }
+        }
+    }
+    ran
+}
 
 /// Prettier's config for a file: the nearest folder up with one, as Prettier finds it, with its
 /// `overrides` that match the file applied over the rest.
@@ -211,6 +316,11 @@ pub fn prettier_indent(file: &Path) -> ProjectIndent {
                     None => continue,
                 },
                 ".prettierrc.yaml" | ".prettierrc.yml" => simple_yaml(&text),
+                name if is_js_config(name) => match evaluate_js_config(&path) {
+                    Some(config) => config,
+                    // A config that won't run still stops the search, as it does Prettier's.
+                    None => return ProjectIndent::default(),
+                },
                 // JSON, or JSON5, or YAML: `.prettierrc` may be either.
                 _ => lenient_json(&text).unwrap_or_else(|| simple_yaml(&text)),
             };
@@ -417,7 +527,10 @@ pub fn is_style_config(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
         .is_some_and(|name| {
-            name == ".editorconfig" || name == "package.json" || name.starts_with(".prettierrc")
+            name == ".editorconfig"
+                || name == "package.json"
+                || name.starts_with(".prettierrc")
+                || name.starts_with("prettier.config.")
         })
 }
 
@@ -531,6 +644,32 @@ mod tests {
         ]);
         assert_eq!(indent(&nearest, "app/a.ts"), (Some(4), None));
         assert_eq!(indent(&nearest, "b.ts"), (Some(2), None));
+    }
+
+    #[test]
+    fn javascript_prettier_configs_are_run_with_node() {
+        if crate::env::user_env().which("node").is_none() {
+            eprintln!("skipped: node isn't installed");
+            return;
+        }
+        let esm = project(&[(
+            "prettier.config.mjs",
+            "const width = 1 + 2\nexport default { tabWidth: width, useTabs: true }\n",
+        )]);
+        assert_eq!(indent(&esm, "src/a.ts"), (Some(3), Some(true)));
+        let cjs = project(&[(
+            ".prettierrc.cjs",
+            "module.exports = async () => ({ tabWidth: 6, overrides: [{ files: '*.json', options: { tabWidth: 1 } }] })\n",
+        )]);
+        assert_eq!(indent(&cjs, "a.ts"), (Some(6), None));
+        assert_eq!(indent(&cjs, "a.json"), (Some(1), None));
+        assert!(prewarm_prettier(cjs.path()));
+        // A config that throws is given up on, and a config further up isn't read in its place.
+        let broken = project(&[
+            (".prettierrc", "{\"tabWidth\": 9}"),
+            ("app/.prettierrc.js", "throw new Error('no')\n"),
+        ]);
+        assert_eq!(indent(&broken, "app/a.ts"), (None, None));
     }
 
     #[test]

@@ -96,6 +96,7 @@ fn bind_all_keys(cx: &mut App) -> Vec<String> {
     gleipnir_settings_ui::bind_keys(cx);
     gleipnir_code_nav::bind_keys(cx);
     gleipnir_debugger_ui::bind_keys(cx);
+    gleipnir_git_ui::bind_keys(cx);
     // Loaded last, so that it overrides the defaults.
     load_user_keymap(&gleipnir_workspace::user_keymap_path(), cx)
 }
@@ -165,6 +166,7 @@ fn main() {
                 gleipnir_settings_ui::add_to_workspace(workspace, window, cx);
                 gleipnir_code_nav::add_to_workspace(workspace, window, cx);
                 gleipnir_debugger_ui::add_to_workspace(workspace, window, cx);
+                gleipnir_git_ui::add_to_workspace(workspace, window, cx);
             })));
 
             let window = open_project_window(target.root.clone(), false, cx);
@@ -260,6 +262,23 @@ fn set_menus(cx: &mut App) {
                     gleipnir_code_nav::RestartLanguageServer,
                 ),
             ],
+            disabled: false,
+        },
+        Menu {
+            name: "Git".into(),
+            items: {
+                use gleipnir_git_ui as g;
+                vec![
+                    MenuItem::action("Commit…", g::Commit),
+                    MenuItem::action("Push…", g::Push),
+                    MenuItem::action("Update Project…", g::UpdateProject),
+                    MenuItem::separator(),
+                    MenuItem::action("Show Diff", g::ShowDiff),
+                    MenuItem::action("Rollback Lines", g::RollbackLines),
+                    MenuItem::separator(),
+                    MenuItem::action("Show Log", g::ShowLog),
+                ]
+            },
             disabled: false,
         },
         Menu {

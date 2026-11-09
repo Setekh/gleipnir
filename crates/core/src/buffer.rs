@@ -103,7 +103,11 @@ pub struct BufferModel {
     /// disk then isn't a change from somewhere else.
     written: std::collections::VecDeque<u64>,
     diagnostics: Vec<Diagnostic>,
+    /// How the text differs from the last commit.
+    git: changes::GitMarks,
 }
+
+mod changes;
 
 impl EventEmitter<BufferEvent> for BufferModel {}
 
@@ -134,8 +138,10 @@ impl BufferModel {
             checking_disk: false,
             written: Default::default(),
             diagnostics: Vec::new(),
+            git: Default::default(),
         };
         this.schedule_parse(cx);
+        this.refresh_committed_text(cx);
         this
     }
 
@@ -335,6 +341,7 @@ impl BufferModel {
             }
         }
         self.schedule_parse(cx);
+        self.edited_for_git(cx);
         cx.emit(BufferEvent::Edited {
             edits: Arc::new(applied),
             origin,
@@ -399,6 +406,7 @@ impl BufferModel {
                 this.mtime = Some(mtime);
                 this.set_disk_status(DiskStatus::InSync, cx);
                 cx.emit(BufferEvent::Saved);
+                this.refresh_committed_text(cx);
                 cx.notify();
             })
         })
@@ -499,6 +507,7 @@ impl BufferModel {
             syntax.reset(self.buffer.version());
         }
         self.schedule_parse(cx);
+        self.edited_for_git(cx);
         cx.emit(BufferEvent::Edited {
             edits: Arc::new(edits),
             origin: None,

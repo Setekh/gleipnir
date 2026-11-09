@@ -345,9 +345,31 @@ impl Workspace {
             remember_last_project(root).ok();
         }
         this.watch_branch(cx);
+        // Prettier configs in JavaScript run with Node, which is slow enough to do ahead of
+        // opening files, rather than as each opens.
+        if let Some(root) = this.root.clone() {
+            let ran = cx
+                .background_executor()
+                .spawn(async move { gleipnir_packages::project_style::prewarm_prettier(&root) });
+            cx.spawn(async move |this, cx| {
+                if ran.await {
+                    this.update(cx, |this, cx| {
+                        this.store
+                            .update(cx, |store, cx| store.apply_code_style(cx))
+                    })
+                    .ok();
+                }
+            })
+            .detach();
+        }
         // Language servers hear of files changed outside the editor, like on a branch switch.
         if let Some(project) = this.project.clone() {
             cx.subscribe(&project, |this, _, event, cx| {
+                // A commit, checkout or merge changes what open files are compared with.
+                if let ProjectEvent::GitStatusChanged = event {
+                    this.store
+                        .update(cx, |store, cx| store.refresh_committed_texts(cx));
+                }
                 if let ProjectEvent::FilesChanged(paths) = event {
                     this.language_servers.read(cx).files_changed(paths);
                     // A change to `.editorconfig` or Prettier's config re-indents open files.
@@ -425,6 +447,11 @@ impl Workspace {
 
     pub fn root(&self) -> Option<&Path> {
         self.root.as_deref()
+    }
+
+    /// A handle to this workspace that doesn't keep it alive.
+    pub fn weak_handle(&self) -> WeakEntity<Self> {
+        self.weak_self.clone()
     }
 
     pub fn store(&self) -> &Entity<BufferStore> {
