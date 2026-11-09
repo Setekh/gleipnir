@@ -792,7 +792,7 @@ fn git(dir: &Path, args: &[&str]) {
 }
 
 #[gpui::test]
-fn the_branch_menu_lists_branches_and_switches_with_git(cx: &mut TestAppContext) {
+fn the_branch_menu_checks_out_creates_merges_and_deletes_with_git(cx: &mut TestAppContext) {
     let dir = tempfile::tempdir().unwrap();
     let root = std::fs::canonicalize(dir.path()).unwrap();
     git(&root, &["init", "-q"]);
@@ -805,36 +805,87 @@ fn the_branch_menu_lists_branches_and_switches_with_git(cx: &mut TestAppContext)
         cx.update(|_, cx| workspace.read(cx).branch().map(String::from))
     };
     assert_eq!(branch(cx).as_deref(), Some("main"));
-
-    let open_menu = |cx: &mut VisualTestContext| {
+    let menu = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            workspace
+                .read(cx)
+                .open_menu()
+                .map(|m| m.read(cx).labels())
+                .unwrap_or_default()
+        })
+    };
+    // Clicks a menu item by its label, waiting for the menu to show.
+    let choose = |label: &str, cx: &mut VisualTestContext| {
+        run_until(cx, |cx| menu(cx).iter().any(|l| l == label));
+        let index = menu(cx).iter().position(|l| l == label).unwrap();
+        let item = cx
+            .debug_bounds(format!("menu-item-{index}").leak())
+            .unwrap();
+        cx.simulate_click(item.center(), Modifiers::none());
+    };
+    let open_branches = |cx: &mut VisualTestContext| {
         let button = cx.debug_bounds("title-branch").expect("the branch");
         cx.simulate_click(button.center(), Modifiers::none());
-        run_until(cx, |cx| {
-            cx.update(|_, cx| workspace.read(cx).open_menu().is_some())
-        });
-        cx.update(|_, cx| workspace.read(cx).open_menu().unwrap().read(cx).labels())
     };
-    let labels = open_menu(cx);
-    assert!(labels.contains(&"main".to_string()) && labels.contains(&"feature".to_string()));
-    let feature = labels.iter().position(|l| l == "feature").unwrap();
-    let item = cx
-        .debug_bounds(format!("menu-item-{feature}").leak())
-        .unwrap();
-    cx.simulate_click(item.center(), Modifiers::none());
+    let message = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| workspace.read(cx).snapshot(window, cx).message)
+            .unwrap_or_default()
+    };
+
+    // Checking out another branch.
+    open_branches(cx);
+    run_until(cx, |cx| menu(cx).contains(&"feature".to_string()));
+    assert_eq!(menu(cx)[0], "New Branch…");
+    choose("feature", cx);
+    choose("Checkout", cx);
     run_until(cx, |cx| branch(cx).as_deref() == Some("feature"));
-    assert_eq!(crate::current_branch(&root).as_deref(), Some("feature"));
+
+    // A new branch, named in a prompt, with a commit of its own.
+    open_branches(cx);
+    choose("New Branch…", cx);
+    run_until(cx, |cx| {
+        cx.update(|_, cx| {
+            workspace
+                .read(cx)
+                .active_modal::<crate::NamePrompt>()
+                .is_some()
+        })
+    });
+    cx.simulate_input("topic");
+    cx.simulate_keystrokes("enter");
+    run_until(cx, |cx| branch(cx).as_deref() == Some("topic"));
+    std::fs::write(root.join("b.txt"), "two\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "two"]);
+
+    // Merged into main, then deleted, which git allows as it's merged.
+    git(&root, &["switch", "-q", "main"]);
+    run_until(cx, |cx| {
+        cx.update(|_, cx| workspace.update(cx, |w, cx| w.watch_branch_now(cx)));
+        branch(cx).as_deref() == Some("main")
+    });
+    open_branches(cx);
+    choose("topic", cx);
+    choose("Merge 'topic' into 'main'", cx);
+    run_until(cx, |cx| message(cx).contains("Merged topic into main"));
+    assert!(root.join("b.txt").exists());
+    open_branches(cx);
+    choose("topic", cx);
+    choose("Delete", cx);
+    run_until(cx, |cx| message(cx).contains("Deleted topic"));
+    let (local, _) = crate::workspace::list_branches(&root).unwrap();
+    assert!(!local.contains(&"topic".to_string()));
 
     // Git won't switch over a change it would lose, and says why.
-    std::fs::write(root.join("a.txt"), "two\n").unwrap();
-    git(&root, &["commit", "-q", "-am", "two"]);
+    git(&root, &["switch", "-q", "feature"]);
+    std::fs::write(root.join("a.txt"), "feature\n").unwrap();
+    git(&root, &["commit", "-q", "-am", "feature"]);
+    git(&root, &["switch", "-q", "main"]);
     std::fs::write(root.join("a.txt"), "uncommitted\n").unwrap();
-    let labels = open_menu(cx);
-    let main = labels.iter().position(|l| l == "main").unwrap();
-    let item = cx.debug_bounds(format!("menu-item-{main}").leak()).unwrap();
-    cx.simulate_click(item.center(), Modifiers::none());
-    run_until(cx, |cx| {
-        cx.update(|window, cx| workspace.read(cx).snapshot(window, cx).message)
-            .is_some_and(|m| m.contains("would be overwritten"))
-    });
-    assert_eq!(branch(cx).as_deref(), Some("feature"));
+    cx.update(|_, cx| workspace.update(cx, |w, cx| w.watch_branch_now(cx)));
+    open_branches(cx);
+    choose("feature", cx);
+    choose("Checkout", cx);
+    run_until(cx, |cx| message(cx).contains("would be overwritten"));
+    assert_eq!(branch(cx).as_deref(), Some("main"));
 }

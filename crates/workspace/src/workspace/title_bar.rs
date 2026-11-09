@@ -66,6 +66,9 @@ pub fn current_branch(root: &Path) -> Option<String> {
     }
 }
 
+/// Something a menu item does to the workspace.
+type WorkspaceAction = dyn Fn(&mut Workspace, &mut Window, &mut Context<Workspace>);
+
 /// How many branches of each kind the branches menu lists.
 const MENU_BRANCHES: usize = 15;
 
@@ -152,6 +155,14 @@ impl Workspace {
         self.branch.as_deref()
     }
 
+    /// Reads the branch again now, rather than at the next look.
+    pub fn watch_branch_now(&mut self, cx: &mut Context<Self>) {
+        if let Some(root) = &self.root {
+            self.branch = current_branch(root);
+            cx.notify();
+        }
+    }
+
     /// Reads the branch now, and again every so often while the window's open.
     pub(super) fn watch_branch(&mut self, cx: &mut Context<Self>) {
         let Some(root) = self.root.clone() else {
@@ -236,8 +247,8 @@ impl Workspace {
         self.show_menu(menu, position, window, cx);
     }
 
-    /// The branches menu: local branches, most recently committed to first, then remote ones;
-    /// choosing one switches to it.
+    /// The branches menu, as IntelliJ's: a new branch, then local branches, most recently
+    /// committed to first, then remote ones. Choosing a branch offers what can be done with it.
     fn open_branch_menu(
         &mut self,
         position: Point<Pixels>,
@@ -264,23 +275,29 @@ impl Workspace {
                 };
                 let handle = cx.weak_entity();
                 let menu = cx.new(|cx| {
-                    let mut menu = ContextMenu::new(cx);
-                    let switch = |args: Vec<String>| {
+                    let on = |action: Box<WorkspaceAction>| {
                         let handle = handle.clone();
-                        let root = root.clone();
-                        move |_: &mut Window, cx: &mut gpui::App| {
+                        move |window: &mut Window, cx: &mut gpui::App| {
                             if let Some(workspace) = handle.upgrade() {
-                                workspace
-                                    .update(cx, |w, cx| w.switch_branch(&root, args.clone(), cx));
+                                workspace.update(cx, |w, cx| action(w, window, cx));
                             }
                         }
                     };
+                    let mut menu = ContextMenu::new(cx).item(
+                        "New Branch…",
+                        None,
+                        on(Box::new(|w, window, cx| w.new_branch(None, window, cx))),
+                    );
+                    menu = menu.separator();
                     for branch in local.iter().take(MENU_BRANCHES) {
                         let hint = (Some(branch) == current.as_ref()).then(|| "current".into());
+                        let name = branch.clone();
                         menu = menu.item(
                             branch.clone(),
                             hint,
-                            switch(vec!["switch".into(), branch.clone()]),
+                            on(Box::new(move |w, window, cx| {
+                                w.open_branch_actions(name.clone(), false, position, window, cx)
+                            })),
                         );
                     }
                     let remote: Vec<&String> = remote
@@ -296,10 +313,13 @@ impl Workspace {
                         menu = menu.separator();
                     }
                     for branch in remote {
+                        let name = branch.clone();
                         menu = menu.item(
                             branch.clone(),
                             Some("remote".into()),
-                            switch(vec!["switch".into(), "--track".into(), branch.clone()]),
+                            on(Box::new(move |w, window, cx| {
+                                w.open_branch_actions(name.clone(), true, position, window, cx)
+                            })),
                         );
                     }
                     menu
@@ -311,9 +331,127 @@ impl Workspace {
         .detach();
     }
 
-    /// Runs `git` with arguments that switch branch, off the UI thread, and says how it went.
-    /// Git refuses to switch over changes it would lose, and says so, which is shown as it is.
-    pub fn switch_branch(&mut self, root: &Path, args: Vec<String>, cx: &mut Context<Self>) {
+    /// What can be done with a branch: check it out, branch from it, merge it into the current
+    /// branch or rebase the current one onto it, and delete it.
+    fn open_branch_actions(
+        &mut self,
+        branch: String,
+        remote: bool,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let current = self.branch.clone().unwrap_or_default();
+        let is_current = !remote && branch == current;
+        let handle = cx.weak_entity();
+        let git = |args: Vec<String>, done: String| {
+            let handle = handle.clone();
+            let root = root.clone();
+            move |_: &mut Window, cx: &mut gpui::App| {
+                if let Some(workspace) = handle.upgrade() {
+                    workspace.update(cx, |w, cx| w.run_git(&root, args.clone(), done.clone(), cx));
+                }
+            }
+        };
+        let menu = cx.new(|cx| {
+            let mut menu = ContextMenu::new(cx);
+            if !is_current {
+                let args = if remote {
+                    vec!["switch".into(), "--track".into(), branch.clone()]
+                } else {
+                    vec!["switch".into(), branch.clone()]
+                };
+                menu = menu.item("Checkout", None, git(args, "Switched to {branch}".into()));
+            }
+            let from = branch.clone();
+            let handle = handle.clone();
+            menu = menu.item(
+                format!("New Branch from '{branch}'…"),
+                None,
+                move |window: &mut Window, cx: &mut gpui::App| {
+                    if let Some(workspace) = handle.upgrade() {
+                        let from = from.clone();
+                        workspace.update(cx, |w, cx| w.new_branch(Some(from), window, cx));
+                    }
+                },
+            );
+            if !is_current && !current.is_empty() {
+                menu = menu
+                    .separator()
+                    .item(
+                        format!("Merge '{branch}' into '{current}'"),
+                        None,
+                        git(
+                            vec!["merge".into(), "--no-edit".into(), branch.clone()],
+                            format!("Merged {branch} into {current}"),
+                        ),
+                    )
+                    .item(
+                        format!("Rebase '{current}' onto '{branch}'"),
+                        None,
+                        git(
+                            vec!["rebase".into(), branch.clone()],
+                            format!("Rebased {current} onto {branch}"),
+                        ),
+                    );
+            }
+            if !remote && !is_current {
+                // `-d` refuses a branch that isn't merged, so nothing is lost by a slip.
+                menu = menu.separator().item(
+                    "Delete",
+                    None,
+                    git(
+                        vec!["branch".into(), "-d".into(), branch.clone()],
+                        format!("Deleted {branch}"),
+                    ),
+                );
+            }
+            menu
+        });
+        self.show_menu(menu, position, window, cx);
+    }
+
+    /// Asks for a name and makes a branch with it, from the current one or `from`, and switches
+    /// to it.
+    pub fn new_branch(
+        &mut self,
+        from: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let title = match &from {
+            Some(from) => format!("New branch from {from}"),
+            None => "New branch".to_string(),
+        };
+        self.ask_for_name(
+            title,
+            "Branch name",
+            move |name, workspace, cx| {
+                let mut args = vec!["switch".to_string(), "-c".to_string(), name.clone()];
+                args.extend(from);
+                workspace.run_git(&root, args, format!("Created {name}"), cx);
+            },
+            window,
+            cx,
+        );
+    }
+
+    /// Runs `git` in a repository off the UI thread, saying how it went: `done` when it worked,
+    /// or git's own message when it didn't, as when it refuses to lose uncommitted work or stops
+    /// on a conflict. The branch shown is read again either way.
+    pub fn run_git(
+        &mut self,
+        root: &Path,
+        args: Vec<String>,
+        done: String,
+        cx: &mut Context<Self>,
+    ) {
         let root = root.to_path_buf();
         let run = cx.background_executor().spawn({
             let root = root.clone();
@@ -327,14 +465,17 @@ impl Workspace {
         cx.spawn(async move |this, cx| {
             let output = run.await;
             this.update(cx, |this, cx| {
+                this.branch = current_branch(&root);
                 match output {
                     Ok(output) if output.status.success() => {
-                        this.branch = current_branch(&root);
                         let branch = this.branch.clone().unwrap_or_default();
-                        this.show_message(format!("Switched to {branch}"), cx);
+                        this.show_message(done.replace("{branch}", &branch), cx);
                     }
                     Ok(output) => {
-                        let error = String::from_utf8_lossy(&output.stderr);
+                        let mut error = String::from_utf8_lossy(&output.stderr).into_owned();
+                        if error.trim().is_empty() {
+                            error = String::from_utf8_lossy(&output.stdout).into_owned();
+                        }
                         let error = error.trim().lines().collect::<Vec<_>>().join(" ");
                         this.show_error(error, cx);
                     }

@@ -10,6 +10,7 @@ fn setup(
     cx.executor().allow_parking();
     cx.update(|cx| {
         gleipnir_ui::init_theme(cx);
+        cx.set_global(gleipnir_ui::Themes::load(&gleipnir_ui::themes_dir()));
         gleipnir_ui::bind_text_input_keys(cx);
         gleipnir_ui::bind_context_menu_keys(cx);
         gleipnir_workspace::bind_keys(cx);
@@ -110,7 +111,7 @@ fn the_theme_and_font_sizes_are_chosen_and_kept(cx: &mut TestAppContext) {
     let view = open_settings(&workspace, cx);
     cx.update(|_, cx| {
         view.update(cx, |v, cx| {
-            v.set_value("Theme", "Light", cx)?;
+            v.set_value("Theme", "Gleipnir Light", cx)?;
             v.set_value("Font size", "15", cx)?;
             // Out of range, so held to the most there is.
             v.set_value("Interface font size", "99", cx)
@@ -118,10 +119,11 @@ fn the_theme_and_font_sizes_are_chosen_and_kept(cx: &mut TestAppContext) {
     })
     .unwrap();
     let rows = cx.update(|_, cx| view.read(cx).debug_rows(cx));
-    assert_eq!(rows, ["Theme: Light", "Interface font size: 20"]);
+    assert_eq!(rows, ["Theme: Gleipnir Light", "Interface font size: 20"]);
     let settings = cx.update(|_, cx| gleipnir_core::settings(cx).clone());
     assert_eq!(settings.editor.font_size, 15.);
-    let theme = gleipnir_ui::Theme::from_settings(&settings);
+    let themes = gleipnir_ui::Themes::load(&gleipnir_ui::themes_dir());
+    let theme = gleipnir_ui::Theme::from_settings(&settings, &themes);
     assert!(theme.is_light());
     assert_eq!(theme.editor_font_size, 15.);
     let (reread, problem) = gleipnir_packages::settings::Settings::load();
@@ -129,7 +131,7 @@ fn the_theme_and_font_sizes_are_chosen_and_kept(cx: &mut TestAppContext) {
     assert_eq!(reread, settings);
     cx.update(|_, cx| {
         view.update(cx, |v, cx| {
-            v.set_value("Theme", "Dark", cx)?;
+            v.set_value("Theme", "Gleipnir Dark", cx)?;
             v.set_value("Font size", "13", cx)?;
             v.set_value("Interface font size", "13", cx)
         })

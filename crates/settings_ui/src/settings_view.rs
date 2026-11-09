@@ -3,8 +3,10 @@
 
 use crate::LanguageSettings;
 use gleipnir_core::{Toolchains, settings, update_settings};
-use gleipnir_packages::settings::{CodeStyle, Settings, ThemeChoice};
-use gleipnir_ui::{ContextMenu, MenuDismissed, TextInput, TextInputEvent, Theme};
+use gleipnir_packages::settings::{CodeStyle, Settings};
+use gleipnir_ui::{
+    ContextMenu, MenuDismissed, TextInput, TextInputEvent, Theme, Themes, themes_dir,
+};
 use gleipnir_workspace::{
     ModalView, add_user_binding, humanize_action_name, remove_user_binding, shortcuts_by_action,
     user_bindings, user_keymap_path,
@@ -85,20 +87,28 @@ fn rows() -> Vec<Row> {
         Row {
             page: Page::Appearance,
             label: "Theme",
-            description: "The colors of the whole window.",
+            description: "The colors of the whole window. Themes are files in the themes folder, which Gleipnir reads again as they change.",
             control: Control::Choice {
-                get: |s, _| match s.appearance.theme {
-                    ThemeChoice::Dark => "Dark".into(),
-                    ThemeChoice::Light => "Light".into(),
-                },
-                options: |_| vec!["Dark".into(), "Light".into()],
-                set: |s, v| {
-                    s.appearance.theme = if v == "Light" {
-                        ThemeChoice::Light
-                    } else {
-                        ThemeChoice::Dark
+                get: |s, cx| {
+                    // The older names of the built-in themes.
+                    match s.appearance.theme.as_str() {
+                        "Dark" => "Gleipnir Dark".into(),
+                        "Light" => "Gleipnir Light".into(),
+                        name if cx
+                            .try_global::<Themes>()
+                            .map_or(name.starts_with("Gleipnir "), |t| t.find(name).is_some()) =>
+                        {
+                            name.into()
+                        }
+                        name => format!("{name} (missing)"),
                     }
                 },
+                options: |cx| {
+                    cx.try_global::<Themes>()
+                        .map(Themes::names)
+                        .unwrap_or_else(|| vec!["Gleipnir Dark".into(), "Gleipnir Light".into()])
+                },
+                set: |s, v| s.appearance.theme = v.to_string(),
             },
         },
         Row {
@@ -796,6 +806,53 @@ impl SettingsView {
             .collect()
     }
 
+    /// Where themes come from, and anything wrong with one there.
+    fn render_themes_note(&self, theme: &Theme, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let dir = themes_dir();
+        let mut rows = vec![
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(16.))
+                .px(px(16.))
+                .py(px(10.))
+                .border_b_1()
+                .border_color(theme.border)
+                .child(
+                    div()
+                        .text_size(px(11.5))
+                        .text_color(theme.text_muted)
+                        .child(format!(
+                            "Themes are TOML files in {}. Its README says how to make one; a theme saved there, or changed, shows at once.",
+                            dir.display()
+                        )),
+                )
+                .child(
+                    small_text_button("open-themes", "Open Folder", theme).on_click(move |_, _, cx| {
+                        cx.reveal_path(&dir.join("README.md"));
+                    }),
+                )
+                .into_any_element(),
+        ];
+        if let Some(themes) = cx.try_global::<Themes>() {
+            rows.extend(themes.problems.iter().map(|(path, problem)| {
+                div()
+                    .px(px(16.))
+                    .py(px(6.))
+                    .text_size(px(12.))
+                    .text_color(theme.warning)
+                    .child(format!(
+                        "{}: {problem}",
+                        path.file_name().unwrap_or_default().to_string_lossy()
+                    ))
+                    .into_any_element()
+            }));
+        }
+        rows
+    }
+
     fn render_packages(&self, query: &str, theme: &Theme) -> Vec<AnyElement> {
         let registry = gleipnir_packages::registry();
         let mut rows: Vec<AnyElement> = registry
@@ -919,6 +976,26 @@ fn switch(id: impl Into<gpui::ElementId>, on: bool, theme: &Theme) -> gpui::Stat
         .child(div().size(px(16.)).rounded(px(8.)).bg(gpui::white()))
 }
 
+fn small_text_button(
+    id: &'static str,
+    label: &'static str,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .debug_selector(move || id.into())
+        .flex_none()
+        .px(px(10.))
+        .py(px(4.))
+        .rounded(px(5.))
+        .border_1()
+        .border_color(theme.border)
+        .bg(theme.surface)
+        .cursor_pointer()
+        .hover(|s| s.bg(theme.hover))
+        .child(label)
+}
+
 fn small_button(
     id: impl Into<gpui::ElementId>,
     label: &'static str,
@@ -970,6 +1047,7 @@ impl Render for SettingsView {
             .collect();
         let mut body: Vec<AnyElement> = self.render_rows(&query, &theme, cx);
         match self.page {
+            Page::Appearance => body.extend(self.render_themes_note(&theme, cx)),
             Page::CodeStyle => body.extend(self.render_code_style(&query, &theme, cx)),
             Page::Keymap => {
                 body.push(

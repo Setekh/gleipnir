@@ -395,6 +395,27 @@ control (a switch, a stepper or a choice), which is what its search runs over. S
 its Keymap page are appended to `keymap.conf` and bound at once; removing one rebinds every key from
 the defaults, as gpui can't take a binding back alone.
 
+`settings.json` and the themes folder are looked at once a second (a few file times), and read again
+when they change, so they can be changed by hand or by an AI agent and the window follows.
+
+### Themes
+
+A theme is a TOML file: a `name`, the built-in theme it starts from (`appearance`, dark or light),
+and `[colors]` and `[syntax]` tables of `#rrggbb` or `#rrggbbaa` colors. The built-in themes are
+themselves such files (`crates/ui/themes`), setting every key, so the format is the one source of
+truth; the keys a file may set come from one list in `theme.rs`, which also writes the README that
+Gleipnir puts in the themes folder alongside full examples, so instructions can't drift from the
+code. A file with a mistake is left out, with the key and value that's wrong, shown in Settings.
+
+### Project indentation
+
+Indentation is the language's, then the person's Code Style settings, then the project's:
+`.editorconfig` (every file from the one marked `root` down, nearest last, with its globs), and for
+files Prettier formats, the nearest Prettier config, with its `overrides`. Prettier's wins where it
+says something, and tabs or spaces it doesn't mention come from EditorConfig, as in Prettier.
+JavaScript configs (`prettier.config.js` and the like) would need the project's code to run, so
+they aren't read. Changing any of these files re-indents the open files.
+
 ## Testing
 
 | Layer | Approach |

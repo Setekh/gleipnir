@@ -8,7 +8,7 @@ use gleipnir_workspace::{
     last_project, load_user_keymap, open_project_window, project_root_for,
 };
 use gpui::{App, AppContext as _, Menu, MenuItem};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -46,6 +46,44 @@ fn absolute(path: &std::path::Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Makes the theme the settings choose the one in use.
+fn apply_theme(cx: &mut App) {
+    let theme = gleipnir_ui::Theme::from_settings(
+        gleipnir_core::settings(cx),
+        cx.global::<gleipnir_ui::Themes>(),
+    );
+    cx.set_global(theme);
+}
+
+/// How often the themes folder and the settings file are looked at for changes made outside.
+const CONFIG_POLL: Duration = Duration::from_secs(1);
+
+/// Reads themes and settings again when their files change, so a theme made or switched by hand
+/// or by an AI agent shows at once. Looking costs a few file times a second.
+fn watch_settings_and_themes(themes_dir: PathBuf, cx: &mut App) {
+    let settings_path = gleipnir_packages::settings::settings_path();
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|m| m.modified()).ok();
+    let mut themes_seen = gleipnir_ui::themes::fingerprint(&themes_dir);
+    let mut settings_seen = modified(&settings_path);
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(CONFIG_POLL).await;
+            let themes_now = gleipnir_ui::themes::fingerprint(&themes_dir);
+            if themes_now != themes_seen {
+                themes_seen = themes_now;
+                let themes = gleipnir_ui::Themes::load(&themes_dir);
+                cx.update(|cx| cx.set_global(themes));
+            }
+            let settings_now = modified(&settings_path);
+            if settings_now != settings_seen {
+                settings_seen = settings_now;
+                cx.update(gleipnir_core::reload_settings);
+            }
+        }
+    })
+    .detach();
+}
+
 /// Binds every feature's default keys, then the person's own, which win. Returns problems with
 /// the person's keymap file.
 fn bind_all_keys(cx: &mut App) -> Vec<String> {
@@ -73,9 +111,12 @@ fn main() {
         .with_assets(gleipnir_ui::Assets)
         .run(move |cx: &mut App| {
             gleipnir_core::init_settings(cx);
-            cx.set_global(gleipnir_ui::Theme::from_settings(gleipnir_core::settings(
-                cx,
-            )));
+            let themes_dir = gleipnir_ui::themes_dir();
+            // The folder says how to make a theme, for people and AI agents alike.
+            gleipnir_ui::themes::write_guide(&themes_dir).ok();
+            cx.set_global(gleipnir_ui::Themes::load(&themes_dir));
+            apply_theme(cx);
+            watch_settings_and_themes(themes_dir, cx);
             let keymap_errors = bind_all_keys(cx);
             let keymap_path = gleipnir_workspace::user_keymap_path();
             cx.set_global(gleipnir_workspace::KeymapReload(Rc::new(|cx| {
@@ -108,10 +149,13 @@ fn main() {
             // Settings take effect as they change: the theme and fonts, and open files'
             // indentation.
             cx.observe_global::<gleipnir_core::AppSettings>(move |cx| {
-                cx.set_global(gleipnir_ui::Theme::from_settings(gleipnir_core::settings(
-                    cx,
-                )));
+                apply_theme(cx);
                 store.update(cx, |store, cx| store.apply_code_style(cx));
+                cx.refresh_windows();
+            })
+            .detach();
+            cx.observe_global::<gleipnir_ui::Themes>(|cx| {
+                apply_theme(cx);
                 cx.refresh_windows();
             })
             .detach();

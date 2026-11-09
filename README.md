@@ -69,6 +69,25 @@ searches much harder, and has found real bugs that the default run missed.
 Settings (`Cmd+,`, or the gear in the toolbar) has pages for appearance, the editor, code style,
 the keymap, languages and tools, run and debug, and packages, with a search over all of them.
 Changes take effect at once and are kept in `~/.config/gleipnir/settings.json`.
+Gleipnir also reads `settings.json` again whenever it changes, so it can be edited by hand.
+
+Themes are TOML files in `~/.config/gleipnir/themes`, which has a README with every key and full
+examples of the built-in themes. A theme saved there, or changed, shows at once, so an AI agent can
+make or tweak one by writing the file and switch to it in `settings.json`:
+
+    name = "Midnight"
+    appearance = "dark"     # the built-in theme anything left out comes from
+
+    [colors]
+    background = "#0b0e14"
+    accent = "#7aa2f7"
+
+    [syntax]
+    keyword = "#bb9af7"
+
+Indentation follows the project where it says: `.editorconfig`, and for the files Prettier formats,
+Prettier's config (`.prettierrc` in JSON, JSON5, YAML or TOML, or `package.json`'s `prettier`),
+over the language's own and the Code Style settings.
 
 Key bindings added in Settings, or by hand, are kept in `~/.config/gleipnir/keymap.conf`, one per
 line:

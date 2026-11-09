@@ -449,6 +449,11 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
                 draw(window, cx)?;
             }
         }
+        "expect-exists" => {
+            if !Path::new(rest).exists() {
+                bail!("{rest} doesn't exist");
+            }
+        }
         "expect-file" => {
             let (path, expected) = rest.split_once(' ').context("expected a path and text")?;
             let actual = std::fs::read_to_string(path)?;
@@ -459,6 +464,9 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
         }
         "write-file" => {
             let (path, text) = rest.split_once(' ').context("expected a path and text")?;
+            if let Some(folder) = Path::new(path).parent() {
+                std::fs::create_dir_all(folder)?;
+            }
             std::fs::write(path, unescape(text))?;
         }
         "dump" => {
@@ -514,6 +522,16 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
                     .is_some_and(|c| !c.is_empty());
                 if showing && shown_after.is_none() {
                     shown_after = Some(started.elapsed());
+                }
+            }
+            // Any key slower than a frame, to find what made it so.
+            let typed_text: Vec<char> = unescape(text).chars().collect();
+            for (index, time) in times.iter().enumerate() {
+                if *time > Duration::from_millis(16) {
+                    println!(
+                        "slow key {index} ({:?}): {time:?}",
+                        typed_text.get(index).copied().unwrap_or(' ')
+                    );
                 }
             }
             report("keystroke through to a drawn frame while typing", times);

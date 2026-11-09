@@ -298,11 +298,18 @@ Done alongside M9: the branch in the toolbar switches branch; jest results arriv
 through a reporter Gleipnir adds beside jest's own (vitest's still come at the end); and `it.each`
 and `describe.each` get Run icons that run every case.
 
+Also done alongside M9, after it: themes as files that are read again as they change, with a
+README for people and AI agents in the themes folder (`script/e2e themes` makes, changes and breaks
+one); `settings.json` read again as it changes; the branch menu creating, checking out, merging,
+rebasing and deleting branches; indentation from `.editorconfig` and Prettier's config. The one-off
+slow keystroke seen on the first completion list didn't come back over two runs of 172 keys on the
+same project; `type-timed` now names any key slower than a frame.
+
 Still open in M9:
 
-- **Settings has what exists to set.** More come as features do; there's no editor for colors or
-  for per-project settings yet.
-- **Branches are switched, not managed.** Creating, merging and the rest wait for Git integration.
+- **Prettier configs in JavaScript** (`prettier.config.js` and the like) aren't read, as that means
+  running the project's code.
+- **Git beyond branches**: committing, history, diffs and conflicts wait for Git integration.
 
 ## Later
 

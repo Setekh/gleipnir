@@ -125,7 +125,7 @@ impl BufferModel {
             buffer: Buffer::new(text),
             syntax: entry.map(|e| Syntax::new(e.grammar)),
             edit_config: entry
-                .map(|e| styled(e.name.as_str(), e.edit_config.clone(), cx))
+                .map(|e| styled(e.name.as_str(), path.as_deref(), e.edit_config.clone(), cx))
                 .unwrap_or_default(),
             path,
             mtime,
@@ -164,7 +164,12 @@ impl BufferModel {
         else {
             return;
         };
-        let config = styled(entry.name.as_str(), entry.edit_config.clone(), cx);
+        let config = styled(
+            entry.name.as_str(),
+            self.path.as_deref(),
+            entry.edit_config.clone(),
+            cx,
+        );
         if config.tab_size != self.edit_config.tab_size
             || config.hard_tabs != self.edit_config.hard_tabs
         {
@@ -600,8 +605,15 @@ fn text_hash(text: &str) -> u64 {
     hasher.finish()
 }
 
-/// A language's editing settings with the indentation the settings give it, if they do.
-fn styled(language: &str, mut config: EditConfig, cx: &gpui::App) -> EditConfig {
+/// A language's editing settings with the indentation they end up with: the language's own, then
+/// the person's settings, then what the project says in `.editorconfig` or Prettier's config,
+/// which wins, as the project's formatting is what the file will be held to.
+fn styled(
+    language: &str,
+    path: Option<&std::path::Path>,
+    mut config: EditConfig,
+    cx: &gpui::App,
+) -> EditConfig {
     let own = gleipnir_packages::settings::CodeStyle {
         tab_size: config.tab_size,
         hard_tabs: config.hard_tabs,
@@ -609,6 +621,15 @@ fn styled(language: &str, mut config: EditConfig, cx: &gpui::App) -> EditConfig 
     let style = crate::settings(cx).code_style_for(language, own);
     config.tab_size = style.tab_size;
     config.hard_tabs = style.hard_tabs;
+    if let Some(path) = path {
+        let project = gleipnir_packages::project_style::project_indent(path);
+        if let Some(size) = project.tab_size {
+            config.tab_size = size;
+        }
+        if let Some(tabs) = project.hard_tabs {
+            config.hard_tabs = tabs;
+        }
+    }
     config
 }
 
@@ -616,6 +637,36 @@ fn styled(language: &str, mut config: EditConfig, cx: &gpui::App) -> EditConfig 
 mod tests {
     use super::*;
     use gpui::TestAppContext;
+
+    #[gpui::test]
+    fn a_file_is_indented_as_its_project_says_and_follows_changes(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        // Rust's own is 4 spaces; the project's EditorConfig says tabs of 8, and Prettier, for
+        // TypeScript, 2 spaces.
+        std::fs::write(
+            dir.path().join(".editorconfig"),
+            "root = true\n[*]\nindent_style = tab\nindent_size = 8\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join(".prettierrc"),
+            "{\"tabWidth\": 2, \"useTabs\": false}",
+        )
+        .unwrap();
+        let rust = cx.new(|cx| BufferModel::new("", Some(dir.path().join("src/a.rs")), cx));
+        let ts = cx.new(|cx| BufferModel::new("", Some(dir.path().join("src/a.ts")), cx));
+        let style = |buffer: &Entity<BufferModel>, cx: &mut TestAppContext| {
+            buffer.read_with(cx, |b, _| {
+                (b.edit_config().tab_size, b.edit_config().hard_tabs)
+            })
+        };
+        assert_eq!(style(&rust, cx), (8, true));
+        assert_eq!(style(&ts, cx), (2, false));
+        std::fs::write(dir.path().join(".prettierrc"), "{\"tabWidth\": 4}").unwrap();
+        ts.update(cx, |b, cx| b.apply_code_style(cx));
+        // Prettier now says only the width; tabs come from EditorConfig, as Prettier takes them.
+        assert_eq!(style(&ts, cx), (4, true));
+    }
 
     #[gpui::test]
     async fn a_save_seen_on_disk_before_it_finishes_is_not_a_conflict(cx: &mut TestAppContext) {

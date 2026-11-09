@@ -8,10 +8,13 @@ license.workspace = true
 name = "gleipnir_ui"
 
 [dependencies]
+serde.workspace = true
+toml = "0.9"
 gleipnir-packages.workspace = true
 gleipnir-syntax.workspace = true
 gleipnir-text.workspace = true
 gpui.workspace = true
 
 [dev-dependencies]
+tempfile = "3"
 gpui = { workspace = true, features = ["test-support"] }

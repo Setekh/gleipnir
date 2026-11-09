@@ -18,24 +18,18 @@ pub struct Settings {
     pub tests: TestSettings,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ThemeChoice {
-    #[default]
-    Dark,
-    Light,
-}
-
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Appearance {
-    pub theme: ThemeChoice,
+    /// A theme's name: a built-in one, or one from the themes folder.
+    pub theme: String,
     pub ui_font_size: f32,
 }
 
 impl Default for Appearance {
     fn default() -> Self {
         Self {
-            theme: ThemeChoice::Dark,
+            theme: "Gleipnir Dark".into(),
             ui_font_size: 13.,
         }
     }
@@ -154,7 +148,7 @@ mod tests {
         assert_eq!(settings.editor.font_size, 15.);
         assert_eq!(settings.editor.line_height, 20.);
         assert!(settings.editor.completion_while_typing);
-        assert_eq!(settings.appearance.theme, ThemeChoice::Light);
+        assert_eq!(settings.appearance.theme, "Light");
         assert!(settings.tools.install_automatically);
     }
 

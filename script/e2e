@@ -100,7 +100,7 @@ make_test_fixtures() {
 # only run when asked for.
 # They install the tools they need as the app does, into E2E_TOOLS, a managed tools folder kept
 # between runs (target/e2e-tools unless given). The others never install anything.
-scripts=${*:-editing workspace search toolchains perf}
+scripts=${*:-editing workspace search toolchains themes perf}
 failed=0
 for name in $scripts; do
     # The folder is named after the script, which is what shows as the project's name.
@@ -116,7 +116,8 @@ for name in $scripts; do
         auto_install=0
     fi
     script="$work/$name.script"
-    sed -e "s|{dir}|$dir|g" -e "s|{shots}|$shots|g" "$root/crates/gleipnir/e2e/$name.script" > "$script"
+    sed -e "s|{dir}|$dir|g" -e "s|{shots}|$shots|g" -e "s|{config}|$work/$name/config|g" \
+        "$root/crates/gleipnir/e2e/$name.script" > "$script"
     echo "== $name"
     # Fresh state and config, so neither a saved layout nor a personal keymap changes the result.
     if GLEIPNIR_AUTO_INSTALL="$auto_install" GLEIPNIR_SCRIPT="$script" GLEIPNIR_STATE_DIR="$work/$name/state" \

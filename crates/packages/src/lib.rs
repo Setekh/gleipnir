@@ -10,6 +10,7 @@ pub mod dirs;
 pub mod env;
 pub mod install;
 pub mod manifest;
+pub mod project_style;
 pub mod registry;
 pub mod sdk;
 pub mod settings;

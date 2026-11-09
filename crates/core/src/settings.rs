@@ -47,3 +47,29 @@ pub fn update_settings(cx: &mut App, change: impl FnOnce(&mut Settings)) -> anyh
     });
     saved
 }
+
+/// Takes up changes made to the settings file outside Gleipnir, as by hand or by an AI agent. A
+/// file that doesn't read leaves the settings as they were, with the problem to show.
+pub fn reload_settings(cx: &mut App) {
+    let (settings, problem) = Settings::load();
+    let current = cx.try_global::<AppSettings>();
+    match problem {
+        Some(problem) => {
+            if current.and_then(|c| c.problem.as_ref()) != Some(&problem) {
+                let settings = current.map(|c| c.settings.clone()).unwrap_or_default();
+                cx.set_global(AppSettings {
+                    settings,
+                    problem: Some(problem),
+                });
+            }
+        }
+        None => {
+            if current.is_none_or(|c| c.settings != settings || c.problem.is_some()) {
+                cx.set_global(AppSettings {
+                    settings,
+                    problem: None,
+                });
+            }
+        }
+    }
+}

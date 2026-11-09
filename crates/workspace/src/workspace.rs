@@ -1,7 +1,7 @@
 //! The window's root view.
 
 mod title_bar;
-pub use title_bar::{TITLE_BAR_HEIGHT, TitleSide, current_branch, title_button};
+pub use title_bar::{TITLE_BAR_HEIGHT, TitleSide, current_branch, list_branches, title_button};
 
 use crate::actions_list::list_actions;
 use crate::dock::{Dock, DockPosition, MIN_CENTER_SIZE, MIN_DOCK_SIZE, Panel};
@@ -89,6 +89,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("alt-shift-tab", FocusPreviousPane, None),
         KeyBinding::new("shift-escape", HideActiveDock, None),
     ]);
+    crate::name_prompt::bind_keys(cx);
 }
 
 /// Identifies a tab, for closing one other than the active one.
@@ -246,6 +247,8 @@ pub struct WorkspaceSnapshot {
     pub recent_files: Vec<String>,
     /// Each started language server's state, by package id.
     pub language_servers: std::collections::BTreeMap<String, String>,
+    /// The theme in use, by name, with its background, to see a change to its file.
+    pub theme: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -347,6 +350,14 @@ impl Workspace {
             cx.subscribe(&project, |this, _, event, cx| {
                 if let ProjectEvent::FilesChanged(paths) = event {
                     this.language_servers.read(cx).files_changed(paths);
+                    // A change to `.editorconfig` or Prettier's config re-indents open files.
+                    if paths
+                        .iter()
+                        .any(|p| gleipnir_packages::project_style::is_style_config(p))
+                    {
+                        this.store
+                            .update(cx, |store, cx| store.apply_code_style(cx));
+                    }
                 }
             })
             .detach();
@@ -1781,6 +1792,17 @@ impl Workspace {
                     (id.to_string(), status)
                 })
                 .collect(),
+            theme: {
+                let theme = cx.global::<Theme>();
+                let background = gpui::Rgba::from(theme.background);
+                format!(
+                    "{} (background #{:02x}{:02x}{:02x})",
+                    theme.name,
+                    (background.r * 255.).round() as u8,
+                    (background.g * 255.).round() as u8,
+                    (background.b * 255.).round() as u8,
+                )
+            },
         }
     }
 

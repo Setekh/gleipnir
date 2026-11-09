@@ -1,0 +1,105 @@
+# The built-in light theme. Every key is listed, so this doubles as a template: copy it
+# into the themes folder, give it a new name, and change what you like.
+
+name = "Gleipnir Light"
+# The built-in theme to take any color this file leaves out from: "dark" or "light".
+appearance = "light"
+
+# Colors are "#rrggbb", or "#rrggbbaa" with transparency.
+
+[colors]
+# Behind everything: panels, the tab bar, the rails.
+background = "#ffffff"
+# Panels, the title bar and the status bar.
+surface = "#f5f6f8"
+# Popups, menus and dialogs, which sit above the rest.
+surface_raised = "#ffffff"
+# Lines between areas, and around popups and controls.
+border = "#dcdfe4"
+# Most text.
+text = "#1f2329"
+# Secondary text, like details beside a name, and icons.
+text_muted = "#5c6370"
+# Text that should recede: hints, paths, disabled items.
+text_faint = "#9aa1ad"
+# The thread: the active tab, focus, switches that are on, the project badge.
+accent = "#b7861f"
+# Errors, failed tests and the stop button.
+error = "#d03b3b"
+# Warnings, and messages that need attention.
+warning = "#a6741a"
+# Behind a row or button under the pointer. Usually translucent.
+hover = "#0000000d"
+# The selected row when its list has focus.
+selection = "#3d7bd94d"
+# The selected row when its list doesn't have focus.
+selection_inactive = "#00000012"
+# Added files and lines, passed tests, and the Run button.
+git_added = "#3f8a2e"
+# Changed files and lines.
+git_modified = "#2f6dc4"
+# Deleted files and lines.
+git_deleted = "#d03b3b"
+# Files with merge conflicts.
+git_conflicted = "#b5651d"
+# Behind the code.
+editor_background = "#ffffff"
+# Line numbers.
+editor_gutter_text = "#adb3bd"
+# The line number of the caret's line.
+editor_gutter_text_active = "#4b5260"
+# Behind the caret's line. Usually translucent.
+editor_active_line = "#0000000a"
+# Behind selected text. Usually translucent.
+editor_selection = "#3d7bd940"
+# The caret.
+editor_cursor = "#1f2329"
+# Breakpoint dots.
+breakpoint = "#d8404b"
+# Behind other uses of the name under the caret. Usually translucent.
+usage_highlight = "#2f6dc42a"
+# Behind the line the debugger is stopped on. Usually translucent.
+execution_line = "#3d7bd933"
+# Values the debugger shows beside the code.
+inline_value = "#7a8494"
+
+# Code, by what the language says each piece is.
+[syntax]
+# Attributes and decorators: #[test], @Component.
+attribute = "#8c6d1f"
+# Comments.
+comment = "#8a919c"
+# Constants and enum members.
+constant = "#b4462e"
+# Function and method names.
+function = "#2763b8"
+# Keywords: fn, if, return, const.
+keyword = "#0b4fa5"
+# Labels, like a loop's.
+label = "#8c6d1f"
+# Macros: println!, and the like.
+macro = "#8e3a91"
+# Modules, packages and namespaces.
+namespace = "#2d6f80"
+# Numbers.
+number = "#1750eb"
+# Operators: + = && =>.
+operator = "#4b5260"
+# Function parameters.
+parameter = "#7a5a24"
+# Fields and properties.
+property = "#871094"
+# Brackets, commas and semicolons.
+punctuation = "#6b727e"
+# Strings.
+string = "#067d17"
+# Escapes in strings: \n, \t.
+string_escape = "#0037a6"
+# Tags, as in JSX and HTML.
+tag = "#2763b8"
+# Types: structs, classes, interfaces.
+type = "#1a7f74"
+# Variables.
+variable = "#1f2329"
+# Built-in variables: self, this.
+variable_builtin = "#0b4fa5"
