@@ -1,7 +1,7 @@
 //! What the debugger shows in an editor: its file's breakpoints, Run icons on entry points, the
 //! execution line, and the values of variables beside the lines that use them.
 
-use gleipnir_core::{BufferModel, Debugger};
+use gleipnir_core::{BufferModel, Debugger, TestState};
 use gleipnir_editor::{BreakpointKind, BreakpointMark, DecorationProvider};
 use gleipnir_packages::RunTargetKind;
 use gleipnir_syntax::Language;
@@ -16,11 +16,15 @@ const VALUE_CHARS: usize = 40;
 /// How far above the execution line values are shown when the function can't be found.
 const FALLBACK_LINES: usize = 30;
 
+/// A Run icon's line, and the test declared there, if it's one test.
+type RunLine = (usize, Option<String>);
+
 pub struct DebugDecorations {
     debugger: Entity<Debugger>,
     buffer: WeakEntity<BufferModel>,
-    /// Entry point lines by buffer version, as finding them reads the whole file.
-    run_lines: RefCell<Option<(u64, Vec<usize>)>>,
+    /// Entry point lines by buffer version, as finding them reads the whole file, each with the
+    /// name of the test declared there, if it's one test.
+    run_lines: RefCell<Option<(u64, Vec<RunLine>)>>,
 }
 
 impl DebugDecorations {
@@ -39,20 +43,24 @@ impl DebugDecorations {
 }
 
 /// Lines that might declare a test, worth asking the language about, found in one pass: in Rust,
-/// a function right under a `#[...test]` attribute; in Go, a `func Test` in a `_test.go` file.
+/// a function right under a `#[...test]` attribute or a `mod` under `#[cfg(test)]`; in Go, a
+/// `func Test` in a `_test.go` file; in Odin, a procedure taking a `^testing.T`; in a JavaScript
+/// or TypeScript test file, each `describe`, `it` and `test`.
 pub fn test_candidates(language: Language, path: &std::path::Path, text: &str) -> Vec<usize> {
     match language {
         Language::Rust => {
             // Cheap to rule out, which most files are.
-            if !text.contains("test]") {
+            if !text.contains("test]") && !text.contains("cfg(test)") {
                 return Vec::new();
             }
             let mut attributed = false;
+            let mut cfg_test = false;
             let mut found = Vec::new();
             for (index, line) in text.lines().enumerate() {
                 let line = line.trim();
                 if line.starts_with("#[") {
                     attributed |= line.ends_with("test]");
+                    cfg_test |= line.contains("cfg(test)");
                 } else if line.starts_with("fn ")
                     || line.starts_with("async fn ")
                     || line.starts_with("pub fn ")
@@ -61,11 +69,33 @@ pub fn test_candidates(language: Language, path: &std::path::Path, text: &str) -
                         found.push(index);
                     }
                     attributed = false;
+                    cfg_test = false;
+                } else if line.starts_with("mod ") || line.starts_with("pub mod ") {
+                    if cfg_test && line.ends_with('{') {
+                        found.push(index);
+                    }
+                    attributed = false;
+                    cfg_test = false;
                 } else if !line.is_empty() && !line.starts_with("//") {
                     attributed = false;
+                    cfg_test = false;
                 }
             }
             found
+        }
+        Language::Odin if text.contains("testing.T") => text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| l.contains("::") && l.contains("proc") && l.contains("testing.T"))
+            .map(|(i, _)| i)
+            .collect(),
+        Language::TypeScript | Language::Tsx | Language::JavaScript
+            if gleipnir_packages::is_js_test_file(path) =>
+        {
+            gleipnir_packages::testing::js_test_calls(text)
+                .into_iter()
+                .map(|call| call.line)
+                .collect()
         }
         Language::Go if path.to_string_lossy().ends_with("_test.go") => text
             .lines()
@@ -138,13 +168,41 @@ impl DecorationProvider for DebugDecorations {
     }
 
     fn run_lines(&self, cx: &App) -> Vec<usize> {
+        self.named_run_lines(cx)
+            .into_iter()
+            .map(|(line, _)| line)
+            .collect()
+    }
+
+    fn run_results(&self, cx: &App) -> Vec<(usize, bool)> {
+        let Some(path) = self.path(cx) else {
+            return Vec::new();
+        };
+        let debugger = self.debugger.read(cx);
+        self.named_run_lines(cx)
+            .into_iter()
+            .filter_map(
+                |(line, name)| match debugger.test_result(&path, name.as_deref()?)? {
+                    TestState::Passed => Some((line, true)),
+                    TestState::Failed => Some((line, false)),
+                    _ => None,
+                },
+            )
+            .collect()
+    }
+
+    fn inline_values(&self, lines: Range<usize>, cx: &App) -> Vec<(usize, String)> {
+        self.values_inline(lines, cx)
+    }
+}
+
+impl DebugDecorations {
+    /// The Run icons' lines, each with the test declared there, if it's one test.
+    fn named_run_lines(&self, cx: &App) -> Vec<RunLine> {
         let (Some(path), Some(buffer)) = (self.path(cx), self.buffer.upgrade()) else {
             return Vec::new();
         };
         let debugger = self.debugger.read(cx);
-        let runs = debugger
-            .target_for_file(&path)
-            .is_some_and(|t| t.kind != RunTargetKind::File);
         let model = buffer.read(cx);
         let Some(language) = model.language() else {
             return Vec::new();
@@ -156,10 +214,15 @@ impl DecorationProvider for DebugDecorations {
         {
             return lines.clone();
         }
+        // Asked only when the text has changed, as for a test file it means looking for its
+        // runner on disk.
+        let runs = debugger
+            .target_for_file(&path)
+            .is_some_and(|t| t.kind != RunTargetKind::File);
         // Tests, which are worth a Run icon wherever they are.
-        let mut tests: Vec<usize> = Vec::new();
+        let mut tests: Vec<RunLine> = Vec::new();
         // Only these languages have tests to find, or entry points to mark.
-        if !runs && !matches!(language, Language::Rust | Language::Go) {
+        if !runs && !matches!(language, Language::Rust | Language::Go | Language::Odin) {
             *self.run_lines.borrow_mut() = Some((version, Vec::new()));
             return Vec::new();
         }
@@ -168,7 +231,10 @@ impl DecorationProvider for DebugDecorations {
         if !candidates.is_empty() {
             tests = candidates
                 .into_iter()
-                .filter(|&line| debugger.test_at(&path, &whole, line).is_some())
+                .filter_map(|line| {
+                    let target = debugger.test_at(&path, &whole, line)?;
+                    Some((line, target.single_test().map(String::from)))
+                })
                 .collect();
         }
         if !runs {
@@ -176,19 +242,20 @@ impl DecorationProvider for DebugDecorations {
             return tests;
         }
         // Only lines mentioning `main` can declare it, which keeps this quick in a large file.
-        let mut lines: Vec<usize> = whole
+        let mut lines: Vec<RunLine> = whole
             .match_indices("main")
             .map(|(offset, _)| text.offset_to_point(offset).line)
             .filter(|&line| is_entry_point(language, &text.line(line)))
+            .map(|line| (line, None))
             .collect();
         lines.extend(tests);
-        lines.sort_unstable();
-        lines.dedup();
+        lines.sort();
+        lines.dedup_by_key(|(line, _)| *line);
         *self.run_lines.borrow_mut() = Some((version, lines.clone()));
         lines
     }
 
-    fn inline_values(&self, lines: Range<usize>, cx: &App) -> Vec<(usize, String)> {
+    fn values_inline(&self, lines: Range<usize>, cx: &App) -> Vec<(usize, String)> {
         let (Some(path), Some(buffer)) = (self.path(cx), self.buffer.upgrade()) else {
             return Vec::new();
         };

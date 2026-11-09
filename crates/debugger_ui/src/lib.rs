@@ -4,8 +4,10 @@
 
 pub mod console;
 mod decorations;
+mod links;
 mod modals;
 mod panels;
+pub mod test_view;
 mod variables;
 
 pub use decorations::DebugDecorations;
@@ -53,6 +55,7 @@ actions!(
         ShowDebugPanel,
         EditConfiguration,
         AttachToProcess,
+        RerunFailedTests,
     ]
 );
 
@@ -148,7 +151,7 @@ pub fn add_with_debugger(
 
     let hooked = debugger.clone();
     workspace.add_editor_hook(move |_, editor, window, cx| attach(&hooked, editor, window, cx));
-    workspace.add_status_item(run_widget);
+    workspace.add_title_item(gleipnir_workspace::TitleSide::Right, 10, run_widget);
 
     workspace.register_action(|w, _: &Run, _, cx| start_selected(w, false, cx));
     workspace.register_action(|w, _: &Debug, _, cx| start_selected(w, true, cx));
@@ -159,6 +162,19 @@ pub fn add_with_debugger(
         choose_and_start(w, Some(true), window, cx)
     });
     workspace.register_action(|w, _: &RunFile, _, cx| start_active_file(w, false, cx));
+    workspace.register_action(|w, _: &RerunFailedTests, _, cx| {
+        with_debugger(w, cx, |d, cx| {
+            // The launch shown, or else the latest that ran tests.
+            let id = d
+                .active_launch()
+                .filter(|l| l.tests.is_some())
+                .or_else(|| d.launches().iter().rev().find(|l| l.tests.is_some()))
+                .map(|l| l.id);
+            if let Some(id) = id {
+                d.rerun_failed(id, cx);
+            }
+        })
+    });
     workspace.register_action(|w, _: &DebugFile, _, cx| start_active_file(w, true, cx));
     workspace.register_action(|w, _: &Stop, _, cx| {
         with_debugger(w, cx, |d, cx| {
@@ -342,10 +358,71 @@ fn start_selected(workspace: &mut Workspace, debug: bool, cx: &mut Context<Works
     }
 }
 
+/// The test the cursor is in, as IntelliJ runs with Ctrl+Shift+R: the innermost function around
+/// it that's a test, or else the test module it's in.
+fn test_at_cursor(
+    workspace: &Workspace,
+    debugger: &Debugger,
+    path: &std::path::Path,
+    cx: &App,
+) -> Option<RunTarget> {
+    let editor = workspace.active_editor(cx)?;
+    let editor = editor.read(cx);
+    let model = editor.buffer().read(cx);
+    let text = model.buffer();
+    let whole = text.text();
+    let cursor = editor.selections().primary().head;
+    if let Some(syntax) = model.syntax() {
+        let mut offset = cursor;
+        while let Some(function) = syntax.enclosing_function(offset) {
+            let line = text.offset_to_point(function.start).line;
+            if let Some(test) = debugger.test_at(path, &whole, line) {
+                return Some(test);
+            }
+            if function.start == 0 {
+                break;
+            }
+            offset = function.start - 1;
+        }
+    }
+    // Inside a test module but not a test: the nearest module above that's run as tests.
+    let language = model.language()?;
+    let cursor_line = text.offset_to_point(cursor).line;
+    decorations::test_candidates(language, path, &whole)
+        .into_iter()
+        .filter(|&line| line <= cursor_line)
+        .rev()
+        .filter(|&line| block_end(&whole, text.line_start(line)) > cursor)
+        .filter_map(|line| debugger.test_at(path, &whole, line))
+        .find(|target| target.single_test().is_none())
+}
+
+/// Where the braced block opened on or after `from` closes, counting braces.
+fn block_end(text: &str, from: usize) -> usize {
+    let mut depth = 0;
+    for (offset, c) in text[from..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return from + offset;
+                }
+            }
+            _ => {}
+        }
+    }
+    text.len()
+}
+
 fn start_active_file(workspace: &mut Workspace, debug: bool, cx: &mut Context<Workspace>) {
     let (Some(debugger), Some(path)) = (debugger(workspace, cx), workspace.active_file(cx)) else {
         return;
     };
+    if let Some(test) = test_at_cursor(workspace, debugger.read(cx), &path, cx) {
+        start(workspace, test, debug, cx);
+        return;
+    }
     match debugger.read(cx).target_for_file(&path) {
         Some(target) => start(workspace, target, debug, cx),
         None => workspace.show_message(
@@ -526,7 +603,7 @@ fn run_or_debug_menu(
     });
 }
 
-/// The run configuration and the Run, Debug and Stop buttons, in the status bar.
+/// The run configuration and the Run, Debug and Stop buttons, in the title bar as IntelliJ has them.
 fn run_widget(workspace: &mut Workspace, cx: &mut Context<Workspace>) -> Option<gpui::AnyElement> {
     let debugger = debugger(workspace, cx)?;
     let theme = cx.global::<Theme>().clone();
@@ -552,13 +629,13 @@ fn run_widget(workspace: &mut Workspace, cx: &mut Context<Workspace>) -> Option<
         div()
             .id(id)
             .debug_selector(move || id.into())
-            .p(px(2.))
-            .rounded(px(4.))
+            .p(px(6.))
+            .rounded(px(6.))
             .when(enabled, |d| d.cursor_pointer().hover(|s| s.bg(theme.hover)))
             .child(
                 svg()
                     .path(icon.path())
-                    .size(px(13.))
+                    .size(px(16.))
                     .text_color(if enabled { color } else { theme.text_faint }),
             )
     };
@@ -573,8 +650,9 @@ fn run_widget(workspace: &mut Workspace, cx: &mut Context<Workspace>) -> Option<
                 div()
                     .id("run-configuration")
                     .debug_selector(|| "run-configuration".into())
-                    .px(px(6.))
-                    .rounded(px(4.))
+                    .px(px(8.))
+                    .py(px(4.))
+                    .rounded(px(6.))
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.hover))
                     .max_w(px(220.))

@@ -81,6 +81,8 @@ pub struct EditorState {
     pub execution_line: Option<usize>,
     /// What's shown beside lines, as `line: text`, one-based, for the lines on screen.
     pub inline_values: Vec<String>,
+    /// Tests' last results in the gutter, as `line: passed` or `line: failed`, one-based.
+    pub run_results: Vec<String>,
 }
 
 pub enum EditorEvent {
@@ -191,6 +193,19 @@ impl EditorView {
         &self.buffer
     }
 
+    /// Where the primary caret is on screen, in window coordinates, if it's in view.
+    pub fn caret_bounds(&self, cx: &App) -> Option<Bounds<Pixels>> {
+        let buffer = self.buffer.read(cx).buffer();
+        self.geometry
+            .as_ref()?
+            .bounds_for_offset(self.selections.primary().head, buffer)
+    }
+
+    /// Closes the hover, completion and parameter info popups, as a popup opening over them does.
+    pub fn dismiss_popups(&mut self, cx: &mut Context<Self>) {
+        self.close_popups(cx);
+    }
+
     pub fn selections(&self) -> &SelectionSet {
         &self.selections
     }
@@ -296,6 +311,14 @@ impl EditorView {
                     .collect(),
                 _ => Vec::new(),
             },
+            run_results: self.decorations.as_ref().map_or_else(Vec::new, |d| {
+                d.run_results(cx)
+                    .into_iter()
+                    .map(|(line, passed)| {
+                        format!("{}: {}", line + 1, if passed { "passed" } else { "failed" })
+                    })
+                    .collect()
+            }),
         }
     }
 

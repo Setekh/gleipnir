@@ -241,9 +241,12 @@ The built-in manifests live in `crates/packages/builtin`. Each pins its tools' v
 TypeScript is held at 6, as TypeScript 7 is the native rewrite and has no `tsserver` for
 typescript-language-server to drive.
 
-Downloads are pinned by version and verified by checksum per OS and architecture, and nothing is
-installed without confirmation. A missing tool never blocks editing: the affected features are
-disabled and the status bar offers to install it.
+Downloads are pinned by version and verified by checksum per OS and architecture. A tool that can
+be installed is installed when it's first needed, as IntelliJ bundles its own: a language server
+when a file in its language opens, a debugger when debugging starts. The status bar or the console
+says so meanwhile. A failed install isn't retried by itself; Settings shows why and installs it again
+on request. `GLEIPNIR_AUTO_INSTALL=0` turns this off, as the plain e2e scripts do. A missing tool never
+blocks editing: the affected features are disabled until it's there.
 
 | Language | Server | Debugger | SDK |
 | --- | --- | --- | --- |
@@ -328,6 +331,55 @@ to the names the syntax tree finds between the start of the running function and
 
 What each adapter needed, found by running them for real, is in
 [DEBUGGERS.md](DEBUGGERS.md).
+
+### Test runner
+
+A test target is run like any other, and its results are read from what it prints, so they fill
+in live and work the same under the debugger. `TestRun` (in `core`) follows one of four formats,
+chosen by the target: libtest's text for Rust, `go test -json` (and `-test.v` text under delve,
+which can't pass `-json` through), and Odin's runner log. It builds a tree of suites (a test
+binary, a Go or Odin package), groups (Rust modules) and tests (Go subtests nest under theirs), with
+counts kept per node so a run of thousands updates in place. Each test collects its own output.
+
+Two streams arriving separately shaped the parsers. Cargo names each test binary on stderr while
+the binary announces itself on stdout, so the two are paired up in order rather than read as they
+come. Odin logs a test's state from its main thread after the fact while the test logs from its
+own, so a failure is matched to its test by the procedure it names, with the summary at the end as
+a fallback.
+
+What only a language knows stays in its adapter in `packages`: narrowing a target to some of its
+tests (Cargo's `--lib`/`--test` plus `--exact` names, Go's `-run` patterns, Odin's
+`ODIN_TEST_NAMES`), which Rerun Failed and the tree's Run and Debug items use, and finding where
+each test is declared, by following a Rust test's module path from the crate root through `mod`
+declarations, or finding the function in a Go or Odin package. Located tests give the gutter's
+Run icons their last result.
+
+JavaScript and TypeScript tests run with jest or vitest, whichever the nearest config (or failing
+that, package.json) above the test file names, from that folder and with the copy installed nearest
+to it, as a monorepo installs once at the top. A file's `describe`, `it` and `test` calls are found
+by a scan that skips strings and comments and matches parentheses, so each gets a Run icon and runs
+alone through `-t` with its full title. These runners print results only as text for people, so the
+tree comes from the JSON report they write when the run ends (`--json --outputFile`, or vitest's
+JSON reporter), while the console shows their usual output. Under the debugger, Node runs the
+runner's own script in one process, so breakpoints in tests bind through the source maps babel or
+ts-jest make. A title can hold any character, so inside the tree a test's titles are joined by an
+invisible separator, and its `-t` pattern by spaces as the runners join them.
+
+### Completion while typing
+
+Typing a word asks for completions, and typing more of the same word while that list is on its way
+waits for it and filters it, rather than asking again on every key: a slow server would otherwise
+fall behind and show nothing until typing stopped. tsserver loads a project, and its auto-imports,
+on its first completion, which takes seconds in a monorepo, so servers marked `warm_up` are asked
+once as the first file opens and show as loading the project until they answer.
+
+### Main toolbar
+
+The OS title bar is replaced by IntelliJ's main toolbar, drawn by the workspace: the project, whose
+menu lists recent projects; the Git branch, read from `.git/HEAD` and polled; and items features
+add, ordered by a number: the run configuration with Run, Debug and Stop, Search Everywhere and
+Settings. On macOS the window's buttons sit over its left end, gpui is told the app owns dragging
+the title bar, and empty parts of the bar move or zoom the window.
 
 ## Testing
 

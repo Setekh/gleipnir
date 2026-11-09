@@ -2025,6 +2025,7 @@ name = "gleipnir-editor"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "futures",
  "gleipnir-core",
  "gleipnir-index",
  "gleipnir-syntax",

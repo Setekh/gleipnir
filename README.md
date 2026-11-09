@@ -24,8 +24,9 @@ also need Xcode. On Arch or Omarchy, `sudo script/linux-deps` installs the syste
     cargo test --workspace      # unit, property and headless UI tests
     script/e2e                  # drives the real app; needs a display
     PROFILE=release script/e2e perf
-    E2E_TOOLS=~/path/to/state/tools script/e2e code   # with real language servers installed
-    E2E_TOOLS=~/path/to/state/tools script/e2e debug  # with lldb-dap, dlv and js-debug installed
+    script/e2e code             # real language servers, installed into target/e2e-tools as needed
+    script/e2e debug            # real debuggers, likewise; E2E_TOOLS=<folder> uses another folder
+    script/e2e tests            # the test runner, with cargo, go, odin and npm on the PATH
     GLEIPNIR_TOOLS=~/path/to/state/tools cargo test -p gleipnir-dap --test adapters   # headless
     script/linux-check          # builds and tests on Arch in Docker, from any machine
 
@@ -42,7 +43,8 @@ searches much harder, and has found real bugs that the default run missed.
 - `crates/code_nav`: code intelligence from language servers: the editor's completion and
   documentation, navigation, the Find and Problems panels, rename, intentions and reformatting.
 - `crates/debugger_ui`: running and debugging: the Run and Debug panels, the run widget in the
-  status bar, breakpoints and values in the editor, and the breakpoint and Evaluate popups.
+  status bar, breakpoints and values in the editor, the breakpoint and Evaluate popups, and test
+  results.
 - `crates/dap`: the debug adapter client: stdio and TCP adapters, child connections for js-debug,
   the launch handshake and session state.
 - `crates/lsp`: the language server client: framing, requests with cancellation, and the

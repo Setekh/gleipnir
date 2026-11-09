@@ -311,6 +311,28 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
                 Ok(())
             })??;
         }
+        "select-test" => {
+            // `select-test <name>`: chooses a test in the Run panel's results, by its full name.
+            // A JavaScript test's titles are written joined by ` › `.
+            let name = rest.replace(" › ", &gleipnir_packages::JS_NAME_SEPARATOR.to_string());
+            with_workspace(window, cx, move |workspace, _, cx| -> Result<()> {
+                let panel = workspace
+                    .panel::<gleipnir_debugger_ui::RunPanel>(cx)
+                    .ok_or_else(|| anyhow!("no run panel"))?;
+                let view = panel.read(cx).tests().clone();
+                let node = workspace
+                    .panel::<gleipnir_debugger_ui::DebugPanel>(cx)
+                    .and_then(|p| {
+                        let debugger = p.read(cx).debugger().read(cx);
+                        let launch = debugger.launches().iter().rev().find(|l| !l.debug)?;
+                        let tests = launch.tests.as_ref()?;
+                        tests.nodes().iter().position(|n| n.name == name)
+                    })
+                    .ok_or_else(|| anyhow!("no test called {name}"))?;
+                view.update(cx, |v, cx| v.select(node, cx));
+                Ok(())
+            })??;
+        }
         "action" => {
             let name = rest.to_string();
             with_window(window, cx, move |window, cx| -> Result<()> {
@@ -470,6 +492,50 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
                 sleep(Duration::from_millis(1), cx).await;
             }
             report("keystroke through to a drawn frame", times);
+        }
+        // `type-timed <ms between keys> <text>`: types like a person, timing each keystroke
+        // through to a drawn frame, then how long the completion list took to show.
+        "type-timed" => {
+            let (pause, text) = rest.split_once(' ').unwrap_or((rest, ""));
+            let pause = Duration::from_millis(pause.parse()?);
+            let mut times = Vec::new();
+            let started = Instant::now();
+            let mut shown_after = None;
+            for c in unescape(text).chars() {
+                let key = Instant::now();
+                type_text(&c.to_string(), window, cx)?;
+                draw(window, cx)?;
+                times.push(key.elapsed());
+                sleep(pause, cx).await;
+                let state = snapshot(window, cx)?;
+                let showing = state
+                    .pointer("/editor/completions")
+                    .and_then(|c| c.as_array())
+                    .is_some_and(|c| !c.is_empty());
+                if showing && shown_after.is_none() {
+                    shown_after = Some(started.elapsed());
+                }
+            }
+            report("keystroke through to a drawn frame while typing", times);
+            let typed = started.elapsed();
+            while shown_after.is_none() && started.elapsed() < typed + Duration::from_secs(10) {
+                sleep(Duration::from_millis(5), cx).await;
+                draw(window, cx)?;
+                let state = snapshot(window, cx)?;
+                if state
+                    .pointer("/editor/completions")
+                    .and_then(|c| c.as_array())
+                    .is_some_and(|c| !c.is_empty())
+                {
+                    shown_after = Some(started.elapsed());
+                }
+            }
+            match shown_after {
+                Some(after) => println!(
+                    "completions shown {after:?} after the first key, typing took {typed:?}"
+                ),
+                None => println!("completions never showed"),
+            }
         }
         "quit" => std::process::exit(0),
         other => bail!("unknown command {other}"),

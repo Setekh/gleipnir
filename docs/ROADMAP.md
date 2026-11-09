@@ -99,7 +99,7 @@ checksum verified: gopls, delve, ols, js-debug and typescript-language-server.
 Goal: daily-driver code understanding. **After this, Gleipnir can be used to develop itself.**
 
 Status: built and passing on macOS, against fakes in tests and the real servers end to end:
-`E2E_TOOLS=<managed tools folder> script/e2e code` drives rust-analyzer, gopls,
+`script/e2e code` drives rust-analyzer, gopls,
 typescript-language-server and ols through navigation, usages, completion, parameter info,
 diagnostics, rename and reformat.
 
@@ -133,7 +133,7 @@ Still open from M5:
 Goal: IntelliJ-class debugging in all five languages.
 
 Status: built and passing on macOS, against a fake adapter in tests and the real ones end to end:
-`E2E_TOOLS=<managed tools folder> script/e2e debug` debugs Rust and Odin through lldb-dap, Go
+`script/e2e debug` debugs Rust and Odin through lldb-dap, Go
 through delve and TypeScript through js-debug, and the headless tests in `crates/dap/tests` do the
 same per item 6.4 to 6.6, plus JavaScript and TypeScript compiled with source maps. What each adapter
 needed is in [DEBUGGERS.md](DEBUGGERS.md).
@@ -229,10 +229,77 @@ Done in the third batch:
   use a different language server. Its languages must use one of the built-in grammars, as loading
   new ones needs WASM (stage 3).
 
-Still open after M7: Odin tests as targets; typing to a Go program under the debugger, as delve
-gives no way in; and the items above that need an Omarchy machine or a remote.
+Still open after M7: typing to a Go program under the debugger, as delve gives no way in; and the
+items above that need an Omarchy machine or a remote. Odin tests as targets were done in M8.
+
+## M8: Test runner
+
+Goal: IntelliJ's test runner for Rust, Go and Odin: a live tree of results, each test's own output,
+a jump to its source, and rerunning what failed.
+
+Status: built and passing on macOS. `script/e2e tests` runs real cargo, go and odin: a Rust test
+module from the cursor, a failing test's own output, red and green gutter icons, a fix and Rerun
+Failed, a crate's unit and integration tests together, a Go test with subtests, and Odin's tests by
+package and one by one. The headless tests in `crates/dap/tests` debug one test in each of the three.
+How it works is under Test runner in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+| # | Item | Finished when |
+| --- | --- | --- |
+| 8.1 | Results from test output: libtest's text, `go test -json`, Go's `-test.v` under delve, Odin's runner log | Each builds the right tree from recorded real output |
+| 8.2 | Test results view in the Run and Debug panels: tree with states, counts and times, the selected test's output beside it | A run fills the tree live; selecting a test shows only its output |
+| 8.3 | Navigation: a test jumps to its source; `file:line` in any console opens the file | Double-click or Enter on a test opens it; a panic's location is a link |
+| 8.4 | Rerun failed tests, and run or debug any test, module or package from the tree | Rerun Failed runs exactly the failed tests |
+| 8.5 | Gutter icons show each test's last result; Ctrl+Shift+R/D in a test runs or debugs it; `mod tests` runs its module; an All Tests configuration | The icon turns red after a failing run, green after a fix |
+| 8.6 | Odin tests as run targets | A package's `@(test)` procedures run and debug like Rust's and Go's |
+| 8.7 | End-to-end `tests` script against real cargo, go and odin | Passes |
+
+Shortcuts, IntelliJ's: Ctrl+Shift+R and Ctrl+Shift+D run or debug the test the cursor is in, or its
+module, falling back to the file; in the results, Enter or F4 jumps to the source and the arrows
+move and fold. Rerun Failed Tests is in the Run menu and on the results' toolbar, beside the toggle
+for passed tests. A right-click on a result runs or debugs it.
+
+Fixed alongside M8:
+
+- **Missing tools install themselves** when first needed: a language server when a file in its
+  language opens, a debugger when debugging starts. The status bar shows "installing …"; a failed
+  install says why and isn't retried until asked. `script/e2e code` and `debug` now set up their own
+  tools, kept in `target/e2e-tools`.
+- **A tool window's rail button hides it when it's open**, focused or not, as IntelliJ's do. Before,
+  it only hid a panel that had focus, so one opened by Find Usages couldn't be closed by clicking.
+
+Still open from M8:
+
+- **Durations of single Rust tests**: stable libtest prints them only per binary.
+- JavaScript and TypeScript test results, done in M9 for jest and vitest. Node's own runner isn't
+  read yet.
+
+## M9: Working like IntelliJ day to day
+
+Goal: the rough edges found using Gleipnir on a real TypeScript monorepo, smoothed out.
+
+Status: 9.1 to 9.4 built and passing on macOS; 9.5 is next. `script/e2e tests` runs a real jest
+project: a file's tests, the tree with its describes, a failure's own output and the gutter's
+marks, one test from the cursor, Rerun Failed, and the test under the debugger stopping at a
+breakpoint in it. On the Nx monorepo that prompted this, with jest 29 and babel, one `it` and one
+`describe` run alone and a TypeScript test stops at its breakpoint. Completion there shows 0.27 s
+after the first key, against 7.9 s before the warm-up, with typing at 6.5 ms a key in a release
+build while the list follows it (`type-timed` in the driver measures this).
+
+| # | Item | Finished when |
+| --- | --- | --- |
+| 9.1 | JavaScript and TypeScript tests: a run icon on every `describe`, `it` and `test`, to run or debug just that one, with jest or vitest; Ctrl+Shift+R/D at the cursor; results in the tree | A failing `it` runs alone from its icon, shows red, and debugs to a breakpoint inside it |
+| 9.2 | Choose Declaration, Implementation and Usages open beside the click or caret, not at the top, and close the hover | The chooser's top-left is just below the caret's line |
+| 9.3 | Completion pops up while typing, without slowing typing: one request per word, and slow servers warmed up when the first file opens | Typing an identifier shows suggestions in under a second, even first thing; keystroke time stays as before in `perf` |
+| 9.4 | IntelliJ's main toolbar in place of the OS title bar: project with recent projects, the Git branch, the run configuration with Run, Debug and Stop, Search Everywhere and Settings | Clicking each opens what it should; the window still drags and zooms from the bar |
+| 9.5 | A Settings screen for everything: editor, appearance, keymap, languages and tools, run and debug | Each setting changes the app live and is kept |
+
+Still open in M9:
+
+- **9.5, the Settings screen.** The gear in the toolbar opens the SDKs and tools screen for now.
+- **The branch is shown, not switched.** Its menu waits for Git integration.
+- **Live JavaScript results.** The tree fills when the run ends, from the report, not test by test;
+  the console shows progress meanwhile. Parametrised tests (`it.each`) have no Run icon of their own.
 
 ## Later
 
-Find in Files, Git integration, semantic highlighting, test runner, terminal panel, third-party
-packages (stage 2), WASM plugins (stage 3), Windows.
+Git integration, terminal panel, WASM plugins (stage 3), Windows.

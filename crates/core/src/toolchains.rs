@@ -5,13 +5,14 @@ use gleipnir_packages::env::user_env;
 use gleipnir_packages::install::{InstallContext, describe_install, install_tool};
 use gleipnir_packages::sdk::{SdkSource, is_sdk_root, read_version};
 use gleipnir_packages::{
-    Env, Resolution, ResolveContext, Sdk, detect_sdks, managed_tools_dir, registry, resolve_tool,
-    state_dir,
+    Env, Resolution, ResolveContext, Sdk, ToolSpec, detect_sdks, managed_tools_dir, registry,
+    resolve_tool, state_dir,
 };
 use gpui::{AppContext as _, Context, EventEmitter, Task};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub enum ToolchainEvent {
@@ -113,7 +114,13 @@ pub struct Toolchains {
     detecting: bool,
     installing: BTreeSet<String>,
     errors: BTreeMap<String, String>,
+    /// Whether a missing tool that can be installed is installed as soon as it's needed.
+    auto_install: bool,
+    installer: Installer,
 }
+
+/// Installs a tool. Swappable so tests needn't download anything.
+pub type Installer = Arc<dyn Fn(&str, &ToolSpec, &InstallContext) -> Result<PathBuf> + Send + Sync>;
 
 impl EventEmitter<ToolchainEvent> for Toolchains {}
 
@@ -129,6 +136,9 @@ impl Toolchains {
             detecting: false,
             installing: BTreeSet::new(),
             errors: BTreeMap::new(),
+            // GLEIPNIR_AUTO_INSTALL=0 leaves installing to the user, as scripted runs need.
+            auto_install: std::env::var_os("GLEIPNIR_AUTO_INSTALL").is_none_or(|v| v != "0"),
+            installer: Arc::new(install_tool),
         };
         this.detect(cx);
         this
@@ -151,9 +161,20 @@ impl Toolchains {
             detecting: false,
             installing: BTreeSet::new(),
             errors: BTreeMap::new(),
+            auto_install: false,
+            installer: Arc::new(install_tool),
         };
         this.detect(cx);
         this
+    }
+
+    /// Turns installing missing tools when they're needed on or off. It's off in tests.
+    pub fn set_auto_install(&mut self, on: bool) {
+        self.auto_install = on;
+    }
+
+    pub fn set_installer(&mut self, installer: Installer) {
+        self.installer = installer;
     }
 
     pub fn packages(&self) -> &[PackageToolchain] {
@@ -324,6 +345,45 @@ impl Toolchains {
         status.resolution.path().map(Path::to_path_buf)
     }
 
+    /// Whether a tool is being installed right now.
+    pub fn is_installing(&self, tool: &str) -> bool {
+        self.installing.contains(tool)
+    }
+
+    /// Why installing a tool failed, the last time it was tried.
+    pub fn install_error(&self, tool: &str) -> Option<&str> {
+        self.errors.get(tool).map(String::as_str)
+    }
+
+    /// Installs a tool a package needs now, if it's missing and can be installed, and installing
+    /// as needed is on. Returns whether it's being installed, whether just now or already.
+    /// A failed install isn't tried again by itself; installing from settings retries it.
+    pub fn install_missing(
+        &mut self,
+        package_id: &str,
+        tool: &str,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.installing.contains(tool) {
+            return true;
+        }
+        let Some(status) = self
+            .package(package_id)
+            .and_then(|p| p.tools.iter().find(|t| t.name == tool))
+        else {
+            return false;
+        };
+        if !self.auto_install
+            || status.resolution.found.is_some()
+            || !status.can_install
+            || self.errors.contains_key(tool)
+        {
+            return false;
+        }
+        self.install(package_id, tool, cx).detach();
+        true
+    }
+
     pub fn choose_sdk(&mut self, kind: &str, root: PathBuf, cx: &mut Context<Self>) {
         self.choices.insert(kind.to_string(), root);
         self.rebuild(cx);
@@ -393,6 +453,7 @@ impl Toolchains {
             )));
         };
         let managed_dir = self.managed_dir.clone();
+        let installer = self.installer.clone();
         let rust_toolchain = self
             .package(package_id)
             .and_then(|p| p.chosen.as_ref())
@@ -409,7 +470,7 @@ impl Toolchains {
                 env: &env,
                 rust_toolchain: rust_toolchain.as_deref(),
             };
-            install_tool(&name, &spec, &cx)
+            installer(&name, &spec, &cx)
         });
         let name = tool.to_string();
         cx.spawn(async move |this, cx| {

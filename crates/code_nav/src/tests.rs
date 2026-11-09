@@ -357,6 +357,22 @@ fn several_implementations_offer_a_choice(cx: &mut TestAppContext) {
     let (title, labels) = s.wait_for_picker();
     assert_eq!(title, "Choose Implementation");
     assert_eq!(labels.len(), 2);
+    // It pops up just below the caret, not at the top of the window.
+    s.cx.run_until_parked();
+    let workspace = s.workspace.clone();
+    let editor =
+        s.cx.update(|_, cx| workspace.read(cx).active_editor(cx))
+            .unwrap();
+    let caret =
+        s.cx.update(|_, cx| editor.read(cx).caret_bounds(cx))
+            .expect("the caret is in view");
+    let row = s.cx.debug_bounds("picker-row-0").expect("a row");
+    assert!(
+        row.top() > caret.bottom() && row.top() < caret.bottom() + px(80.),
+        "the first row is at {:?}, the caret at {caret:?}",
+        row.top()
+    );
+    assert!((row.left() - caret.left()).abs() < px(40.));
     s.cx.simulate_keystrokes("enter");
     s.wait_for(("src/main.rs", 2, 20));
 }

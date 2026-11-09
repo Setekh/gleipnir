@@ -29,6 +29,10 @@ pub trait DecorationProvider {
     fn execution_line(&self, cx: &App) -> Option<(usize, bool)>;
     /// Lines with an entry point that can be run from the gutter.
     fn run_lines(&self, cx: &App) -> Vec<usize>;
+    /// Run lines that are tests and have a last result: the line, and whether it passed.
+    fn run_results(&self, _cx: &App) -> Vec<(usize, bool)> {
+        Vec::new()
+    }
     /// Text to show after lines, like the values of the variables on them, for the lines given.
     fn inline_values(&self, lines: Range<usize>, cx: &App) -> Vec<(usize, String)>;
 }

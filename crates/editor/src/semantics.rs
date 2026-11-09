@@ -173,6 +173,9 @@ pub(crate) struct SemanticsState {
     pub provider: Option<Rc<dyn SemanticsProvider>>,
     pub completion: Option<CompletionMenu>,
     completion_task: Option<Task<()>>,
+    /// Where the word starts that the request in flight is for, so typing more of the same word
+    /// waits for it rather than asking again.
+    completion_requested_at: Option<usize>,
     pub hover: Option<HoverPopup>,
     hover_task: Option<Task<()>>,
     hover_target: Option<usize>,
@@ -230,6 +233,7 @@ impl EditorView {
         let had = self.has_popups();
         self.semantics.completion = None;
         self.semantics.completion_task = None;
+        self.semantics.completion_requested_at = None;
         self.semantics.hover = None;
         self.semantics.hover_task = None;
         self.semantics.signature = None;
@@ -318,11 +322,25 @@ impl EditorView {
         };
         let offset = self.selections.primary().head;
         let word_start = self.word_start(cx);
+        // Typing on through a word while its list is on the way: that list, filtered by what's
+        // been typed since, is as good, and asking again on every key would only queue up work
+        // for a slow server.
+        if trigger.is_none() && self.semantics.completion_requested_at == Some(word_start) {
+            return;
+        }
         let buffer = self.buffer.clone();
         let task = provider.completions(&buffer, offset, trigger, cx);
+        self.semantics.completion_requested_at = Some(word_start);
         self.semantics.completion_task = Some(cx.spawn(async move |this, cx| {
-            let Ok(completions) = task.await else { return };
+            let completions = task.await;
             this.update(cx, |this, cx| {
+                this.semantics.completion_requested_at = None;
+                let Ok(completions) = completions else { return };
+                // The caret has left the word since: the list is for somewhere else.
+                if this.word_start(cx) != word_start || this.selections.primary().head < word_start
+                {
+                    return;
+                }
                 let scroll = this
                     .semantics
                     .completion
@@ -430,6 +448,7 @@ impl EditorView {
         };
         let buffer = self.buffer.clone();
         let resolve = provider.resolve(&buffer, item.clone(), cx);
+        self.semantics.completion_requested_at = None;
         self.semantics.completion_task = Some(cx.spawn(async move |this, cx| {
             let item = resolve.await.unwrap_or(item);
             this.update(cx, |this, cx| this.apply_completion(item, cx))

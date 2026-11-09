@@ -5,6 +5,7 @@ mod debugger;
 mod language_servers;
 mod project;
 mod store;
+mod test_results;
 mod toolchains;
 
 pub use buffer::{BufferEvent, BufferModel, Diagnostic, DiskStatus, Severity};
@@ -20,4 +21,5 @@ pub use language_servers::{
 };
 pub use project::{IndexStatus, Project, ProjectEvent};
 pub use store::BufferStore;
+pub use test_results::{NodeKind, ROOT as TEST_ROOT, TestCounts, TestNode, TestRun, TestState};
 pub use toolchains::{PackageToolchain, ToolStatus, ToolchainEvent, Toolchains};

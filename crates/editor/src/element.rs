@@ -157,7 +157,8 @@ struct Decorations {
     breakpoints: Vec<(Pixels, BreakpointMark)>,
     /// The execution line's top, and whether it's the innermost frame.
     execution: Option<(Pixels, bool)>,
-    run_tops: Vec<Pixels>,
+    /// Each Run icon's top, and for a test with a result, whether it passed.
+    run_tops: Vec<(Pixels, Option<bool>)>,
     inline_values: Vec<(Point<Pixels>, ShapedLine)>,
 }
 
@@ -529,11 +530,13 @@ impl Element for EditorElement {
                     .execution_line(cx)
                     .filter(|(line, _)| on_screen(line))
                     .map(|(line, top)| (top_of(line), top));
+                let results: std::collections::HashMap<usize, bool> =
+                    provider.run_results(cx).into_iter().collect();
                 let run_tops = provider
                     .run_lines(cx)
                     .into_iter()
                     .filter(on_screen)
-                    .map(top_of)
+                    .map(|line| (top_of(line), results.get(&line).copied()))
                     .collect();
                 let inline_values = provider
                     .inline_values(visible.clone(), cx)
@@ -1125,16 +1128,21 @@ fn paint_debug_marks(
             )
             .ok();
     }
-    for top in &decorations.run_tops {
+    for (top, result) in &decorations.run_tops {
         let side = px(11.);
         let x = bounds.left() + gutter_width - px(GUTTER_RIGHT_PADDING / 2.) - side / 2.;
+        let (path, color) = match result {
+            Some(true) => ("icons/run-passed.svg", theme.git_added),
+            Some(false) => ("icons/run-failed.svg", theme.error),
+            None => ("icons/run.svg", theme.git_added),
+        };
         window
             .paint_svg(
                 icon(*top, x, side),
-                "icons/run.svg".into(),
+                path.into(),
                 None,
                 TransformationMatrix::unit(),
-                theme.git_added,
+                color,
                 cx,
             )
             .ok();

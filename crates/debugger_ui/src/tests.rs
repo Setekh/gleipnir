@@ -531,3 +531,79 @@ fn a_configuration_can_be_given_arguments_environment_and_a_folder(cx: &mut Test
         "two words"
     );
 }
+
+const LIB: &str = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() {}\n\n    #[test]\n    fn fails() {\n        panic!(\"boom\");\n    }\n}\n";
+
+#[gpui::test]
+fn test_results_fill_the_run_panel_and_open_what_is_clicked(cx: &mut TestAppContext) {
+    let (_dir, mut s) = setup(cx);
+    let lib = s.root.join("src/lib.rs");
+    std::fs::write(&lib, LIB).unwrap();
+    let script = "echo '     Running unittests src/lib.rs (target/debug/deps/p-0123abcd)' >&2; \
+        printf 'running 2 tests\\ntest tests::adds ... ok\\ntest tests::fails ... FAILED\\n\\nfailures:\\n\\n\
+        ---- tests::fails stdout ----\\n\\nthread tests::fails panicked at src/lib.rs:8:9:\\nboom\\n\\n\
+        failures:\\n    tests::fails\\n\\ntest result: FAILED. 1 passed; 1 failed; finished in 0.01s\\n'; exit 101";
+    let mut test = target(&s.root, script);
+    test.kind = RunTargetKind::Test;
+    test.name = "tests in p".into();
+    s.cx.update(|_, cx| s.debugger.update(cx, |d, cx| d.start(test, false, cx)));
+    s.wait(|s| s.status() == Some(LaunchStatus::Finished(Some(101))));
+    let debugger = s.debugger.clone();
+    let failed = lib.clone();
+    s.wait(|s| {
+        s.cx.update(|_, cx| debugger.read(cx).test_result(&failed, "fails"))
+            == Some(gleipnir_core::TestState::Failed)
+    });
+
+    let workspace = s.workspace.clone();
+    let run =
+        s.cx.update(|window, cx| workspace.read(cx).snapshot(window, cx).panels["run"].clone());
+    assert_eq!(
+        run["tests"],
+        json!([
+            "Failed Test Results",
+            "  Failed p",
+            "    Failed tests",
+            "      Passed adds",
+            "      Failed fails"
+        ])
+    );
+    assert_eq!(run["test_summary"], "1 failed, 1 passed of 2");
+
+    // Choosing the failed test shows only its output.
+    let panel =
+        s.cx.update(|_, cx| workspace.read(cx).panel::<RunPanel>(cx))
+            .unwrap();
+    let view = s.cx.update(|_, cx| panel.read(cx).tests().clone());
+    let fails = s.cx.update(|_, cx| {
+        let d = debugger.read(cx);
+        let tests = d.active_launch().unwrap().tests.as_ref().unwrap();
+        tests.failed_tests()[0]
+    });
+    s.cx.update(|_, cx| view.update(cx, |v, cx| v.select(fails, cx)));
+    let shown =
+        s.cx.update(|_, cx| panel.read(cx).console().read(cx).shown_text(cx));
+    assert!(shown.contains("boom"), "{shown}");
+    assert!(!shown.contains("running 2 tests"), "{shown}");
+
+    // Jumping to its source opens the test's function, which the gutter marks as failed.
+    s.cx.update(|_, cx| view.update(cx, |v, cx| v.jump_to_source(fails, cx)));
+    let state = s.editor_state();
+    assert_eq!(state.path.as_deref(), Some(lib.to_str().unwrap()));
+    assert_eq!(state.cursor, (6, 0));
+    assert_eq!(state.run_results, ["4: passed", "7: failed"]);
+
+    // The panic's location in the output is a link to the line.
+    s.cx.update(|_, cx| {
+        let console = panel.read(cx).console().clone();
+        console.update(cx, |c, cx| c.open_link("src/lib.rs", 8, Some(9), cx));
+    });
+    assert_eq!(s.editor_state().cursor, (7, 8));
+
+    // Rerun Failed runs that test alone.
+    s.cx.update(|_, cx| view.update(cx, |v, cx| v.rerun_failed(cx)));
+    let rerun =
+        s.cx.update(|_, cx| debugger.read(cx).active_launch().unwrap().target.clone());
+    assert_eq!(rerun.name, "test fails");
+    assert_eq!(rerun.args, ["--exact", "tests::fails"]);
+}

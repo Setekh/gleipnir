@@ -26,6 +26,7 @@ fn init(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gleipnir_ui::init_theme(cx);
         gleipnir_ui::bind_text_input_keys(cx);
+        gleipnir_ui::bind_context_menu_keys(cx);
         gleipnir_editor::bind_keys(cx);
         crate::bind_keys(cx);
     });
@@ -369,6 +370,25 @@ fn the_rail_buttons_toggle_their_panels(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_rail_button_hides_its_panel_even_when_the_panel_isnt_focused(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace_for(None, cx);
+    // Like Find Usages showing its results, which leaves focus in the editor.
+    cx.update(|_, cx| workspace.update(cx, |w, cx| w.show_panel("bottom", cx)));
+    cx.run_until_parked();
+    let visible = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| workspace.read(cx).is_dock_visible(DockPosition::Bottom))
+    };
+    assert!(visible(cx));
+    let button = cx.debug_bounds("rail-bottom").expect("a rail button");
+    cx.simulate_click(button.center(), Modifiers::none());
+    assert!(!visible(cx));
+    cx.simulate_click(button.center(), Modifiers::none());
+    assert!(visible(cx));
+    cx.simulate_click(button.center(), Modifiers::none());
+    assert!(!visible(cx));
+}
+
+#[gpui::test]
 fn docks_resize_by_dragging_their_edge_within_limits(cx: &mut TestAppContext) {
     let (workspace, cx) = workspace_for(None, cx);
     cx.update(|window, cx| workspace.update(cx, |w, cx| w.toggle_panel("left", window, cx)));
@@ -704,4 +724,51 @@ fn a_tab_dragged_onto_another_moves_before_it(cx: &mut TestAppContext) {
     cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
     cx.run_until_parked();
     assert_eq!(tabs(&workspace, cx), [["c.rs", "a.rs", "b.rs"]]);
+}
+
+#[gpui::test]
+fn the_title_bar_shows_the_project_and_branch_and_offers_recent_projects(cx: &mut TestAppContext) {
+    let earlier = tempfile::tempdir().unwrap();
+    let earlier_root = std::fs::canonicalize(earlier.path()).unwrap();
+    let current = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(current.path())
+        .unwrap()
+        .join("fix-partner");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/master\n").unwrap();
+    // Opening one project, then another, leaves the first among the recent ones.
+    workspace_for(Some(&earlier_root), cx);
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| workspace.read(cx).branch().map(String::from)),
+        Some("master".to_string())
+    );
+    let bar = cx.debug_bounds("title-bar").expect("a title bar");
+    assert_eq!(bar.top(), px(0.));
+    assert_eq!(bar.size.height, px(TITLE_BAR_HEIGHT));
+    assert!(cx.debug_bounds("title-branch").is_some());
+
+    let project = cx.debug_bounds("title-project").expect("the project");
+    cx.simulate_click(project.center(), Modifiers::none());
+    let labels = cx.update(|_, cx| {
+        workspace
+            .read(cx)
+            .open_menu()
+            .map(|menu| menu.read(cx).labels())
+            .unwrap_or_default()
+    });
+    let earlier_name = earlier_root
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert!(labels.contains(&earlier_name), "{labels:?}");
+    assert!(!labels.contains(&"fix-partner".to_string()), "{labels:?}");
+    assert_eq!(labels.last().map(String::as_str), Some("Open…"));
+    // The menu opens below the bar.
+    let first = cx.debug_bounds("menu-item-0").expect("an item");
+    assert!(first.top() >= bar.bottom());
+    cx.simulate_keystrokes("escape");
+    assert!(cx.update(|_, cx| workspace.read(cx).open_menu().is_none()));
 }

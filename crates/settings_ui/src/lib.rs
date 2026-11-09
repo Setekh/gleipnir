@@ -23,6 +23,14 @@ pub fn bind_keys(cx: &mut App) {
 }
 
 pub fn add_to_workspace(workspace: &mut Workspace, _: &mut Window, _: &mut Context<Workspace>) {
+    workspace.add_title_item(gleipnir_workspace::TitleSide::Right, 90, |_, cx| {
+        let theme = cx.global::<gleipnir_ui::Theme>().clone();
+        Some(
+            gleipnir_workspace::title_button("title-settings", gleipnir_ui::Icon::Settings, &theme)
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenLanguages), cx))
+                .into_any_element(),
+        )
+    });
     workspace.register_action(|_, _: &InstallPackage, window, cx| {
         let prompt = cx.prompt_for_paths(PathPromptOptions {
             files: false,

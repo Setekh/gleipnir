@@ -221,6 +221,9 @@ fn still_busy(
         ServerStatus::Starting => {
             Some(format!("{server} is still starting; try again in a moment"))
         }
+        ServerStatus::Installing => Some(format!(
+            "{server} is being installed; try again when it's done"
+        )),
         _ => None,
     }
 }
@@ -427,7 +430,14 @@ fn show_usage_picker(
         .collect();
     let handle = cx.weak_entity();
     let title = title.to_string();
-    workspace.toggle_modal(window, cx, move |_, cx| {
+    // Beside the caret, as IntelliJ's choosers are, with the hover out of the way.
+    let anchor = workspace.active_editor(cx).and_then(|editor| {
+        editor.update(cx, |editor, cx| {
+            editor.dismiss_popups(cx);
+            editor.caret_bounds(cx)
+        })
+    });
+    workspace.toggle_modal_at(anchor, window, cx, move |_, cx| {
         Picker::new(
             title,
             items,
@@ -754,6 +764,7 @@ fn status_item(workspace: &mut Workspace, cx: &mut Context<Workspace>) -> Option
     let theme = cx.global::<Theme>().clone();
     let (text, color) = match workspace.language_servers().read(cx).status(&package)? {
         ServerStatus::Starting => (format!("{server}: starting…"), theme.text_muted),
+        ServerStatus::Installing => (format!("installing {server}…"), theme.text_muted),
         ServerStatus::Running { busy: Some(task) } => {
             (format!("{server}: {task}"), theme.text_muted)
         }

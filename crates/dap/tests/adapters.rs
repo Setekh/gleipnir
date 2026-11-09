@@ -449,6 +449,37 @@ fn odin_through_lldb_dap() {
     eprintln!("odin output: {output:?}");
 }
 
+#[test]
+fn an_odin_test_debugs_through_lldb_dap() {
+    let project = project(&[(
+        "sums/sums_test.odin",
+        "package sums\n\nimport \"core:testing\"\n\n@(test)\nadds :: proc(t: ^testing.T) {\n\tcount := 3\n\ttotal := count + 1\n\ttesting.expect_value(t, total, 4)\n}\n",
+    )]);
+    if which("odin").is_none() {
+        eprintln!("skipped: odin isn't installed");
+        return;
+    }
+    let file = project.root.join("sums/sums_test.odin");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let target = adapter_for("odin")
+        .unwrap()
+        .test_at(&project.root, &file, &text, 5)
+        .expect("the test");
+    debug(
+        &project,
+        "odin",
+        target,
+        Expect {
+            file: "sums/sums_test.odin",
+            line: 8,
+            local: "count",
+            value: "3",
+            also: None,
+            settable: false,
+        },
+    );
+}
+
 const TS_PROGRAM: &str = "interface Point { x: number; y: number }\n\nfunction main(): void {\n  const count: number = 3;\n  const point: Point = { x: 1, y: 2 };\n  const total = count + point.x + point.y;\n  console.log(\"total\", total);\n}\n\nmain();\n";
 
 #[test]
