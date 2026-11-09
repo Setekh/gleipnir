@@ -117,6 +117,14 @@ pub struct Toolchains {
     /// Whether a missing tool that can be installed is installed as soon as it's needed.
     auto_install: bool,
     installer: Installer,
+    _settings: Option<gpui::Subscription>,
+}
+
+/// Whether to install missing tools as they're needed: as the settings say, unless
+/// GLEIPNIR_AUTO_INSTALL=0 leaves it to the user, as scripted runs need.
+fn auto_install(cx: &gpui::App) -> bool {
+    std::env::var_os("GLEIPNIR_AUTO_INSTALL").is_none_or(|v| v != "0")
+        && crate::settings(cx).tools.install_automatically
 }
 
 /// Installs a tool. Swappable so tests needn't download anything.
@@ -136,10 +144,13 @@ impl Toolchains {
             detecting: false,
             installing: BTreeSet::new(),
             errors: BTreeMap::new(),
-            // GLEIPNIR_AUTO_INSTALL=0 leaves installing to the user, as scripted runs need.
-            auto_install: std::env::var_os("GLEIPNIR_AUTO_INSTALL").is_none_or(|v| v != "0"),
+            auto_install: auto_install(cx),
             installer: Arc::new(install_tool),
+            _settings: None,
         };
+        this._settings = Some(cx.observe_global::<crate::AppSettings>(|this, cx| {
+            this.auto_install = auto_install(cx);
+        }));
         this.detect(cx);
         this
     }
@@ -163,6 +174,7 @@ impl Toolchains {
             errors: BTreeMap::new(),
             auto_install: false,
             installer: Arc::new(install_tool),
+            _settings: None,
         };
         this.detect(cx);
         this

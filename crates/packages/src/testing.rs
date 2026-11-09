@@ -17,9 +17,9 @@ pub enum TestFormat {
     GoVerbose,
     /// Odin's test runner, logging each test's change of state.
     Odin,
-    /// Jest's, or vitest's, JSON report, written to a file when the run ends; the console gets
-    /// the usual output meanwhile.
-    JestJson,
+    /// Jest, with Gleipnir's reporter giving each test's result as it finishes, or vitest,
+    /// whose JSON report is read when the run ends. The console gets their usual output.
+    Jest,
 }
 
 /// A suite of tests, as the run reported it: a Rust test binary, a Go package, an Odin package.
@@ -71,7 +71,7 @@ impl RunTarget {
             ("go", false) => Some(TestFormat::GoJson),
             ("go", true) => Some(TestFormat::GoVerbose),
             ("odin", _) => Some(TestFormat::Odin),
-            ("typescript", _) => Some(TestFormat::JestJson),
+            ("typescript", _) => Some(TestFormat::Jest),
             _ => None,
         }
     }
@@ -537,6 +537,31 @@ pub(crate) fn go_locate(
 
 // JavaScript and TypeScript.
 
+/// What starts the lines Gleipnir's jest reporter prints.
+pub const JS_REPORTER_MARK: &str = "\x1fgleipnir ";
+
+/// Gleipnir's jest reporter, written where jest can load it, once per version of it.
+fn js_reporter() -> PathBuf {
+    const SOURCE: &str = include_str!("../assets/jest-reporter.js");
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    SOURCE.hash(&mut hasher);
+    let path = std::env::temp_dir()
+        .join("gleipnir-tests")
+        .join(format!("jest-reporter-{:08x}.js", hasher.finish() as u32));
+    if !path.is_file() {
+        if let Some(folder) = path.parent() {
+            fs::create_dir_all(folder).ok();
+        }
+        // Written aside and moved, so a run starting meanwhile never loads half of it.
+        let partial = path.with_extension(format!("{}.tmp", std::process::id()));
+        if fs::write(&partial, SOURCE).is_ok() {
+            fs::rename(&partial, &path).ok();
+        }
+    }
+    path
+}
+
 /// What joins a test's `describe` titles and its own in the names the results use, as titles can
 /// hold any other character, spaces included.
 pub const JS_NAME_SEPARATOR: char = '\x1f';
@@ -554,6 +579,8 @@ pub enum JsTestKind {
 pub struct JsTestCall {
     pub kind: JsTestKind,
     pub title: String,
+    /// A parametrised call's title, like `adds %i` or `adds $a`, filled in per case.
+    pub template: bool,
     /// The line it starts on, from 0.
     pub line: usize,
     /// Where its name starts and its closing parenthesis is, so calls inside it can be found.
@@ -610,6 +637,69 @@ fn skip_js_string(bytes: &[u8], mut i: usize) -> usize {
         }
     }
     bytes.len()
+}
+
+/// Where the parenthesis opened at `open` closes, skipping strings and comments.
+fn matching_paren(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            b'\'' | b'"' | b'`' => {
+                i = skip_js_string(bytes, i);
+                continue;
+            }
+            b'/' if bytes.get(i + 1) == Some(&b'/') => {
+                while i < bytes.len() && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// A regular expression for a parametrised title: its placeholders, like jest's `%s`, `%i` or
+/// `%#` and a table's `$name`, match anything; `%%` is a percent sign.
+fn js_template_pattern(title: &str) -> String {
+    let mut out = String::new();
+    let mut chars = title.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '%' => match chars.peek() {
+                Some('%') => {
+                    chars.next();
+                    out.push('%');
+                }
+                Some(p) if "sdifjop#".contains(*p) => {
+                    chars.next();
+                    out.push_str(".*");
+                }
+                _ => out.push('%'),
+            },
+            '$' if chars.peek().is_some_and(|p| p.is_alphabetic() || *p == '_') => {
+                while chars
+                    .peek()
+                    .is_some_and(|p| p.is_alphanumeric() || *p == '_' || *p == '.')
+                {
+                    chars.next();
+                }
+                out.push_str(".*");
+            }
+            c => out.push_str(&regex_escape(&c.to_string())),
+        }
+    }
+    out
 }
 
 /// The text of a string literal starting at `i`, if it's a plain one: a template with
@@ -716,22 +806,47 @@ pub fn js_test_calls(text: &str) -> Vec<JsTestCall> {
                     parametrised |= &text[from..k] == "each";
                     j = k;
                 }
-                if parametrised || bytes.get(j) != Some(&b'(') {
+                // `.each` takes its cases first, as a list or a tagged table, then the title.
+                let mut title_paren = j;
+                if parametrised {
+                    let after = match bytes.get(j) {
+                        Some(b'(') => matching_paren(bytes, j).map(|end| end + 1),
+                        Some(b'`') => Some(skip_js_string(bytes, j)),
+                        _ => None,
+                    };
+                    let Some(mut after) = after else { continue };
+                    while after < bytes.len() && bytes[after].is_ascii_whitespace() {
+                        after += 1;
+                    }
+                    title_paren = after;
+                }
+                if bytes.get(title_paren) != Some(&b'(') {
                     continue;
                 }
-                let mut k = j + 1;
+                let mut k = title_paren + 1;
                 while k < bytes.len() && bytes[k].is_ascii_whitespace() {
                     k += 1;
                 }
-                if let Some(title) = js_string_at(text, k) {
+                let title = if parametrised {
+                    js_string_at(text, k).or_else(|| {
+                        // A template literal's `${...}` can't be named ahead, but `.each`
+                        // titles use `%s` or `$name`, which this keeps.
+                        let end = skip_js_string(bytes, k);
+                        (bytes.get(k) == Some(&b'`')).then(|| text[k + 1..end - 1].to_string())
+                    })
+                } else {
+                    js_string_at(text, k)
+                };
+                if let Some(title) = title {
                     calls.push((
                         JsTestCall {
                             kind,
                             title,
+                            template: parametrised,
                             line,
                             span: start..start,
                         },
-                        j,
+                        title_paren,
                     ));
                 }
                 // The parenthesis is seen next, so it's matched like any other.
@@ -749,21 +864,52 @@ pub fn js_test_calls(text: &str) -> Vec<JsTestCall> {
         .collect()
 }
 
-/// The titles from the outermost `describe` down to the call on a line, and what that call is.
-pub fn js_test_chain(text: &str, line: usize) -> Option<(Vec<String>, JsTestKind)> {
+/// A test or `describe` with those around it, from the outermost.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JsTestChain {
+    pub titles: Vec<String>,
+    /// Whether each title is a parametrised one's template.
+    pub templates: Vec<bool>,
+    pub kind: JsTestKind,
+}
+
+impl JsTestChain {
+    /// The full title as a regular expression, without anchors: the titles joined by spaces, as
+    /// the runners join them.
+    fn pattern(&self) -> String {
+        self.titles
+            .iter()
+            .zip(&self.templates)
+            .map(|(title, &template)| {
+                if template {
+                    js_template_pattern(title)
+                } else {
+                    regex_escape(title)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}
+
+/// The call on a line, with the `describe`s around it.
+pub fn js_test_chain(text: &str, line: usize) -> Option<JsTestChain> {
     let calls = js_test_calls(text);
     let target = calls.iter().find(|c| c.line == line)?;
-    let mut chain: Vec<String> = calls
+    let mut around: Vec<&JsTestCall> = calls
         .iter()
         .filter(|c| {
             c.kind == JsTestKind::Group
                 && c.span.start < target.span.start
                 && c.span.end > target.span.start
         })
-        .map(|c| c.title.clone())
         .collect();
-    chain.push(target.title.clone());
-    Some((chain, target.kind))
+    around.push(target);
+    Some(JsTestChain {
+        titles: around.iter().map(|c| c.title.clone()).collect(),
+        templates: around.iter().map(|c| c.template).collect(),
+        kind: target.kind,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -890,9 +1036,11 @@ fn js_target(
         args.extend(["-t".to_string(), pattern]);
     }
     match setup.runner {
+        // Gleipnir's reporter beside jest's own, rather than a report at the end, so results
+        // arrive as tests finish.
         JsRunner::Jest => args.extend([
-            "--json".to_string(),
-            format!("--outputFile={}", report.display()),
+            "--reporters=default".to_string(),
+            format!("--reporters={}", js_reporter().display()),
             "--testLocationInResults".to_string(),
         ]),
         JsRunner::Vitest => args.extend([
@@ -930,7 +1078,7 @@ fn js_relative(setup: &JsTestSetup, file: &Path) -> String {
 }
 
 /// A file's tests, or with a line, the `describe`, `it` or `test` on it.
-pub fn js_test_target(file: &Path, chain: Option<(Vec<String>, JsTestKind)>) -> Option<RunTarget> {
+pub fn js_test_target(file: &Path, chain: Option<JsTestChain>) -> Option<RunTarget> {
     let setup = js_test_setup(file)?;
     let files = vec![js_relative(&setup, file)];
     let file_name = file.file_name()?.to_string_lossy().into_owned();
@@ -942,14 +1090,12 @@ pub fn js_test_target(file: &Path, chain: Option<(Vec<String>, JsTestKind)>) -> 
             None,
             Some(file.to_path_buf()),
         ),
-        Some((chain, kind)) => {
-            let full = regex_escape(&chain.join(" "));
-            let (name, pattern) = match kind {
-                JsTestKind::Test => (format!("test {}", chain.join(" › ")), format!("^{full}$")),
-                JsTestKind::Group => (
-                    format!("tests in {}", chain.join(" › ")),
-                    format!("^{full} "),
-                ),
+        Some(chain) => {
+            let full = chain.pattern();
+            let shown = chain.titles.join(" › ");
+            let (name, pattern) = match chain.kind {
+                JsTestKind::Test => (format!("test {shown}"), format!("^{full}$")),
+                JsTestKind::Group => (format!("tests in {shown}"), format!("^{full} ")),
             };
             js_target(&setup, name, files, Some(pattern), Some(file.to_path_buf()))
         }
@@ -1180,37 +1326,70 @@ test(`top level`, () => {})\n";
                 ("adds", JsTestKind::Test, 4),
                 ("nested", JsTestKind::Group, 7),
                 ("skips", JsTestKind::Test, 8),
+                ("runs %s", JsTestKind::Test, 10),
                 ("top level", JsTestKind::Test, 13),
             ]
         );
         // The outer describe's call ends at its closing parenthesis, after everything in it.
         let outer = &calls[0];
         assert_eq!(&JS_TESTS[outer.span.end..outer.span.end + 1], ")");
-        assert!(outer.span.end > calls[3].span.start);
-        assert!(outer.span.end < calls[4].span.start);
+        assert!(outer.span.end > calls[4].span.start);
+        assert!(outer.span.end < calls[5].span.start);
     }
 
     #[test]
     fn a_js_test_is_named_by_the_describes_around_it() {
+        let chain = |line| js_test_chain(JS_TESTS, line).map(|c| (c.titles, c.kind));
         assert_eq!(
-            js_test_chain(JS_TESTS, 8),
+            chain(8),
             Some((
                 vec!["maths (basic)".into(), "nested".into(), "skips".into()],
                 JsTestKind::Test
             ))
         );
         assert_eq!(
-            js_test_chain(JS_TESTS, 7),
+            chain(7),
             Some((
                 vec!["maths (basic)".into(), "nested".into()],
                 JsTestKind::Group
             ))
         );
         assert_eq!(
-            js_test_chain(JS_TESTS, 13),
+            chain(13),
             Some((vec!["top level".into()], JsTestKind::Test))
         );
-        assert_eq!(js_test_chain(JS_TESTS, 5), None);
+        assert_eq!(chain(5), None);
+    }
+
+    #[test]
+    fn a_parametrised_test_runs_every_case_by_its_title_template() {
+        let text = "describe('add', () => {\n  it.each([[1, 2], [2, 3]])('adds %i to %i', (a, b) => {})\n  test.each`\n    a    | b\n    ${1} | ${2}\n  `('sums $a and $b.total', ({ a, b }) => {})\n  describe.each(['x'])('for %s (100%%)', () => {})\n})\n";
+        let calls = js_test_calls(text);
+        let titles: Vec<(&str, bool, usize)> = calls
+            .iter()
+            .map(|c| (c.title.as_str(), c.template, c.line))
+            .collect();
+        assert_eq!(
+            titles,
+            [
+                ("add", false, 0),
+                ("adds %i to %i", true, 1),
+                ("sums $a and $b.total", true, 2),
+                ("for %s (100%%)", true, 6),
+            ]
+        );
+        assert_eq!(
+            js_test_chain(text, 1).unwrap().pattern(),
+            "add adds .* to .*"
+        );
+        assert_eq!(
+            js_test_chain(text, 2).unwrap().pattern(),
+            "add sums .* and .*"
+        );
+        assert_eq!(
+            js_test_chain(text, 6).unwrap().pattern(),
+            "add for .* \\(100%\\)"
+        );
     }
 
     #[test]
@@ -1264,19 +1443,21 @@ test(`top level`, () => {})\n";
         let target = js_test_target(&file, js_test_chain(JS_TESTS, 4)).unwrap();
         assert_eq!(target.name, "test maths (basic) › adds");
         assert_eq!(target.single_test(), Some("maths (basic) › adds"));
-        assert_eq!(target.test_format(false), Some(TestFormat::JestJson));
-        let report = js_report_of(&target).unwrap();
+        assert_eq!(target.test_format(false), Some(TestFormat::Jest));
         assert_eq!(
             &target.run[1..5],
             [
                 "src/__tests__/log.test.ts",
                 "-t",
                 "^maths \\(basic\\) adds$",
-                "--json"
+                "--reporters=default"
             ]
         );
         assert!(target.run.contains(&"--testLocationInResults".to_string()));
-        assert!(report.starts_with(std::env::temp_dir()));
+        // Jest reports as it goes, through Gleipnir's reporter, so it writes no report.
+        let reporter = target.run[5].strip_prefix("--reporters=").unwrap();
+        assert!(Path::new(reporter).is_file());
+        assert_eq!(js_report_of(&target), None);
         // Under the debugger, Node runs jest's script, in one process.
         assert!(
             target
@@ -1296,6 +1477,11 @@ test(`top level`, () => {})\n";
 
         let vitest = js_test_target(&dir.path().join("apps/web/src/a.spec.ts"), None).unwrap();
         assert_eq!(&vitest.run[1..3], ["run", "src/a.spec.ts"]);
+        assert!(
+            js_report_of(&vitest)
+                .unwrap()
+                .starts_with(std::env::temp_dir())
+        );
     }
 
     #[test]

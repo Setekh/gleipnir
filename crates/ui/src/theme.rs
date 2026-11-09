@@ -164,6 +164,89 @@ impl Theme {
     }
 }
 
+impl Theme {
+    /// The light theme: paper for the chrome, with the same gold thread, darkened to read on it.
+    pub fn light() -> Self {
+        Self {
+            background: hsla(rgb(0xffffff)),
+            surface: hsla(rgb(0xf5f6f8)),
+            surface_raised: hsla(rgb(0xffffff)),
+            border: hsla(rgb(0xdcdfe4)),
+            text: hsla(rgb(0x1f2329)),
+            text_muted: hsla(rgb(0x5c6370)),
+            text_faint: hsla(rgb(0x9aa1ad)),
+            accent: hsla(rgb(0xb7861f)),
+            error: hsla(rgb(0xd03b3b)),
+            warning: hsla(rgb(0xa6741a)),
+            hover: hsla(rgba(0x0000000d)),
+            selection: hsla(rgba(0x3d7bd94d)),
+            selection_inactive: hsla(rgba(0x00000012)),
+            git_added: hsla(rgb(0x3f8a2e)),
+            git_modified: hsla(rgb(0x2f6dc4)),
+            git_deleted: hsla(rgb(0xd03b3b)),
+            git_conflicted: hsla(rgb(0xb5651d)),
+
+            editor_background: hsla(rgb(0xffffff)),
+            editor_gutter_text: hsla(rgb(0xadb3bd)),
+            editor_gutter_text_active: hsla(rgb(0x4b5260)),
+            editor_active_line: hsla(rgba(0x0000000a)),
+            editor_selection: hsla(rgba(0x3d7bd940)),
+            editor_cursor: hsla(rgb(0x1f2329)),
+            breakpoint: hsla(rgb(0xd8404b)),
+            usage_highlight: hsla(rgba(0x2f6dc42a)),
+            execution_line: hsla(rgba(0x3d7bd933)),
+            inline_value: hsla(rgb(0x7a8494)),
+
+            syntax: SyntaxColors {
+                attribute: hsla(rgb(0x8c6d1f)),
+                comment: hsla(rgb(0x8a919c)),
+                constant: hsla(rgb(0xb4462e)),
+                function: hsla(rgb(0x2763b8)),
+                keyword: hsla(rgb(0x0b4fa5)),
+                label: hsla(rgb(0x8c6d1f)),
+                macro_: hsla(rgb(0x8e3a91)),
+                namespace: hsla(rgb(0x2d6f80)),
+                number: hsla(rgb(0x1750eb)),
+                operator: hsla(rgb(0x4b5260)),
+                parameter: hsla(rgb(0x7a5a24)),
+                property: hsla(rgb(0x871094)),
+                punctuation: hsla(rgb(0x6b727e)),
+                string: hsla(rgb(0x067d17)),
+                string_escape: hsla(rgb(0x0037a6)),
+                tag: hsla(rgb(0x2763b8)),
+                type_: hsla(rgb(0x1a7f74)),
+                variable: hsla(rgb(0x1f2329)),
+                variable_builtin: hsla(rgb(0x0b4fa5)),
+            },
+
+            ui_font: ".SystemUIFont",
+            ui_font_size: 13.0,
+            editor_font_size: 13.0,
+            editor_line_height: 20.0,
+        }
+    }
+
+    /// The theme the settings choose, with their font sizes.
+    pub fn from_settings(settings: &gleipnir_packages::settings::Settings) -> Self {
+        use gleipnir_packages::settings::ThemeChoice;
+        let mut theme = match settings.appearance.theme {
+            ThemeChoice::Dark => Self::dark(),
+            ThemeChoice::Light => Self::light(),
+        };
+        theme.ui_font_size = settings.appearance.ui_font_size.clamp(9., 24.);
+        theme.editor_font_size = settings.editor.font_size.clamp(8., 40.);
+        theme.editor_line_height = settings
+            .editor
+            .line_height
+            .clamp(theme.editor_font_size, theme.editor_font_size * 3.);
+        theme
+    }
+
+    pub fn is_light(&self) -> bool {
+        self.background.l > 0.5
+    }
+}
+
 impl Global for Theme {}
 
 pub fn init_theme(cx: &mut App) {

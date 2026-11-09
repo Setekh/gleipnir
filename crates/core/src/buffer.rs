@@ -124,7 +124,9 @@ impl BufferModel {
         let mut this = Self {
             buffer: Buffer::new(text),
             syntax: entry.map(|e| Syntax::new(e.grammar)),
-            edit_config: entry.map(|e| e.edit_config.clone()).unwrap_or_default(),
+            edit_config: entry
+                .map(|e| styled(e.name.as_str(), e.edit_config.clone(), cx))
+                .unwrap_or_default(),
             path,
             mtime,
             disk_status: DiskStatus::InSync,
@@ -151,6 +153,24 @@ impl BufferModel {
 
     pub fn edit_config(&self) -> &EditConfig {
         &self.edit_config
+    }
+
+    /// Takes up the settings' indentation for the file's language, after they've changed.
+    pub fn apply_code_style(&mut self, cx: &mut Context<Self>) {
+        let Some(entry) = self
+            .path
+            .as_deref()
+            .and_then(|p| registry().language_for_path(p))
+        else {
+            return;
+        };
+        let config = styled(entry.name.as_str(), entry.edit_config.clone(), cx);
+        if config.tab_size != self.edit_config.tab_size
+            || config.hard_tabs != self.edit_config.hard_tabs
+        {
+            self.edit_config = config;
+            cx.notify();
+        }
     }
 
     pub fn path(&self) -> Option<&Path> {
@@ -578,6 +598,18 @@ fn text_hash(text: &str) -> u64 {
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut hasher);
     hasher.finish()
+}
+
+/// A language's editing settings with the indentation the settings give it, if they do.
+fn styled(language: &str, mut config: EditConfig, cx: &gpui::App) -> EditConfig {
+    let own = gleipnir_packages::settings::CodeStyle {
+        tab_size: config.tab_size,
+        hard_tabs: config.hard_tabs,
+    };
+    let style = crate::settings(cx).code_style_for(language, own);
+    config.tab_size = style.tab_size;
+    config.hard_tabs = style.hard_tabs;
+    config
 }
 
 #[cfg(test)]

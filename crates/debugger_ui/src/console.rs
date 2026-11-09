@@ -223,7 +223,7 @@ impl Focusable for ConsoleView {
 }
 
 impl Render for ConsoleView {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>().clone();
         let count = self.line_count(cx);
         if count > self.shown {
@@ -293,7 +293,7 @@ impl Render for ConsoleView {
                 })
                 .collect::<Vec<_>>()
         });
-        let font = gleipnir_editor_font();
+        let font = gleipnir_editor::editor_font_family(window, cx);
         div()
             .track_focus(&self.focus_handle)
             .size_full()
@@ -325,14 +325,5 @@ impl Render for ConsoleView {
                         .child(div().flex_1().child(input)),
                 )
             })
-    }
-}
-
-/// The monospace family the console uses, matching the editor where it can.
-fn gleipnir_editor_font() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "Menlo"
-    } else {
-        "DejaVu Sans Mono"
     }
 }

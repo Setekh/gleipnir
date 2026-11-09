@@ -2,7 +2,8 @@
 # which `script/e2e toolchains` replaces with a bare one, as the Dock would give.
 wait-idle
 action settings::OpenLanguages
-wait-state /modal LanguageSettings
+# Settings, at the Languages & Tools page.
+wait-state /modal SettingsView
 wait 3000
 screenshot {shots}/30-languages.png
 dump {shots}/30-languages.json

@@ -66,7 +66,12 @@ searches much harder, and has found real bugs that the default run missed.
 
 ## Configuration
 
-Key bindings can be changed in `~/.config/gleipnir/keymap.conf`, one per line:
+Settings (`Cmd+,`, or the gear in the toolbar) has pages for appearance, the editor, code style,
+the keymap, languages and tools, run and debug, and packages, with a search over all of them.
+Changes take effect at once and are kept in `~/.config/gleipnir/settings.json`.
+
+Key bindings added in Settings, or by hand, are kept in `~/.config/gleipnir/keymap.conf`, one per
+line:
 
     # keys = action, optionally `in` a context
     cmd-k = editor::DuplicateLine
@@ -74,8 +79,9 @@ Key bindings can be changed in `~/.config/gleipnir/keymap.conf`, one per line:
 
 Mistakes are reported in the status bar, and don't stop the rest of the file from loading.
 
-Languages & SDKs (`Cmd+;`) shows each language's SDK and tools. Tools Gleipnir installs go into its
-state folder, never system-wide, and only after you confirm. Each project's layout is saved outside
+Languages & Tools (`Cmd+;`) shows each language's SDK and tools. Tools Gleipnir installs go into its
+state folder, never system-wide, the first time they're needed, unless that's turned off in
+Settings. Each project's layout is saved outside
 the project, in `~/Library/Application Support/Gleipnir` on macOS
 and `~/.local/state/gleipnir` on Linux.
 

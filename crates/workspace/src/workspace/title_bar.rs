@@ -66,6 +66,39 @@ pub fn current_branch(root: &Path) -> Option<String> {
     }
 }
 
+/// How many branches of each kind the branches menu lists.
+const MENU_BRANCHES: usize = 15;
+
+/// A repository's local and remote branches, each most recently committed to first.
+pub fn list_branches(root: &Path) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    let output = std::process::Command::new("git")
+        .args([
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname)",
+            "refs/heads",
+            "refs/remotes",
+        ])
+        .current_dir(root)
+        .output()
+        .map_err(|e| anyhow::anyhow!("couldn't run git: {e}"))?;
+    if !output.status.success() {
+        anyhow::bail!("{}", String::from_utf8_lossy(&output.stderr).trim());
+    }
+    let mut local = Vec::new();
+    let mut remote = Vec::new();
+    for reference in String::from_utf8_lossy(&output.stdout).lines() {
+        if let Some(branch) = reference.strip_prefix("refs/heads/") {
+            local.push(branch.to_string());
+        } else if let Some(branch) = reference.strip_prefix("refs/remotes/")
+            && !branch.ends_with("/HEAD")
+        {
+            remote.push(branch.to_string());
+        }
+    }
+    Ok((local, remote))
+}
+
 /// A path with the home folder written as `~`, as menus show them.
 fn home_relative(path: &Path) -> String {
     match std::env::var_os("HOME").map(PathBuf::from) {
@@ -203,6 +236,117 @@ impl Workspace {
         self.show_menu(menu, position, window, cx);
     }
 
+    /// The branches menu: local branches, most recently committed to first, then remote ones;
+    /// choosing one switches to it.
+    fn open_branch_menu(
+        &mut self,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(root) = self.root.clone() else {
+            return;
+        };
+        let current = self.branch.clone();
+        let listed = cx.background_executor().spawn({
+            let root = root.clone();
+            async move { list_branches(&root) }
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let listed = listed.await;
+            this.update_in(cx, |this, window, cx| {
+                let (local, remote) = match listed {
+                    Ok(branches) => branches,
+                    Err(error) => {
+                        this.show_error(format!("{error:#}"), cx);
+                        return;
+                    }
+                };
+                let handle = cx.weak_entity();
+                let menu = cx.new(|cx| {
+                    let mut menu = ContextMenu::new(cx);
+                    let switch = |args: Vec<String>| {
+                        let handle = handle.clone();
+                        let root = root.clone();
+                        move |_: &mut Window, cx: &mut gpui::App| {
+                            if let Some(workspace) = handle.upgrade() {
+                                workspace
+                                    .update(cx, |w, cx| w.switch_branch(&root, args.clone(), cx));
+                            }
+                        }
+                    };
+                    for branch in local.iter().take(MENU_BRANCHES) {
+                        let hint = (Some(branch) == current.as_ref()).then(|| "current".into());
+                        menu = menu.item(
+                            branch.clone(),
+                            hint,
+                            switch(vec!["switch".into(), branch.clone()]),
+                        );
+                    }
+                    let remote: Vec<&String> = remote
+                        .iter()
+                        // A remote branch that's checked out locally is listed as the local one.
+                        .filter(|r| {
+                            r.split_once('/')
+                                .is_none_or(|(_, b)| !local.contains(&b.to_string()))
+                        })
+                        .take(MENU_BRANCHES)
+                        .collect();
+                    if !remote.is_empty() {
+                        menu = menu.separator();
+                    }
+                    for branch in remote {
+                        menu = menu.item(
+                            branch.clone(),
+                            Some("remote".into()),
+                            switch(vec!["switch".into(), "--track".into(), branch.clone()]),
+                        );
+                    }
+                    menu
+                });
+                this.show_menu(menu, position, window, cx);
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    /// Runs `git` with arguments that switch branch, off the UI thread, and says how it went.
+    /// Git refuses to switch over changes it would lose, and says so, which is shown as it is.
+    pub fn switch_branch(&mut self, root: &Path, args: Vec<String>, cx: &mut Context<Self>) {
+        let root = root.to_path_buf();
+        let run = cx.background_executor().spawn({
+            let root = root.clone();
+            async move {
+                std::process::Command::new("git")
+                    .args(&args)
+                    .current_dir(&root)
+                    .output()
+            }
+        });
+        cx.spawn(async move |this, cx| {
+            let output = run.await;
+            this.update(cx, |this, cx| {
+                match output {
+                    Ok(output) if output.status.success() => {
+                        this.branch = current_branch(&root);
+                        let branch = this.branch.clone().unwrap_or_default();
+                        this.show_message(format!("Switched to {branch}"), cx);
+                    }
+                    Ok(output) => {
+                        let error = String::from_utf8_lossy(&output.stderr);
+                        let error = error.trim().lines().collect::<Vec<_>>().join(" ");
+                        this.show_error(error, cx);
+                    }
+                    Err(error) => this.show_error(format!("couldn't run git: {error}"), cx),
+                }
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     pub(super) fn render_menu(&self) -> Option<AnyElement> {
         let (menu, position, _) = self.menu.as_ref()?;
         Some(
@@ -291,7 +435,13 @@ impl Workspace {
                 .py(px(3.))
                 .rounded(px(6.))
                 .text_color(theme.text_muted)
+                .cursor_pointer()
+                .hover(|s| s.bg(theme.hover))
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(|this, event: &gpui::ClickEvent, window, cx| {
+                    let at = point(event.position().x - px(40.), px(TITLE_BAR_HEIGHT));
+                    this.open_branch_menu(at, window, cx);
+                }))
                 .child(
                     svg()
                         .path(Icon::Branch.path())
@@ -299,6 +449,7 @@ impl Workspace {
                         .text_color(theme.text_muted),
                 )
                 .child(branch)
+                .child(chevron(&theme))
         });
 
         div()

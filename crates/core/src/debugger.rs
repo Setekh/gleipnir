@@ -2296,7 +2296,11 @@ fn new_test_run(format: gleipnir_packages::TestFormat, target: &RunTarget) -> Te
             std::fs::create_dir_all(folder).ok();
         }
     }
-    TestRun::new(format, &target.name)
+    let mut run = TestRun::new(format, &target.name);
+    if target.package_id == "typescript" {
+        run.set_jest_context(target.cwd.clone(), target.run.iter().any(|arg| arg == "-t"));
+    }
+    run
 }
 
 /// Reads the report a run writes when it ends, for runners that report that way. Says what went
@@ -2304,16 +2308,12 @@ fn new_test_run(format: gleipnir_packages::TestFormat, target: &RunTarget) -> Te
 fn load_test_report(tests: &mut TestRun, target: &RunTarget) -> Option<String> {
     let report = gleipnir_packages::js_report_of(target)?;
     let json = std::fs::read_to_string(&report).ok()?;
-    let filtered = target.run.iter().any(|arg| arg == "-t");
-    tests
-        .load_jest_report(&json, &target.cwd, filtered)
-        .err()
-        .map(|error| {
-            format!(
-                "Couldn't read the test report {}: {error:#}",
-                report.display()
-            )
-        })
+    tests.load_jest_report(&json).err().map(|error| {
+        format!(
+            "Couldn't read the test report {}: {error:#}",
+            report.display()
+        )
+    })
 }
 
 async fn run_program(

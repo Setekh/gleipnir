@@ -138,7 +138,7 @@ impl TestResultsView {
             launch: None,
             selected: None,
             collapsed: HashSet::new(),
-            show_passed: true,
+            show_passed: gleipnir_core::settings(cx).tests.show_passed,
             scroll: UniformListScrollHandle::new(),
             focus_handle: cx.focus_handle(),
             menu: None,
@@ -257,8 +257,12 @@ impl TestResultsView {
         cx.notify();
     }
 
+    /// Shows or hides passed tests, and remembers it for the next run, as IntelliJ does.
     pub fn set_show_passed(&mut self, show: bool, cx: &mut Context<Self>) {
         self.show_passed = show;
+        if gleipnir_core::settings(cx).tests.show_passed != show {
+            gleipnir_core::update_settings(cx, |s| s.tests.show_passed = show).ok();
+        }
         cx.notify();
     }
 

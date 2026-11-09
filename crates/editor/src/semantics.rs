@@ -251,8 +251,11 @@ impl EditorView {
         };
         let triggers = provider.triggers(&self.buffer, cx);
         self.semantics.hover = None;
+        let editor_settings = gleipnir_core::settings(cx).editor.clone();
         if self.semantics.completion.is_some() {
             self.update_completions(cx);
+        } else if !editor_settings.completion_while_typing {
+            // Only Ctrl+Space asks.
         } else if is_word(typed) {
             self.request_completions(None, cx);
         } else if triggers.completion.contains(&typed) {
@@ -261,7 +264,8 @@ impl EditorView {
         self.check_signature(cx);
         if typed == ')' {
             self.semantics.signature = None;
-        } else if triggers.signature.contains(&typed)
+        } else if (editor_settings.parameter_info_while_typing
+            && triggers.signature.contains(&typed))
             || (typed == ',' && self.semantics.signature.is_some())
         {
             self.request_signature(cx);
@@ -657,7 +661,7 @@ impl EditorView {
             return Vec::new();
         };
         let mut popups = Vec::new();
-        let font = crate::element::editor_font(window);
+        let font = crate::element::editor_font(window, cx);
         let (menu_at, signature_at, hover_at) = {
             let buffer = self.buffer.read(cx).buffer();
             let below = |offset: usize| {

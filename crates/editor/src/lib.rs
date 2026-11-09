@@ -14,6 +14,7 @@ pub use actions::{
 };
 pub use annotations::InlayHint;
 pub use decorations::{BreakpointKind, BreakpointMark, DecorationProvider};
+pub use element::{editor_font, editor_font_family};
 pub use semantics::{
     CompletionItem, CompletionKind, Completions, HoverInfo, SemanticTokens, SemanticsProvider,
     SignatureInfo, Triggers,

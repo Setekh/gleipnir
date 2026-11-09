@@ -11,9 +11,21 @@ use gpui::{
 };
 use std::path::PathBuf;
 
-actions!(settings, [OpenLanguages, Close, InstallPackage]);
+mod settings_view;
+pub use settings_view::{CloseSettings, Page, SettingsView};
+
+actions!(
+    settings,
+    [OpenSettings, OpenLanguages, Close, InstallPackage]
+);
 
 pub fn bind_keys(cx: &mut App) {
+    // IntelliJ's Settings.
+    #[cfg(target_os = "macos")]
+    cx.bind_keys([KeyBinding::new("cmd-,", OpenSettings, None)]);
+    #[cfg(not(target_os = "macos"))]
+    cx.bind_keys([KeyBinding::new("ctrl-alt-s", OpenSettings, None)]);
+    cx.bind_keys([KeyBinding::new("escape", CloseSettings, Some("Settings"))]);
     // IntelliJ's Project Structure, which is where SDKs live there too.
     #[cfg(target_os = "macos")]
     cx.bind_keys([KeyBinding::new("cmd-;", OpenLanguages, None)]);
@@ -27,7 +39,7 @@ pub fn add_to_workspace(workspace: &mut Workspace, _: &mut Window, _: &mut Conte
         let theme = cx.global::<gleipnir_ui::Theme>().clone();
         Some(
             gleipnir_workspace::title_button("title-settings", gleipnir_ui::Icon::Settings, &theme)
-                .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenLanguages), cx))
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(OpenSettings), cx))
                 .into_any_element(),
         )
     });
@@ -58,11 +70,29 @@ pub fn add_to_workspace(workspace: &mut Workspace, _: &mut Window, _: &mut Conte
         })
         .detach();
     });
+    workspace.register_action(|workspace, _: &OpenSettings, window, cx| {
+        open_settings(workspace, Page::Appearance, window, cx)
+    });
+    // IntelliJ's Project Structure, which here is Settings' Languages & Tools page.
     workspace.register_action(|workspace, _: &OpenLanguages, window, cx| {
-        let toolchains = workspace.toolchains().clone();
-        workspace.toggle_modal::<LanguageSettings>(window, cx, move |_, cx| {
-            LanguageSettings::new(toolchains, cx)
-        });
+        open_settings(workspace, Page::Languages, window, cx)
+    });
+}
+
+/// Opens Settings at a page, or if they're open, shows that page.
+pub fn open_settings(
+    workspace: &mut Workspace,
+    page: Page,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    if let Some(view) = workspace.active_modal::<SettingsView>() {
+        view.update(cx, |view, cx| view.show_page(page, cx));
+        return;
+    }
+    let toolchains = workspace.toolchains().clone();
+    workspace.toggle_modal::<SettingsView>(window, cx, move |_, cx| {
+        SettingsView::new(page, toolchains, cx)
     });
 }
 
@@ -71,6 +101,8 @@ pub struct LanguageSettings {
     toolchains: Entity<Toolchains>,
     /// A problem with the last thing tried, like adding a folder that isn't an SDK.
     message: Option<(String, SharedString)>,
+    /// Shown as a page of Settings, rather than as a popup of its own.
+    embedded: bool,
     _subscription: Subscription,
 }
 
@@ -84,12 +116,14 @@ impl Focusable for LanguageSettings {
 }
 
 impl LanguageSettings {
-    fn new(toolchains: Entity<Toolchains>, cx: &mut Context<Self>) -> Self {
+    /// As a page of Settings.
+    pub fn embedded(toolchains: Entity<Toolchains>, cx: &mut Context<Self>) -> Self {
         let subscription = cx.subscribe(&toolchains, |_, _, _: &ToolchainEvent, cx| cx.notify());
         Self {
             focus_handle: cx.focus_handle(),
             toolchains,
             message: None,
+            embedded: true,
             _subscription: subscription,
         }
     }
@@ -428,6 +462,29 @@ impl Render for LanguageSettings {
             );
         }
 
+        if self.embedded {
+            return div()
+                .flex()
+                .flex_col()
+                .when(detecting, |b| {
+                    b.child(
+                        div()
+                            .p(px(20.))
+                            .text_color(theme.text_muted)
+                            .child("Looking for SDKs…"),
+                    )
+                })
+                .child(
+                    div()
+                        .px(px(16.))
+                        .pt(px(10.))
+                        .text_size(px(11.5))
+                        .text_color(theme.text_muted)
+                        .child("SDKs and tools for each language. Choices apply to this project."),
+                )
+                .children(sections)
+                .into_any_element();
+        }
         div()
             .key_context("LanguageSettings")
             .track_focus(&self.focus_handle)
@@ -518,6 +575,7 @@ impl Render for LanguageSettings {
                     })
                     .children(sections),
             )
+            .into_any_element()
     }
 }
 

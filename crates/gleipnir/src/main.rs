@@ -5,7 +5,7 @@ mod driver;
 use gleipnir_core::BufferStore;
 use gleipnir_workspace::{
     GlobalStore, NewFile, OpenFile, OpenFolder, Quit, SaveAs, SplitDown, SplitRight, WorkspaceInit,
-    config_dir, last_project, load_user_keymap, open_project_window, project_root_for,
+    last_project, load_user_keymap, open_project_window, project_root_for,
 };
 use gpui::{App, AppContext as _, Menu, MenuItem};
 use std::path::PathBuf;
@@ -46,6 +46,22 @@ fn absolute(path: &std::path::Path) -> PathBuf {
     std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Binds every feature's default keys, then the person's own, which win. Returns problems with
+/// the person's keymap file.
+fn bind_all_keys(cx: &mut App) -> Vec<String> {
+    gleipnir_ui::bind_text_input_keys(cx);
+    gleipnir_ui::bind_context_menu_keys(cx);
+    gleipnir_editor::bind_keys(cx);
+    gleipnir_workspace::bind_keys(cx);
+    gleipnir_project_panel::bind_keys(cx);
+    gleipnir_search::bind_keys(cx);
+    gleipnir_settings_ui::bind_keys(cx);
+    gleipnir_code_nav::bind_keys(cx);
+    gleipnir_debugger_ui::bind_keys(cx);
+    // Loaded last, so that it overrides the defaults.
+    load_user_keymap(&gleipnir_workspace::user_keymap_path(), cx)
+}
+
 fn main() {
     let target = launch_target(std::env::args_os().nth(1).map(PathBuf::from));
     let script = std::env::var_os("GLEIPNIR_SCRIPT").map(PathBuf::from);
@@ -56,21 +72,19 @@ fn main() {
     gpui_platform::application()
         .with_assets(gleipnir_ui::Assets)
         .run(move |cx: &mut App| {
-            gleipnir_ui::init_theme(cx);
-            gleipnir_ui::bind_text_input_keys(cx);
-            gleipnir_ui::bind_context_menu_keys(cx);
-            gleipnir_editor::bind_keys(cx);
-            gleipnir_workspace::bind_keys(cx);
-            gleipnir_project_panel::bind_keys(cx);
-            gleipnir_search::bind_keys(cx);
-            gleipnir_settings_ui::bind_keys(cx);
-            gleipnir_code_nav::bind_keys(cx);
-            gleipnir_debugger_ui::bind_keys(cx);
+            gleipnir_core::init_settings(cx);
+            cx.set_global(gleipnir_ui::Theme::from_settings(gleipnir_core::settings(
+                cx,
+            )));
+            let keymap_errors = bind_all_keys(cx);
+            let keymap_path = gleipnir_workspace::user_keymap_path();
+            cx.set_global(gleipnir_workspace::KeymapReload(Rc::new(|cx| {
+                cx.clear_key_bindings();
+                let errors = bind_all_keys(cx);
+                set_menus(cx);
+                errors
+            })));
             set_menus(cx);
-
-            // Loaded last, so that it overrides the defaults.
-            let keymap_path = config_dir().join("keymap.conf");
-            let keymap_errors = load_user_keymap(&keymap_path, cx);
 
             cx.on_action(|_: &Quit, cx| cx.quit());
             cx.on_window_closed(|cx, _| {
@@ -90,7 +104,17 @@ fn main() {
                 store.start_polling(DISK_POLL_INTERVAL, cx);
                 store
             });
-            cx.set_global(GlobalStore(store));
+            cx.set_global(GlobalStore(store.clone()));
+            // Settings take effect as they change: the theme and fonts, and open files'
+            // indentation.
+            cx.observe_global::<gleipnir_core::AppSettings>(move |cx| {
+                cx.set_global(gleipnir_ui::Theme::from_settings(gleipnir_core::settings(
+                    cx,
+                )));
+                store.update(cx, |store, cx| store.apply_code_style(cx));
+                cx.refresh_windows();
+            })
+            .detach();
             cx.set_global(WorkspaceInit(Rc::new(|workspace, window, cx| {
                 gleipnir_project_panel::add_to_workspace(workspace, window, cx);
                 gleipnir_search::add_to_workspace(workspace, window, cx);
@@ -127,7 +151,11 @@ fn set_menus(cx: &mut App) {
     cx.set_menus([
         Menu {
             name: "Gleipnir".into(),
-            items: vec![MenuItem::action("Quit", Quit)],
+            items: vec![
+                MenuItem::action("Settings…", gleipnir_settings_ui::OpenSettings),
+                MenuItem::separator(),
+                MenuItem::action("Quit", Quit),
+            ],
             disabled: false,
         },
         Menu {
@@ -140,7 +168,7 @@ fn set_menus(cx: &mut App) {
                 MenuItem::action("Save", gleipnir_editor::Save),
                 MenuItem::action("Save As…", SaveAs),
                 MenuItem::separator(),
-                MenuItem::action("Languages & SDKs…", gleipnir_settings_ui::OpenLanguages),
+                MenuItem::action("Languages & Tools…", gleipnir_settings_ui::OpenLanguages),
                 MenuItem::action("Install Package…", gleipnir_settings_ui::InstallPackage),
             ],
             disabled: false,

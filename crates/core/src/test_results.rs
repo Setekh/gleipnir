@@ -113,7 +113,7 @@ impl TestRun {
             TestFormat::GoJson => Parser::GoJson,
             TestFormat::GoVerbose => Parser::GoVerbose(Vec::new()),
             TestFormat::Odin => Parser::Odin(Odin::default()),
-            TestFormat::JestJson => Parser::Jest,
+            TestFormat::Jest => Parser::Jest(Jest::default()),
         };
         Self {
             nodes: vec![root],
@@ -233,7 +233,12 @@ impl TestRun {
             _ => return vec![(kind, text.to_string())],
         };
         let mut shown = Vec::new();
-        let decodes = matches!(self.parser, Parser::GoJson);
+        // Go's events, and jest's reporter on stdout, are read rather than shown.
+        let decodes = match self.parser {
+            Parser::GoJson => true,
+            Parser::Jest(_) => stream == 0,
+            _ => false,
+        };
         if !decodes {
             shown.push((kind, text.to_string()));
         }
@@ -290,83 +295,119 @@ impl TestRun {
         self.version += 1;
     }
 
-    /// Fills the tree from a jest or vitest JSON report: a suite per file, a group per
-    /// `describe`, and each test with its time, its failure and where it is. With `filtered`,
-    /// tests left out by the title pattern aren't shown, as they're reported like skipped ones.
-    pub fn load_jest_report(
-        &mut self,
-        json: &str,
-        cwd: &Path,
-        filtered: bool,
-    ) -> anyhow::Result<()> {
-        let report: Value = serde_json::from_str(json)?;
+    /// Tells a jest-style run where it runs, which its file names are relative to, and whether a
+    /// title pattern narrows it, so the tests it leaves out, reported like skipped ones, aren't
+    /// shown.
+    pub fn set_jest_context(&mut self, cwd: PathBuf, filtered: bool) {
+        if let Parser::Jest(jest) = &mut self.parser {
+            jest.cwd = cwd;
+            jest.filtered = filtered;
+        }
+    }
+
+    fn jest_context(&self) -> (PathBuf, bool) {
+        match &self.parser {
+            Parser::Jest(jest) => (jest.cwd.clone(), jest.filtered),
+            _ => (PathBuf::new(), false),
+        }
+    }
+
+    /// The suite for a test file, made if it's new.
+    fn jest_suite(&mut self, path: &Path) -> usize {
+        let (cwd, _) = self.jest_context();
+        let relative = path
+            .strip_prefix(&cwd)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .into_owned();
+        if let Some(&index) = self.by_name.get(&(ROOT, relative.clone())) {
+            return index;
+        }
+        let suite = self.add_suite(
+            &relative,
+            Suite {
+                name: relative.clone(),
+                source: Some(path.to_string_lossy().into_owned()),
+            },
+            None,
+        );
+        self.by_name.insert((ROOT, relative), suite);
+        suite
+    }
+
+    /// One test's result, as jest reports it, under its file's suite.
+    fn jest_result(&mut self, suite: usize, path: &Path, result: &Value) {
+        let (_, filtered) = self.jest_context();
+        let state = match result["status"].as_str() {
+            Some("passed") => TestState::Passed,
+            Some("failed") => TestState::Failed,
+            _ if filtered => return,
+            _ => TestState::Skipped,
+        };
         let separator = gleipnir_packages::JS_NAME_SEPARATOR.to_string();
+        let mut titles: Vec<String> = result["ancestorTitles"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|t| t.as_str().map(String::from))
+            .collect();
+        titles.push(result["title"].as_str().unwrap_or_default().to_string());
+        let name = titles.join(&separator);
+        let index = self.test(suite, &name, Some(&separator), true);
+        // Seen already, as a report at the end repeats what was reported along the way.
+        if self.nodes[index].state.is_some() {
+            return;
+        }
+        self.set_state(index, state);
+        if let Some(ms) = result["duration"].as_f64() {
+            self.nodes[index].duration = Some(Duration::from_secs_f64(ms / 1000.));
+        }
+        if let Some(line) = result["location"]["line"].as_u64() {
+            self.nodes[index].location = Some((path.to_path_buf(), line.saturating_sub(1) as u32));
+        }
+        for message in result["failureMessages"].as_array().into_iter().flatten() {
+            for line in message.as_str().unwrap_or_default().lines() {
+                if !is_runner_frame(line) {
+                    self.output(index, ConsoleKind::Stderr, line);
+                }
+            }
+        }
+    }
+
+    /// A file that couldn't run, like one that doesn't compile, fails as a whole.
+    fn jest_file_failed(&mut self, suite: usize, message: &str) {
+        if self.nodes[suite].state == Some(TestState::Failed) {
+            return;
+        }
+        self.set_state(suite, TestState::Failed);
+        for line in message.lines() {
+            if !is_runner_frame(line) {
+                self.output(suite, ConsoleKind::Stderr, line);
+            }
+        }
+    }
+
+    /// Fills the tree from a jest or vitest JSON report: a suite per file, a group per
+    /// `describe`, and each test with its time, its failure and where it is. What was already
+    /// reported along the way stays as it was.
+    pub fn load_jest_report(&mut self, json: &str) -> anyhow::Result<()> {
+        let report: Value = serde_json::from_str(json)?;
         for file in report["testResults"].as_array().into_iter().flatten() {
             let Some(path) = file["name"].as_str().map(PathBuf::from) else {
                 continue;
             };
-            let relative = path
-                .strip_prefix(cwd)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .into_owned();
-            let suite = self.add_suite(
-                &relative,
-                Suite {
-                    name: relative.clone(),
-                    source: Some(path.to_string_lossy().into_owned()),
-                },
-                None,
-            );
-            self.by_name.insert((ROOT, relative.clone()), suite);
+            let suite = self.jest_suite(&path);
             let assertions = file["assertionResults"]
                 .as_array()
                 .cloned()
                 .unwrap_or_default();
             for assertion in &assertions {
-                let state = match assertion["status"].as_str() {
-                    Some("passed") => TestState::Passed,
-                    Some("failed") => TestState::Failed,
-                    _ if filtered => continue,
-                    _ => TestState::Skipped,
-                };
-                let mut titles: Vec<String> = assertion["ancestorTitles"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|t| t.as_str().map(String::from))
-                    .collect();
-                titles.push(assertion["title"].as_str().unwrap_or_default().to_string());
-                let name = titles.join(&separator);
-                let index = self.test(suite, &name, Some(&separator), true);
-                self.set_state(index, state);
-                if let Some(ms) = assertion["duration"].as_f64() {
-                    self.nodes[index].duration = Some(Duration::from_secs_f64(ms / 1000.));
-                }
-                if let Some(line) = assertion["location"]["line"].as_u64() {
-                    self.nodes[index].location =
-                        Some((path.clone(), line.saturating_sub(1) as u32));
-                }
-                for message in assertion["failureMessages"]
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                {
-                    for line in message.as_str().unwrap_or_default().lines() {
-                        if !is_runner_frame(line) {
-                            self.output(index, ConsoleKind::Stderr, line);
-                        }
-                    }
-                }
+                self.jest_result(suite, &path, assertion);
             }
-            // A file that couldn't run, like one that doesn't compile, fails as a whole.
             if file["status"].as_str() == Some("failed")
                 && assertions.iter().all(|a| a["status"] != "failed")
             {
-                self.set_state(suite, TestState::Failed);
-                for line in file["message"].as_str().unwrap_or_default().lines() {
-                    self.output(suite, ConsoleKind::Stderr, line);
-                }
+                self.jest_file_failed(suite, file["message"].as_str().unwrap_or_default());
             }
             if let (Some(start), Some(end)) = (file["startTime"].as_f64(), file["endTime"].as_f64())
                 && end >= start
@@ -376,6 +417,45 @@ impl TestRun {
         }
         self.version += 1;
         Ok(())
+    }
+
+    /// A line jest printed: the reporter's events build the tree as tests finish; anything else
+    /// is shown as it is.
+    fn jest_line(&mut self, kind: ConsoleKind, line: &str, shown: &mut Vec<(ConsoleKind, String)>) {
+        let Some(event) = line
+            .strip_prefix(gleipnir_packages::JS_REPORTER_MARK)
+            .and_then(|json| serde_json::from_str::<Value>(json).ok())
+        else {
+            // Stderr is shown as it comes; stdout is held to its line ends, to find the events.
+            if kind == ConsoleKind::Stdout {
+                shown.push((kind, format!("{line}\n")));
+            }
+            return;
+        };
+        let Some(path) = event["path"].as_str().map(PathBuf::from) else {
+            return;
+        };
+        let suite = self.jest_suite(&path);
+        match event["event"].as_str() {
+            Some("file") => {
+                self.nodes[suite].state = Some(TestState::Running);
+                self.version += 1;
+            }
+            Some("test") => self.jest_result(suite, &path, &event),
+            Some("fileDone") => {
+                if self.nodes[suite].state == Some(TestState::Running) {
+                    self.nodes[suite].state = None;
+                }
+                if let Some(ms) = event["duration"].as_f64() {
+                    self.nodes[suite].duration = Some(Duration::from_secs_f64(ms / 1000.));
+                }
+                if let Some(message) = event["error"].as_str() {
+                    self.jest_file_failed(suite, message);
+                }
+                self.version += 1;
+            }
+            _ => {}
+        }
     }
 
     // Building the tree.
@@ -524,7 +604,11 @@ impl TestRun {
             Parser::GoJson => go_json_line(self, kind, line, shown),
             Parser::GoVerbose(running) => go_verbose_line(self, running, kind, line),
             Parser::Odin(state) => state.line(self, kind, line),
-            Parser::Jest => {}
+            Parser::Jest(_) => {
+                self.parser = parser;
+                self.jest_line(kind, line, shown);
+                return;
+            }
         }
         self.parser = parser;
     }
@@ -536,8 +620,14 @@ enum Parser {
     /// The tests running, innermost last.
     GoVerbose(Vec<usize>),
     Odin(Odin),
-    /// The output's only shown; the results come from the report, at the end.
-    Jest,
+    /// The reporter's events as tests finish, or for vitest, the report at the end.
+    Jest(Jest),
+}
+
+#[derive(Default)]
+struct Jest {
+    cwd: PathBuf,
+    filtered: bool,
 }
 
 /// A stack frame inside the test runner or Node itself, which says nothing about the test.
@@ -1184,14 +1274,14 @@ mod tests {
 
     #[test]
     fn a_jest_report_becomes_files_describes_and_tests() {
-        let mut run = TestRun::new(TestFormat::JestJson, "tests in add.test.js");
+        let mut run = TestRun::new(TestFormat::Jest, "tests in add.test.js");
+        run.set_jest_context(PathBuf::from("/p/js"), true);
         // What jest prints as it goes is only shown.
         assert_eq!(
             feed(&mut run, ConsoleKind::Stderr, "PASS src/add.test.js\n"),
             "PASS src/add.test.js\n"
         );
-        run.load_jest_report(JEST_REPORT, Path::new("/p/js"), true)
-            .unwrap();
+        run.load_jest_report(JEST_REPORT).unwrap();
         run.finish(Some(1), false);
         let sep = gleipnir_packages::JS_NAME_SEPARATOR;
         let file = find(&run, "src/add.test.js");
@@ -1224,12 +1314,69 @@ mod tests {
     }
 
     #[test]
+    fn jest_reporter_events_fill_the_tree_as_tests_finish() {
+        let mut run = TestRun::new(TestFormat::Jest, "tests in add.test.js");
+        run.set_jest_context(PathBuf::from("/p/js"), true);
+        let mark = gleipnir_packages::JS_REPORTER_MARK;
+        let event = |json: &str| format!("{mark}{json}\n");
+        // Jest's own output still shows; the reporter's lines don't.
+        let shown = feed(
+            &mut run,
+            ConsoleKind::Stdout,
+            &event(r#"{"event":"file","path":"/p/js/src/add.test.js"}"#),
+        );
+        assert_eq!(shown, "");
+        let file = find(&run, "src/add.test.js");
+        assert_eq!(run.state(file), TestState::Running);
+        feed(
+            &mut run,
+            ConsoleKind::Stdout,
+            &event(
+                r#"{"event":"test","path":"/p/js/src/add.test.js","ancestorTitles":["add"],"title":"adds","status":"passed","duration":3,"failureMessages":[],"location":{"line":4,"column":3}}"#,
+            ),
+        );
+        assert_eq!(
+            run.state(find(
+                &run,
+                &format!("add{}adds", gleipnir_packages::JS_NAME_SEPARATOR)
+            )),
+            TestState::Passed
+        );
+        assert_eq!(
+            run.nodes()[ROOT].counts.passed,
+            1,
+            "counted before the run ends"
+        );
+        // A test left out by the pattern isn't shown.
+        feed(
+            &mut run,
+            ConsoleKind::Stdout,
+            &event(
+                r#"{"event":"test","path":"/p/js/src/add.test.js","ancestorTitles":["add"],"title":"other","status":"pending","failureMessages":[]}"#,
+            ),
+        );
+        assert_eq!(run.nodes()[ROOT].counts.total, 1);
+        assert_eq!(
+            feed(&mut run, ConsoleKind::Stderr, "PASS src/add.test.js\n"),
+            "PASS src/add.test.js\n"
+        );
+        feed(
+            &mut run,
+            ConsoleKind::Stdout,
+            &event(r#"{"event":"fileDone","path":"/p/js/src/add.test.js","duration":120}"#),
+        );
+        run.finish(Some(0), false);
+        assert_eq!(run.state(file), TestState::Passed);
+        assert_eq!(run.nodes()[file].duration, Some(Duration::from_millis(120)));
+    }
+
+    #[test]
     fn a_jest_file_that_cannot_run_fails_with_its_message() {
         let report = r#"{"testResults":[{"name":"/p/a.test.ts","status":"failed",
             "message":"SyntaxError: Unexpected token (3:4)","assertionResults":[]}]}"#;
-        let mut run = TestRun::new(TestFormat::JestJson, "tests");
-        run.load_jest_report(report, Path::new("/p"), false)
-            .unwrap();
+        let mut run = TestRun::new(TestFormat::Jest, "tests");
+        run.set_jest_context(PathBuf::from("/p"), false);
+        run.load_jest_report(report).unwrap();
         run.finish(Some(1), false);
         let file = find(&run, "a.test.ts");
         assert_eq!(run.state(file), TestState::Failed);

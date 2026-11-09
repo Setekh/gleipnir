@@ -772,3 +772,69 @@ fn the_title_bar_shows_the_project_and_branch_and_offers_recent_projects(cx: &mu
     cx.simulate_keystrokes("escape");
     assert!(cx.update(|_, cx| workspace.read(cx).open_menu().is_none()));
 }
+
+/// Runs git in a folder for a test's repository, with an identity so commits work anywhere.
+fn git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "git {args:?}: {status:?}");
+}
+
+#[gpui::test]
+fn the_branch_menu_lists_branches_and_switches_with_git(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    git(&root, &["init", "-q"]);
+    std::fs::write(root.join("a.txt"), "one\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "one"]);
+    git(&root, &["branch", "feature"]);
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    let branch = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| workspace.read(cx).branch().map(String::from))
+    };
+    assert_eq!(branch(cx).as_deref(), Some("main"));
+
+    let open_menu = |cx: &mut VisualTestContext| {
+        let button = cx.debug_bounds("title-branch").expect("the branch");
+        cx.simulate_click(button.center(), Modifiers::none());
+        run_until(cx, |cx| {
+            cx.update(|_, cx| workspace.read(cx).open_menu().is_some())
+        });
+        cx.update(|_, cx| workspace.read(cx).open_menu().unwrap().read(cx).labels())
+    };
+    let labels = open_menu(cx);
+    assert!(labels.contains(&"main".to_string()) && labels.contains(&"feature".to_string()));
+    let feature = labels.iter().position(|l| l == "feature").unwrap();
+    let item = cx
+        .debug_bounds(format!("menu-item-{feature}").leak())
+        .unwrap();
+    cx.simulate_click(item.center(), Modifiers::none());
+    run_until(cx, |cx| branch(cx).as_deref() == Some("feature"));
+    assert_eq!(crate::current_branch(&root).as_deref(), Some("feature"));
+
+    // Git won't switch over a change it would lose, and says why.
+    std::fs::write(root.join("a.txt"), "two\n").unwrap();
+    git(&root, &["commit", "-q", "-am", "two"]);
+    std::fs::write(root.join("a.txt"), "uncommitted\n").unwrap();
+    let labels = open_menu(cx);
+    let main = labels.iter().position(|l| l == "main").unwrap();
+    let item = cx.debug_bounds(format!("menu-item-{main}").leak()).unwrap();
+    cx.simulate_click(item.center(), Modifiers::none());
+    run_until(cx, |cx| {
+        cx.update(|window, cx| workspace.read(cx).snapshot(window, cx).message)
+            .is_some_and(|m| m.contains("would be overwritten"))
+    });
+    assert_eq!(branch(cx).as_deref(), Some("feature"));
+}

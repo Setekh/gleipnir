@@ -14,6 +14,8 @@ pub fn isolate_state() {
     // value never changes after the first call.
     unsafe {
         std::env::set_var("GLEIPNIR_STATE_DIR", dir.path());
+        // Settings a test changes are saved; never over the person's own.
+        std::env::set_var("GLEIPNIR_CONFIG_DIR", dir.path().join("config"));
         // Asking the login shell for its environment takes a second and depends on the machine.
         std::env::set_var("GLEIPNIR_NO_SHELL_ENV", "1");
     }

@@ -277,13 +277,14 @@ Still open from M8:
 
 Goal: the rough edges found using Gleipnir on a real TypeScript monorepo, smoothed out.
 
-Status: 9.1 to 9.4 built and passing on macOS; 9.5 is next. `script/e2e tests` runs a real jest
-project: a file's tests, the tree with its describes, a failure's own output and the gutter's
-marks, one test from the cursor, Rerun Failed, and the test under the debugger stopping at a
-breakpoint in it. On the Nx monorepo that prompted this, with jest 29 and babel, one `it` and one
-`describe` run alone and a TypeScript test stops at its breakpoint. Completion there shows 0.27 s
+Status: built and passing on macOS. `script/e2e tests` runs a real jest project: a file's tests,
+the tree with its describes, a failure's own output and the gutter's marks, one test from the
+cursor, Rerun Failed, and the test under the debugger stopping at a breakpoint in it. On the Nx
+monorepo that prompted this, with jest 29 and babel, one `it` and one `describe` run alone, results
+arrive test by test, and a TypeScript test stops at its breakpoint. Completion there shows 0.27 s
 after the first key, against 7.9 s before the warm-up, with typing at 6.5 ms a key in a release
-build while the list follows it (`type-timed` in the driver measures this).
+build while the list follows it (`type-timed` in the driver measures this). Settings' pages each
+have tests that a change takes effect and is kept.
 
 | # | Item | Finished when |
 | --- | --- | --- |
@@ -293,12 +294,15 @@ build while the list follows it (`type-timed` in the driver measures this).
 | 9.4 | IntelliJ's main toolbar in place of the OS title bar: project with recent projects, the Git branch, the run configuration with Run, Debug and Stop, Search Everywhere and Settings | Clicking each opens what it should; the window still drags and zooms from the bar |
 | 9.5 | A Settings screen for everything: editor, appearance, keymap, languages and tools, run and debug | Each setting changes the app live and is kept |
 
+Done alongside M9: the branch in the toolbar switches branch; jest results arrive test by test,
+through a reporter Gleipnir adds beside jest's own (vitest's still come at the end); and `it.each`
+and `describe.each` get Run icons that run every case.
+
 Still open in M9:
 
-- **9.5, the Settings screen.** The gear in the toolbar opens the SDKs and tools screen for now.
-- **The branch is shown, not switched.** Its menu waits for Git integration.
-- **Live JavaScript results.** The tree fills when the run ends, from the report, not test by test;
-  the console shows progress meanwhile. Parametrised tests (`it.each`) have no Run icon of their own.
+- **Settings has what exists to set.** More come as features do; there's no editor for colors or
+  for per-project settings yet.
+- **Branches are switched, not managed.** Creating, merging and the rest wait for Git integration.
 
 ## Later
 

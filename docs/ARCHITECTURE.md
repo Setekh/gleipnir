@@ -379,7 +379,21 @@ The OS title bar is replaced by IntelliJ's main toolbar, drawn by the workspace:
 menu lists recent projects; the Git branch, read from `.git/HEAD` and polled; and items features
 add, ordered by a number: the run configuration with Run, Debug and Stop, Search Everywhere and
 Settings. On macOS the window's buttons sit over its left end, gpui is told the app owns dragging
-the title bar, and empty parts of the bar move or zoom the window.
+the title bar, and empty parts of the bar move or zoom the window. The branch's menu lists local
+branches, then remote ones, most recently committed to first, and switches with `git switch`,
+which refuses rather than lose uncommitted work; its message is shown as it is.
+
+### Settings
+
+`Settings` (in `packages`, as plain data) is read from `settings.json` with a default for every
+field, so a partial or older file reads fine. `core` holds it as a global; changing it saves it and
+notifies observers, which is how everything follows at once: the app rebuilds the `Theme` (dark or
+light, with the font sizes) and re-applies indentation to open files, toolchains pick up whether to
+install tools, and the editor reads its font, completion, Parameter Info and inlay hint settings
+as it draws. The Settings screen lists each setting as data, with a label, a description and a
+control (a switch, a stepper or a choice), which is what its search runs over. Shortcuts added on
+its Keymap page are appended to `keymap.conf` and bound at once; removing one rebinds every key from
+the defaults, as gpui can't take a binding back alone.
 
 ## Testing
 

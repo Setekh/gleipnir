@@ -27,27 +27,36 @@ const GUTTER_RIGHT_PADDING: f32 = 16.0;
 const SCROLL_MARGIN_LINES: f32 = 3.0;
 const SCROLL_MARGIN_COLUMNS: f32 = 4.0;
 
-/// The first installed font from a preference list. Fonts differ by platform, and looking one up
-/// that doesn't exist falls back to something proportional, which an editor can't work with.
-pub(crate) fn editor_font(window: &Window) -> Font {
-    static FAMILY: OnceLock<String> = OnceLock::new();
-    let family = FAMILY.get_or_init(|| {
-        let available = window.text_system().all_font_names();
-        const PREFERRED: &[&str] = &[
-            "JetBrains Mono",
-            "JetBrainsMono Nerd Font",
-            "SF Mono",
-            "Menlo",
-            "DejaVu Sans Mono",
-            "Liberation Mono",
-            "Noto Sans Mono",
-        ];
-        PREFERRED
-            .iter()
-            .find(|name| available.iter().any(|a| a == *name))
-            .map_or_else(|| "monospace".to_string(), |name| name.to_string())
-    });
-    font(family.clone())
+/// The editor's font: the one the settings name if it's installed, or else the first installed
+/// from a preference list. Fonts differ by platform, and looking one up that doesn't exist falls
+/// back to something proportional, which an editor can't work with.
+pub fn editor_font(window: &Window, cx: &gpui::App) -> Font {
+    font(editor_font_family(window, cx))
+}
+
+/// The family `editor_font` picks.
+pub fn editor_font_family(window: &Window, cx: &gpui::App) -> String {
+    static AVAILABLE: OnceLock<Vec<String>> = OnceLock::new();
+    let available = AVAILABLE.get_or_init(|| window.text_system().all_font_names());
+    let installed = |name: &str| available.iter().any(|a| a == name);
+    if let Some(chosen) = &gleipnir_core::settings(cx).editor.font_family
+        && installed(chosen)
+    {
+        return chosen.clone();
+    }
+    const PREFERRED: &[&str] = &[
+        "JetBrains Mono",
+        "JetBrainsMono Nerd Font",
+        "SF Mono",
+        "Menlo",
+        "DejaVu Sans Mono",
+        "Liberation Mono",
+        "Noto Sans Mono",
+    ];
+    PREFERRED
+        .iter()
+        .find(|name| installed(name))
+        .map_or_else(|| "monospace".to_string(), |name| name.to_string())
 }
 
 /// One line as laid out on screen.
@@ -336,7 +345,7 @@ impl Element for EditorElement {
         let theme = cx.global::<Theme>().clone();
         let font_size = px(theme.editor_font_size);
         let line_height = px(theme.editor_line_height);
-        let font = editor_font(window);
+        let font = editor_font(window, cx);
         let font_id = window.text_system().resolve_font(&font);
         let char_width = window
             .text_system()
@@ -438,7 +447,11 @@ impl Element for EditorElement {
                 .map(|s| buffer.offset_to_point(s.head).line)
                 .collect();
 
-            let inlays = view.annotations.inlays.clone();
+            let inlays = if gleipnir_core::settings(cx).editor.inlay_hints {
+                view.annotations.inlays.clone()
+            } else {
+                Default::default()
+            };
             let mut lines = Vec::with_capacity(visible.len());
             let mut gutter_numbers = Vec::with_capacity(visible.len());
             let mut active_lines = Vec::new();

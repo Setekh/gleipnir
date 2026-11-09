@@ -10,6 +10,8 @@ fn setup(
     cx.executor().allow_parking();
     cx.update(|cx| {
         gleipnir_ui::init_theme(cx);
+        gleipnir_ui::bind_text_input_keys(cx);
+        gleipnir_ui::bind_context_menu_keys(cx);
         gleipnir_workspace::bind_keys(cx);
         bind_keys(cx);
     });
@@ -28,6 +30,7 @@ fn setup(
     (dir, workspace, cx)
 }
 
+/// Opens Settings at Languages & Tools, as Project Structure's shortcut does.
 fn open(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Entity<LanguageSettings> {
     let open = if cfg!(target_os = "macos") {
         "cmd-;"
@@ -35,8 +38,29 @@ fn open(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> Entity<Lan
         "ctrl-alt-shift-s"
     };
     cx.simulate_keystrokes(open);
-    cx.update(|_, cx| workspace.read(cx).active_modal::<LanguageSettings>())
-        .expect("it opens")
+    let view = settings_view(workspace, cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).page()), Page::Languages);
+    cx.update(|_, cx| view.read(cx).languages().clone())
+}
+
+fn settings_view(
+    workspace: &Entity<Workspace>,
+    cx: &mut VisualTestContext,
+) -> Entity<SettingsView> {
+    cx.update(|_, cx| workspace.read(cx).active_modal::<SettingsView>())
+        .expect("Settings open")
+}
+
+fn open_settings(
+    workspace: &Entity<Workspace>,
+    cx: &mut VisualTestContext,
+) -> Entity<SettingsView> {
+    cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-,"
+    } else {
+        "ctrl-alt-s"
+    });
+    settings_view(workspace, cx)
 }
 
 #[gpui::test]
@@ -45,8 +69,145 @@ fn the_shortcut_opens_it_and_escape_closes_it(cx: &mut TestAppContext) {
     open(&workspace, cx);
     cx.simulate_keystrokes("escape");
     assert!(
-        cx.update(|_, cx| workspace.read(cx).active_modal::<LanguageSettings>())
+        cx.update(|_, cx| workspace.read(cx).active_modal::<SettingsView>())
             .is_none()
+    );
+}
+
+#[gpui::test]
+fn a_search_narrows_the_pages_and_a_switch_saves_its_setting(cx: &mut TestAppContext) {
+    let (_dir, workspace, cx) = setup(cx);
+    let view = open_settings(&workspace, cx);
+    assert_eq!(cx.update(|_, cx| view.read(cx).page()), Page::Appearance);
+    // Typing goes straight into the search.
+    cx.simulate_input("inlay");
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).visible_pages(cx)),
+        [Page::Editor]
+    );
+    assert_eq!(cx.update(|_, cx| view.read(cx).page()), Page::Editor);
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).debug_rows(cx)),
+        ["Inlay hints: true"]
+    );
+    cx.run_until_parked();
+    // The page's only row; its switch is the first control drawn.
+    let index = 7;
+    let switch = cx
+        .debug_bounds(Box::leak(format!("setting-{index}").into_boxed_str()))
+        .expect("the switch");
+    cx.simulate_click(switch.center(), Modifiers::none());
+    assert!(!cx.update(|_, cx| gleipnir_core::settings(cx).editor.inlay_hints));
+    let saved = std::fs::read_to_string(gleipnir_packages::settings::settings_path()).unwrap();
+    assert!(saved.contains("\"inlay_hints\": false"), "{saved}");
+    cx.update(|_, cx| view.update(cx, |v, cx| v.set_value("Inlay hints", "true", cx)))
+        .unwrap();
+}
+
+#[gpui::test]
+fn the_theme_and_font_sizes_are_chosen_and_kept(cx: &mut TestAppContext) {
+    let (_dir, workspace, cx) = setup(cx);
+    let view = open_settings(&workspace, cx);
+    cx.update(|_, cx| {
+        view.update(cx, |v, cx| {
+            v.set_value("Theme", "Light", cx)?;
+            v.set_value("Font size", "15", cx)?;
+            // Out of range, so held to the most there is.
+            v.set_value("Interface font size", "99", cx)
+        })
+    })
+    .unwrap();
+    let rows = cx.update(|_, cx| view.read(cx).debug_rows(cx));
+    assert_eq!(rows, ["Theme: Light", "Interface font size: 20"]);
+    let settings = cx.update(|_, cx| gleipnir_core::settings(cx).clone());
+    assert_eq!(settings.editor.font_size, 15.);
+    let theme = gleipnir_ui::Theme::from_settings(&settings);
+    assert!(theme.is_light());
+    assert_eq!(theme.editor_font_size, 15.);
+    let (reread, problem) = gleipnir_packages::settings::Settings::load();
+    assert_eq!(problem, None);
+    assert_eq!(reread, settings);
+    cx.update(|_, cx| {
+        view.update(cx, |v, cx| {
+            v.set_value("Theme", "Dark", cx)?;
+            v.set_value("Font size", "13", cx)?;
+            v.set_value("Interface font size", "13", cx)
+        })
+    })
+    .unwrap();
+}
+
+#[gpui::test]
+fn a_recorded_shortcut_runs_its_action_and_is_kept(cx: &mut TestAppContext) {
+    let (_dir, workspace, cx) = setup(cx);
+    let view = open_settings(&workspace, cx);
+    cx.update(|_, cx| view.update(cx, |v, cx| v.show_page(Page::Keymap, cx)));
+    cx.update(|window, cx| {
+        view.update(cx, |v, cx| {
+            v.record_shortcut("workspace::SplitRight", window, cx)
+        })
+    });
+    cx.simulate_keystrokes("ctrl-alt-shift-9");
+    let keymap = std::fs::read_to_string(gleipnir_workspace::user_keymap_path()).unwrap();
+    assert!(
+        keymap.contains("ctrl-alt-shift-9 = workspace::SplitRight"),
+        "{keymap}"
+    );
+    cx.update(|_, cx| view.update(cx, |v, cx| v.search_for("split right", cx)));
+    let rows = cx.update(|_, cx| view.read(cx).debug_rows(cx));
+    assert!(
+        rows.iter()
+            .any(|r| r.starts_with("Split Right: ctrl-alt-shift-9")),
+        "{rows:?}"
+    );
+    // It works at once: closing Settings and pressing it splits the editor.
+    cx.simulate_keystrokes("escape");
+    let panes = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| workspace.read(cx).snapshot(window, cx).panes.len())
+    };
+    let before = panes(cx);
+    cx.simulate_keystrokes("ctrl-alt-shift-9");
+    assert_eq!(panes(cx), before + 1);
+    std::fs::remove_file(gleipnir_workspace::user_keymap_path()).ok();
+}
+
+#[gpui::test]
+fn indentation_is_set_per_language(cx: &mut TestAppContext) {
+    let (_dir, workspace, cx) = setup(cx);
+    let view = open_settings(&workspace, cx);
+    cx.update(|_, cx| view.update(cx, |v, cx| v.show_page(Page::CodeStyle, cx)));
+    cx.run_until_parked();
+    let go = cx.update(|_, _| {
+        gleipnir_packages::registry()
+            .languages()
+            .iter()
+            .map(|l| l.name.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .position(|name| name == "Go")
+            .unwrap()
+    });
+    let wider = cx
+        .debug_bounds(Box::leak(format!("indent-more-{go}").into_boxed_str()))
+        .expect("Go's indent");
+    cx.simulate_click(wider.center(), Modifiers::none());
+    let style = cx.update(|_, cx| gleipnir_core::settings(cx).code_style.get("Go").copied());
+    let own = gleipnir_packages::registry()
+        .languages()
+        .iter()
+        .find(|l| l.name == "Go")
+        .unwrap()
+        .edit_config
+        .clone();
+    assert_eq!(style.map(|s| s.tab_size), Some(own.tab_size + 1));
+    // Back to the language's own, and the override is gone.
+    let narrower = cx
+        .debug_bounds(Box::leak(format!("indent-less-{go}").into_boxed_str()))
+        .unwrap();
+    cx.simulate_click(narrower.center(), Modifiers::none());
+    assert_eq!(
+        cx.update(|_, cx| gleipnir_core::settings(cx).code_style.get("Go").copied()),
+        None
     );
 }
 
