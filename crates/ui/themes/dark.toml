@@ -1,0 +1,124 @@
+# The built-in dark theme. Every key is listed, so this doubles as a template: copy it
+# into the themes folder, give it a new name, and change what you like.
+
+name = "Gleipnir Dark"
+# The built-in theme to take any color this file leaves out from: "dark" or "light".
+appearance = "dark"
+
+# Colors are "#rrggbb", or "#rrggbbaa" with transparency.
+
+[colors]
+# Behind everything: panels, the tab bar, the rails.
+background = "#14161a"
+# Panels, the title bar and the status bar.
+surface = "#1a1d22"
+# Popups, menus and dialogs, which sit above the rest.
+surface_raised = "#22262c"
+# Lines between areas, and around popups and controls.
+border = "#2b3037"
+# Most text.
+text = "#d7dae0"
+# Secondary text, like details beside a name, and icons.
+text_muted = "#98a0ad"
+# Text that should recede: hints, paths, disabled items.
+text_faint = "#5d6573"
+# The thread: the active tab, focus, switches that are on, the project badge.
+accent = "#e0b65c"
+# Errors, failed tests and the stop button.
+error = "#ef6f6c"
+# Warnings, and messages that need attention.
+warning = "#e0b65c"
+# Behind a row or button under the pointer. Usually translucent.
+hover = "#ffffff0d"
+# The selected row when its list has focus.
+selection = "#4f7cac66"
+# The selected row when its list doesn't have focus.
+selection_inactive = "#ffffff14"
+# Added files and lines, passed tests, and the Run button.
+git_added = "#8fc27a"
+# Changed files and lines.
+git_modified = "#82b6ee"
+# Deleted files and lines.
+git_deleted = "#ef6f6c"
+# Files with merge conflicts.
+git_conflicted = "#e3a65d"
+# Behind the code.
+editor_background = "#14161a"
+# Line numbers.
+editor_gutter_text = "#4a515d"
+# The line number of the caret's line.
+editor_gutter_text_active = "#a9b0bc"
+# Behind the caret's line. Usually translucent.
+editor_active_line = "#ffffff09"
+# Behind selected text. Usually translucent.
+editor_selection = "#4f7cac55"
+# The caret.
+editor_cursor = "#e0b65c"
+# Breakpoint dots.
+breakpoint = "#e5545e"
+# Behind other uses of the name under the caret. Usually translucent.
+usage_highlight = "#82b6ee2e"
+# Behind the line the debugger is stopped on. Usually translucent.
+execution_line = "#4f7cac40"
+# Values the debugger shows beside the code.
+inline_value = "#7f8ea3"
+
+# Code, by what the language says each piece is.
+[syntax]
+# Attributes and decorators: #[test], @Component.
+attribute = "#b9a36b"
+# Comments.
+comment = "#6a7280"
+# Constants and enum members.
+constant = "#f0917f"
+# Function and method names.
+function = "#82b6ee"
+# Keywords: fn, if, return, const.
+keyword = "#e3a65d"
+# Labels, like a loop's.
+label = "#b9a36b"
+# Macros: println!, and the like.
+macro = "#d492d6"
+# Modules, packages and namespaces.
+namespace = "#92bccc"
+# Numbers.
+number = "#f0917f"
+# Operators: + = && =>.
+operator = "#aab2be"
+# Function parameters.
+parameter = "#dccaa8"
+# Fields and properties.
+property = "#bcc7d6"
+# Brackets, commas and semicolons.
+punctuation = "#868e9c"
+# Strings.
+string = "#a8cb7f"
+# Escapes in strings: \n, \t.
+string_escape = "#e8c36a"
+# Tags, as in JSX and HTML.
+tag = "#82b6ee"
+# Types: structs, classes, interfaces.
+type = "#72d3c2"
+# Variables.
+variable = "#d7dae0"
+# Built-in variables: self, this.
+variable_builtin = "#e3a65d"
+
+[terminal]
+# The terminal's colors, as programs ask for them by name.
+black = "#22262c"
+red = "#ef6f6c"
+green = "#8fc27a"
+yellow = "#e0b65c"
+blue = "#82b6ee"
+magenta = "#d492d6"
+cyan = "#72d3c2"
+white = "#d7dae0"
+bright_black = "#5d6573"
+bright_red = "#f58f8c"
+bright_green = "#a9d895"
+bright_yellow = "#ecc97d"
+bright_blue = "#a1c9f4"
+bright_magenta = "#e2afe3"
+bright_cyan = "#93e2d5"
+bright_white = "#f4f5f7"

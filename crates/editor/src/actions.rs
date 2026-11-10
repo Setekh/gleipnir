@@ -61,6 +61,12 @@ actions!(
         SelectNextCompletionPage,
         SelectPreviousCompletionPage,
         DismissPopups,
+        /// Takes the grey suggestion after the cursor.
+        AcceptSuggestion,
+        /// Takes the suggestion's next word.
+        AcceptSuggestionWord,
+        /// Takes the rest of the suggestion's line, or its next line.
+        AcceptSuggestionLine,
         ShowHover,
         ShowSignatureHelp,
         NextProblem,

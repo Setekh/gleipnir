@@ -1,0 +1,20 @@
+# Themes are files, read again as they change: what an AI agent asked to make or change a theme
+# does, by writing the files, shows in the window without touching the app.
+wait-idle
+wait-match /theme Gleipnir Dark
+expect-exists {config}/themes/README.md
+expect-exists {config}/themes/gleipnir-dark.example.toml
+
+# A new theme, and the settings switched to it.
+write-file {config}/themes/midnight.toml name = "Midnight"\nappearance = "dark"\n\n[colors]\nbackground = "#0b0e14"\naccent = "#7aa2f7"\n\n[syntax]\nkeyword = "#bb9af7"\n
+write-file {config}/settings.json {"appearance": {"theme": "Midnight"}}
+wait-state /theme Midnight (background #0b0e14)
+screenshot {shots}/themes-midnight.png
+
+# A change to the theme's file shows too.
+write-file {config}/themes/midnight.toml name = "Midnight"\nappearance = "light"\n\n[colors]\nbackground = "#fdf6e3"\n
+wait-state /theme Midnight (background #fdf6e3)
+
+# A mistake leaves it out, and the built-in theme takes over until it's fixed.
+write-file {config}/themes/midnight.toml name = "Midnight"\n[colors]\nbackground = "nope"\n
+wait-match /theme Gleipnir Dark

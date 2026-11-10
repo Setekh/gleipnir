@@ -7,7 +7,9 @@ IntelliJ-style Search Everywhere, per-project SDKs with managed tool installs, a
 from language servers: completion, documentation, go to declaration and implementations, usages,
 problems, rename, quick fixes and reformatting. Programs run and debug from the IDE in all five
 languages, IntelliJ style: breakpoints in the gutter (conditions, hit counts, logpoints), stepping,
-frames, a variables tree with watches, values shown beside the code, and a console. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+frames, a variables tree with watches, values shown beside the code, and a console. Git works as
+in IntelliJ too: changes in the gutter, the Commit window, a log with its branch graph, blame,
+merges and interactive rebase. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 for the design and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
 
 ## Building
@@ -24,8 +26,9 @@ also need Xcode. On Arch or Omarchy, `sudo script/linux-deps` installs the syste
     cargo test --workspace      # unit, property and headless UI tests
     script/e2e                  # drives the real app; needs a display
     PROFILE=release script/e2e perf
-    E2E_TOOLS=~/path/to/state/tools script/e2e code   # with real language servers installed
-    E2E_TOOLS=~/path/to/state/tools script/e2e debug  # with lldb-dap, dlv and js-debug installed
+    script/e2e code             # real language servers, installed into target/e2e-tools as needed
+    script/e2e debug            # real debuggers, likewise; E2E_TOOLS=<folder> uses another folder
+    script/e2e tests            # the test runner, with cargo, go, odin and npm on the PATH
     GLEIPNIR_TOOLS=~/path/to/state/tools cargo test -p gleipnir-dap --test adapters   # headless
     script/linux-check          # builds and tests on Arch in Docker, from any machine
 
@@ -42,7 +45,8 @@ searches much harder, and has found real bugs that the default run missed.
 - `crates/code_nav`: code intelligence from language servers: the editor's completion and
   documentation, navigation, the Find and Problems panels, rename, intentions and reformatting.
 - `crates/debugger_ui`: running and debugging: the Run and Debug panels, the run widget in the
-  status bar, breakpoints and values in the editor, and the breakpoint and Evaluate popups.
+  status bar, breakpoints and values in the editor, the breakpoint and Evaluate popups, and test
+  results.
 - `crates/dap`: the debug adapter client: stdio and TCP adapters, child connections for js-debug,
   the launch handshake and session state.
 - `crates/lsp`: the language server client: framing, requests with cancellation, and the
@@ -55,6 +59,12 @@ searches much harder, and has found real bugs that the default run missed.
   (its files, symbol index and git status, kept current by watching it), and the language servers:
   starting and restarting them, document sync, diagnostics and requests, and the debugger: run
   targets, builds, launches, debug sessions and the project's breakpoints.
+- `crates/git_ui`: the Commit window, the Git log with its branch graph, diffs and merges, blame
+  in the gutter, and interactive rebase.
+- `crates/suggest`: inline suggestions, from the file and from a local model run by llama.cpp.
+- `crates/agent`: Gleipnir's MCP server, which gives coding agents the IDE's tools, and
+  `gleipnir mcp`, which connects an agent to it.
+- `crates/terminal`: the terminal panel on alacritty_terminal, and coding agents' tabs in it.
 - `crates/index`: the file tree model, file list, fuzzy matching and search, gitignore rules, git
   status, file watching and file operations.
 - `crates/syntax`: languages, background parsing, highlighting, structural selection and symbol
@@ -64,7 +74,54 @@ searches much harder, and has found real bugs that the default run missed.
 
 ## Configuration
 
-Key bindings can be changed in `~/.config/gleipnir/keymap.conf`, one per line:
+Settings (`Cmd+,`, or the gear in the toolbar) has pages for appearance, the editor, code style,
+the keymap, languages and tools, run and debug, and packages, with a search over all of them.
+Changes take effect at once and are kept in `~/.config/gleipnir/settings.json`.
+Gleipnir also reads `settings.json` again whenever it changes, so it can be edited by hand.
+
+Themes are TOML files in `~/.config/gleipnir/themes`, which has a README with every key and full
+examples of the built-in themes. A theme saved there, or changed, shows at once, so an AI agent can
+make or tweak one by writing the file and switch to it in `settings.json`:
+
+    name = "Midnight"
+    appearance = "dark"     # the built-in theme anything left out comes from
+
+    [colors]
+    background = "#0b0e14"
+    accent = "#7aa2f7"
+
+    [syntax]
+    keyword = "#bb9af7"
+
+Grey suggestions appear after the cursor as you type, with how likely each is; Tab takes one,
+Option+Right (Ctrl+Right on Linux) takes its next word, and Cmd+Right (End) its next line. On a
+blank line, or after one that opens a block, a suggestion can run to several lines. They come
+from the file itself, and from a small code model (Qwen2.5-Coder, 531 MB) that Gleipnir runs on
+your machine with llama.cpp, downloaded the first time it's needed, shown related pieces of your
+other open files too. Nothing is sent anywhere. Settings → Editor turns them off, picks the model,
+or sets how sure they must be.
+
+The terminal (Alt+F12) has tabs of shells in the project folder; Cmd+T opens another, Cmd+W
+closes one, and Cmd-clicking a `path:line` in the output opens it. Its 16 colors are a theme's
+`[terminal]` section. Coding agents have a tool window of their own on the right, Agents, with
+tabs like the terminal's: Cmd+Esc opens Claude Code there, and its + menu Codex. Each is your own installed tool, started through your shell as typing its
+name would start it, signed in by you; Gleipnir installs none, and handles no credentials.
+Cmd+Alt+K types the editor's file and selected lines into the agent's tab, as
+`@src/main.rs#L10-20`.
+
+Coding agents such as Claude Code can work in the IDE through MCP. Each window serves tools on a
+socket only you can open: the open files and the selection, problems, test results, Git status,
+definitions and usages, running tests and programs, and edits made in open files (unsaved, one
+undo step) or proposed for you to accept change by change. An agent connects by running
+`gleipnir mcp`, with the window's socket in `GLEIPNIR_SOCKET`. Agents are your own installed
+programs, signed in by you: Gleipnir never sees their credentials or what they send.
+
+Indentation follows the project where it says: `.editorconfig`, and for the files Prettier formats,
+Prettier's config (`.prettierrc` in JSON, JSON5, YAML or TOML, `prettier.config.js` and the like,
+or `package.json`'s `prettier`), over the language's own and the Code Style settings.
+
+Key bindings added in Settings, or by hand, are kept in `~/.config/gleipnir/keymap.conf`, one per
+line:
 
     # keys = action, optionally `in` a context
     cmd-k = editor::DuplicateLine
@@ -72,8 +129,9 @@ Key bindings can be changed in `~/.config/gleipnir/keymap.conf`, one per line:
 
 Mistakes are reported in the status bar, and don't stop the rest of the file from loading.
 
-Languages & SDKs (`Cmd+;`) shows each language's SDK and tools. Tools Gleipnir installs go into its
-state folder, never system-wide, and only after you confirm. Each project's layout is saved outside
+Languages & Tools (`Cmd+;`) shows each language's SDK and tools. Tools Gleipnir installs go into its
+state folder, never system-wide, the first time they're needed, unless that's turned off in
+Settings. Each project's layout is saved outside
 the project, in `~/Library/Application Support/Gleipnir` on macOS
 and `~/.local/state/gleipnir` on Linux.
 

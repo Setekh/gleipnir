@@ -30,6 +30,16 @@ pub enum Icon {
     Breakpoints,
     RunToCursor,
     Mute,
+    TestPassed,
+    TestFailed,
+    TestSkipped,
+    TestRunning,
+    RerunFailed,
+    Settings,
+    Branch,
+    Commit,
+    Terminal,
+    Agent,
 }
 
 impl Icon {
@@ -58,11 +68,29 @@ impl Icon {
             Self::Breakpoints => "icons/breakpoints.svg",
             Self::RunToCursor => "icons/run-cursor.svg",
             Self::Mute => "icons/mute.svg",
+            Self::TestPassed => "icons/test-passed.svg",
+            Self::TestFailed => "icons/test-failed.svg",
+            Self::TestSkipped => "icons/test-skipped.svg",
+            Self::TestRunning => "icons/test-running.svg",
+            Self::RerunFailed => "icons/rerun-failed.svg",
+            Self::Settings => "icons/settings.svg",
+            Self::Branch => "icons/branch.svg",
+            Self::Commit => "icons/commit.svg",
+            Self::Terminal => "icons/terminal.svg",
+            Self::Agent => "icons/agent.svg",
         }
     }
 }
 
 const FILES: &[(&str, &[u8])] = &[
+    (
+        "icons/agent.svg",
+        include_bytes!("../assets/icons/agent.svg"),
+    ),
+    (
+        "icons/terminal.svg",
+        include_bytes!("../assets/icons/terminal.svg"),
+    ),
     ("icons/run.svg", include_bytes!("../assets/icons/run.svg")),
     (
         "icons/debug.svg",
@@ -111,6 +139,46 @@ const FILES: &[(&str, &[u8])] = &[
         include_bytes!("../assets/icons/run-cursor.svg"),
     ),
     ("icons/mute.svg", include_bytes!("../assets/icons/mute.svg")),
+    (
+        "icons/test-passed.svg",
+        include_bytes!("../assets/icons/test-passed.svg"),
+    ),
+    (
+        "icons/test-failed.svg",
+        include_bytes!("../assets/icons/test-failed.svg"),
+    ),
+    (
+        "icons/test-skipped.svg",
+        include_bytes!("../assets/icons/test-skipped.svg"),
+    ),
+    (
+        "icons/test-running.svg",
+        include_bytes!("../assets/icons/test-running.svg"),
+    ),
+    (
+        "icons/rerun-failed.svg",
+        include_bytes!("../assets/icons/rerun-failed.svg"),
+    ),
+    (
+        "icons/settings.svg",
+        include_bytes!("../assets/icons/settings.svg"),
+    ),
+    (
+        "icons/branch.svg",
+        include_bytes!("../assets/icons/branch.svg"),
+    ),
+    (
+        "icons/commit.svg",
+        include_bytes!("../assets/icons/commit.svg"),
+    ),
+    (
+        "icons/run-passed.svg",
+        include_bytes!("../assets/icons/run-passed.svg"),
+    ),
+    (
+        "icons/run-failed.svg",
+        include_bytes!("../assets/icons/run-failed.svg"),
+    ),
     (
         "icons/chevron-right.svg",
         include_bytes!("../assets/icons/chevron-right.svg"),

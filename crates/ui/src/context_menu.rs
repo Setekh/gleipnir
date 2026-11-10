@@ -66,6 +66,17 @@ impl ContextMenu {
         self
     }
 
+    /// What each item says, in order, for tests and the driver.
+    pub fn labels(&self) -> Vec<String> {
+        self.entries
+            .iter()
+            .filter_map(|e| match e {
+                MenuEntry::Item(item) => Some(item.label.to_string()),
+                MenuEntry::Separator => None,
+            })
+            .collect()
+    }
+
     pub fn separator(mut self) -> Self {
         self.entries.push(MenuEntry::Separator);
         self
@@ -122,7 +133,16 @@ impl Render for ContextMenu {
             .entries
             .iter()
             .enumerate()
-            .map(|(index, entry)| match entry {
+            .map(|(index, entry)| {
+                // Items are numbered for tests by their place among items, as `labels` lists
+                // them, leaving separators out.
+                let item_number = self.entries[..index]
+                    .iter()
+                    .filter(|e| matches!(e, MenuEntry::Item(_)))
+                    .count();
+                (index, item_number, entry)
+            })
+            .map(|(index, item_number, entry)| match entry {
                 MenuEntry::Separator => div()
                     .h(px(1.))
                     .my(px(4.))
@@ -130,6 +150,7 @@ impl Render for ContextMenu {
                     .into_any_element(),
                 MenuEntry::Item(item) => div()
                     .id(index)
+                    .debug_selector(move || format!("menu-item-{item_number}"))
                     .flex()
                     .flex_row()
                     .justify_between()

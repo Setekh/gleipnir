@@ -888,3 +888,65 @@ fn attaching_sends_the_process_to_the_debugger(cx: &mut TestAppContext) {
         "server (4242)"
     );
 }
+
+#[gpui::test]
+fn a_test_run_fills_its_results_finds_its_tests_and_reruns_the_failed(cx: &mut TestAppContext) {
+    let setup = setup(Program::default(), cx);
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Cargo.toml"),
+        "[package]\nname = \"calc\"\n",
+    )
+    .unwrap();
+    std::fs::create_dir(dir.path().join("src")).unwrap();
+    let lib = dir.path().join("src/lib.rs");
+    std::fs::write(
+        &lib,
+        "#[cfg(test)]\nmod tests {\n    #[test]\n    fn adds() {}\n    #[test]\n    fn fails() {}\n}\n",
+    )
+    .unwrap();
+    let script = "echo '     Running unittests src/lib.rs (target/debug/deps/calc-0123abcd)' >&2; \
+        printf 'running 2 tests\\ntest tests::adds ... ok\\ntest tests::fails ... FAILED\\n\\nfailures:\\n\\n\
+        ---- tests::fails stdout ----\\nboom\\n\\nfailures:\\n    tests::fails\\n\\n\
+        test result: FAILED. 1 passed; 1 failed; finished in 0.01s\\n'; exit 101";
+    let mut test = target(None, script);
+    test.kind = RunTargetKind::Test;
+    test.name = "tests in calc".into();
+    test.cwd = dir.path().to_path_buf();
+    setup.debugger.update(cx, |d, cx| {
+        d.start(test, false, cx);
+    });
+    setup.wait_for(cx, LaunchStatus::Finished(Some(101)));
+    let debugger = setup.debugger.clone();
+    let lib_path = lib.clone();
+    wait(cx, |cx| {
+        debugger.read_with(cx, |d, _| d.test_result(&lib_path, "fails"))
+            == Some(crate::TestState::Failed)
+    });
+    setup.read(cx, |d| {
+        assert_eq!(d.test_result(&lib, "adds"), Some(crate::TestState::Passed));
+        let launch = d.active_launch().unwrap();
+        let tests = launch.tests.as_ref().unwrap();
+        let failed = tests.failed_tests();
+        assert_eq!(failed.len(), 1);
+        let node = &tests.nodes()[failed[0]];
+        assert_eq!(node.name, "tests::fails");
+        assert_eq!(node.location, Some((lib.clone(), 5)));
+        assert_eq!(tests.output_of(failed[0])[0].text, "boom");
+        assert!(d.has_failed_tests(launch.id));
+    });
+    let id = setup.read(cx, |d| d.active_launch().unwrap().id);
+    let rerun = setup
+        .debugger
+        .update(cx, |d, cx| d.rerun_failed(id, cx))
+        .unwrap();
+    setup.read(cx, |d| {
+        let target = &d.launch(rerun).unwrap().target;
+        assert_eq!(target.name, "test fails");
+        assert!(
+            target
+                .run
+                .ends_with(&["--".into(), "--exact".into(), "tests::fails".into()])
+        );
+    });
+}

@@ -1,0 +1,36 @@
+# Gleipnir's MCP server as a coding agent uses it: each call starts `gleipnir mcp`, which pipes it
+# to this window's socket.
+
+open {dir}/main.rs
+wait-parsed
+mcp get_open_files {}
+expect-mcp "active":"main.rs"
+
+# What the person has selected, or the line they're on.
+cursor 2:5
+mcp get_selection {}
+expect-mcp "text":"    println!(\"hello\");"
+
+# An edit lands in the open file, unsaved, and one undo takes it back.
+mcp edit_file {"path":"main.rs","old_text":"hello","new_text":"hi there"}
+expect-mcp "replacements":1
+expect-text fn main() {\n    println!("hi there");\n}\n
+expect-dirty true
+expect-file {dir}/main.rs fn main() {\n    println!("hello");\n}\n
+mcp read_file {"path":"main.rs","start_line":2,"end_line":2}
+expect-mcp println!("hi there");
+do Undo
+expect-text fn main() {\n    println!("hello");\n}\n
+
+# Nothing outside the project.
+mcp read_file {"path":"../agent.script"}
+expect-mcp error: ../agent.script is outside the project
+
+mcp get_git_status {}
+expect-mcp "path":"src/lib.rs"
+expect-mcp "path":"src/untracked.rs"
+
+# Shown in the editor, selected.
+mcp open_file {"path":"src/lib.rs","line":1,"column":8,"end_line":1,"end_column":11}
+expect-mcp "selected":"lib"
+expect-text pub fn lib() { changed() }\n

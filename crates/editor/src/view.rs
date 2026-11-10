@@ -81,6 +81,14 @@ pub struct EditorState {
     pub execution_line: Option<usize>,
     /// What's shown beside lines, as `line: text`, one-based, for the lines on screen.
     pub inline_values: Vec<String>,
+    /// How lines differ from the last commit, as `line: added`, one-based.
+    pub line_changes: Vec<String>,
+    /// The grey suggestion, as `text (87%, source)`.
+    pub suggestion: Option<String>,
+    /// Tests' last results in the gutter, as `line: passed` or `line: failed`, one-based.
+    pub run_results: Vec<String>,
+    /// The text beside each line in the gutter, like who changed it, as `line: text`, one-based.
+    pub gutter_text: Vec<String>,
 }
 
 pub enum EditorEvent {
@@ -99,6 +107,13 @@ pub enum EditorEvent {
     RunClicked { line: usize },
     /// A right-click in the gutter, at a position in the window, for a menu.
     GutterMenu {
+        line: usize,
+        position: gpui::Point<Pixels>,
+    },
+    /// A click on the text shown beside a line in the gutter, like who last changed it.
+    GutterTextClicked { line: usize },
+    /// A right-click on that text, at a position in the window, for a menu.
+    GutterTextMenu {
         line: usize,
         position: gpui::Point<Pixels>,
     },
@@ -130,8 +145,17 @@ pub struct EditorView {
     pub(crate) frame_times: Option<Vec<Duration>>,
     blink: Option<Task<()>>,
     pub(crate) semantics: crate::semantics::SemanticsState,
+    pub(crate) suggestion: crate::suggestion::SuggestionState,
     pub(crate) decorations: Option<Rc<dyn crate::decorations::DecorationProvider>>,
+    /// A text box, like a commit message: no line numbers, and no current line shown.
+    pub(crate) plain: bool,
     pub(crate) annotations: crate::annotations::Annotations,
+    /// Text beside each line in the gutter, like who last changed it.
+    pub(crate) gutter_text: Option<crate::gutter_text::GutterText>,
+    /// The line whose label the mouse is on, and where, for its details.
+    pub(crate) gutter_hover: Option<(usize, Point<Pixels>)>,
+    /// The widest label, in characters.
+    pub(crate) gutter_text_chars: usize,
     pub(crate) caret_gesture: crate::caret_gesture::CaretGesture,
     _subscriptions: Vec<Subscription>,
 }
@@ -166,8 +190,13 @@ impl EditorView {
             frame_times: None,
             blink: None,
             semantics: Default::default(),
+            suggestion: Default::default(),
             decorations: None,
+            plain: false,
             annotations: Default::default(),
+            gutter_text: None,
+            gutter_hover: None,
+            gutter_text_chars: 0,
             caret_gesture: Default::default(),
             _subscriptions: subscriptions,
         }
@@ -183,12 +212,31 @@ impl EditorView {
         cx.notify();
     }
 
+    /// Makes this a plain text box, without line numbers or the current line marked.
+    pub fn set_plain(&mut self, plain: bool, cx: &mut Context<Self>) {
+        self.plain = plain;
+        cx.notify();
+    }
+
     pub fn has_decorations(&self) -> bool {
         self.decorations.is_some()
     }
 
     pub fn buffer(&self) -> &Entity<BufferModel> {
         &self.buffer
+    }
+
+    /// Where the primary caret is on screen, in window coordinates, if it's in view.
+    pub fn caret_bounds(&self, cx: &App) -> Option<Bounds<Pixels>> {
+        let buffer = self.buffer.read(cx).buffer();
+        self.geometry
+            .as_ref()?
+            .bounds_for_offset(self.selections.primary().head, buffer)
+    }
+
+    /// Closes the hover, completion and parameter info popups, as a popup opening over them does.
+    pub fn dismiss_popups(&mut self, cx: &mut Context<Self>) {
+        self.close_popups(cx);
     }
 
     pub fn selections(&self) -> &SelectionSet {
@@ -296,6 +344,31 @@ impl EditorView {
                     .collect(),
                 _ => Vec::new(),
             },
+            suggestion: self.suggestion().map(|s| match s.score {
+                Some(score) => format!("{} ({:.0}%, {})", s.text, score * 100., s.source),
+                None => format!("{} ({})", s.text, s.source),
+            }),
+            line_changes: model
+                .line_changes()
+                .iter()
+                .map(|c| {
+                    let kind = match c.kind {
+                        gleipnir_index::LineChangeKind::Added => "added",
+                        gleipnir_index::LineChangeKind::Modified => "modified",
+                        gleipnir_index::LineChangeKind::Deleted => "deleted",
+                    };
+                    format!("{}: {kind}", c.lines.start + 1)
+                })
+                .collect(),
+            run_results: self.decorations.as_ref().map_or_else(Vec::new, |d| {
+                d.run_results(cx)
+                    .into_iter()
+                    .map(|(line, passed)| {
+                        format!("{}: {}", line + 1, if passed { "passed" } else { "failed" })
+                    })
+                    .collect()
+            }),
+            gutter_text: self.gutter_labels(),
         }
     }
 
@@ -328,6 +401,7 @@ impl EditorView {
                 self.expand_stack.clear();
             }
             self.annotations_edited(edits, cx);
+            self.gutter_text_edited(edits);
             cx.notify();
         }
     }
@@ -352,6 +426,7 @@ impl EditorView {
     /// Anything that moves the cursor: keep it visible, make it solid, and end the undo group so
     /// that typing here doesn't merge with typing somewhere else.
     pub(crate) fn did_move(&mut self, cx: &mut Context<Self>) {
+        self.clear_suggestion(cx);
         self.semantics.completion = None;
         self.semantics.hover = None;
         self.check_signature(cx);
@@ -423,7 +498,7 @@ impl EditorView {
         result
     }
 
-    fn edit(
+    pub(crate) fn edit(
         &mut self,
         cx: &mut Context<Self>,
         command: impl FnOnce(&mut EditContext) -> Vec<AppliedEdit>,
@@ -439,6 +514,9 @@ impl EditorView {
         }
         if self.has_popups() {
             context.add("showing_popups");
+        }
+        if self.suggestion.current.is_some() {
+            context.add("has_suggestion");
         }
         if self.caret_gesture.active {
             context.add("cloning_carets");
@@ -951,6 +1029,7 @@ impl EntityInputHandler for EditorView {
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let popups = self.render_popups(window, cx);
+        let tooltip = self.render_gutter_tooltip(cx);
         macro_rules! motions {
             ($el:expr, $($action:ident => ($motion:expr, $extend:expr)),* $(,)?) => {
                 $el$(.on_action(cx.listener(|this, _: &$action, _, cx| {
@@ -1032,6 +1111,15 @@ impl Render for EditorView {
                     this.move_completion(-8, cx)
                 }),
             )
+            .on_action(cx.listener(|this, _: &AcceptSuggestion, _, cx| {
+                this.accept_suggestion(cx);
+            }))
+            .on_action(cx.listener(|this, _: &AcceptSuggestionWord, _, cx| {
+                this.accept_suggestion_part(crate::suggestion::SuggestionPart::Word, cx);
+            }))
+            .on_action(cx.listener(|this, _: &AcceptSuggestionLine, _, cx| {
+                this.accept_suggestion_part(crate::suggestion::SuggestionPart::Line, cx);
+            }))
             .on_action(cx.listener(|this, _: &DismissPopups, _, cx| {
                 this.close_popups(cx);
             }))
@@ -1088,5 +1176,6 @@ impl Render for EditorView {
         )
         .child(EditorElement::new(cx.entity()))
         .children(popups)
+        .children(tooltip)
     }
 }

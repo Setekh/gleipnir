@@ -4,7 +4,9 @@ mod buffer;
 mod debugger;
 mod language_servers;
 mod project;
+mod settings;
 mod store;
+mod test_results;
 mod toolchains;
 
 pub use buffer::{BufferEvent, BufferModel, Diagnostic, DiskStatus, Severity};
@@ -19,5 +21,7 @@ pub use language_servers::{
     range_to_offsets, severity,
 };
 pub use project::{IndexStatus, Project, ProjectEvent};
+pub use settings::{AppSettings, init_settings, reload_settings, settings, update_settings};
 pub use store::BufferStore;
+pub use test_results::{NodeKind, ROOT as TEST_ROOT, TestCounts, TestNode, TestRun, TestState};
 pub use toolchains::{PackageToolchain, ToolStatus, ToolchainEvent, Toolchains};

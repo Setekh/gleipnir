@@ -58,7 +58,7 @@ and can be tested without a window.
 ```text
 gleipnir                 binary: startup, wiring, keymap defaults
    |
-   +-- project_panel   search   code_nav   debugger_ui   settings_ui
+   +-- project_panel   search   code_nav   debugger_ui   settings_ui   git_ui   agent
    |        (each feature contributes panels and actions to the workspace)
    |
 workspace                window layout, docks, tool rail, split panes, tabs, action registry
@@ -241,9 +241,12 @@ The built-in manifests live in `crates/packages/builtin`. Each pins its tools' v
 TypeScript is held at 6, as TypeScript 7 is the native rewrite and has no `tsserver` for
 typescript-language-server to drive.
 
-Downloads are pinned by version and verified by checksum per OS and architecture, and nothing is
-installed without confirmation. A missing tool never blocks editing: the affected features are
-disabled and the status bar offers to install it.
+Downloads are pinned by version and verified by checksum per OS and architecture. A tool that can
+be installed is installed when it's first needed, as IntelliJ bundles its own: a language server
+when a file in its language opens, a debugger when debugging starts. The status bar or the console
+says so meanwhile. A failed install isn't retried by itself; Settings shows why and installs it again
+on request. `GLEIPNIR_AUTO_INSTALL=0` turns this off, as the plain e2e scripts do. A missing tool never
+blocks editing: the affected features are disabled until it's there.
 
 | Language | Server | Debugger | SDK |
 | --- | --- | --- | --- |
@@ -329,12 +332,258 @@ to the names the syntax tree finds between the start of the running function and
 What each adapter needed, found by running them for real, is in
 [DEBUGGERS.md](DEBUGGERS.md).
 
+### Test runner
+
+A test target is run like any other, and its results are read from what it prints, so they fill
+in live and work the same under the debugger. `TestRun` (in `core`) follows one of four formats,
+chosen by the target: libtest's text for Rust, `go test -json` (and `-test.v` text under delve,
+which can't pass `-json` through), and Odin's runner log. It builds a tree of suites (a test
+binary, a Go or Odin package), groups (Rust modules) and tests (Go subtests nest under theirs), with
+counts kept per node so a run of thousands updates in place. Each test collects its own output.
+
+Two streams arriving separately shaped the parsers. Cargo names each test binary on stderr while
+the binary announces itself on stdout, so the two are paired up in order rather than read as they
+come. Odin logs a test's state from its main thread after the fact while the test logs from its
+own, so a failure is matched to its test by the procedure it names, with the summary at the end as
+a fallback.
+
+What only a language knows stays in its adapter in `packages`: narrowing a target to some of its
+tests (Cargo's `--lib`/`--test` plus `--exact` names, Go's `-run` patterns, Odin's
+`ODIN_TEST_NAMES`), which Rerun Failed and the tree's Run and Debug items use, and finding where
+each test is declared, by following a Rust test's module path from the crate root through `mod`
+declarations, or finding the function in a Go or Odin package. Located tests give the gutter's
+Run icons their last result.
+
+JavaScript and TypeScript tests run with jest or vitest, whichever the nearest config (or failing
+that, package.json) above the test file names, from that folder and with the copy installed nearest
+to it, as a monorepo installs once at the top. A file's `describe`, `it` and `test` calls are found
+by a scan that skips strings and comments and matches parentheses, so each gets a Run icon and runs
+alone through `-t` with its full title. These runners print results only as text for people, so the
+tree comes from the JSON report they write when the run ends (`--json --outputFile`, or vitest's
+JSON reporter), while the console shows their usual output. Under the debugger, Node runs the
+runner's own script in one process, so breakpoints in tests bind through the source maps babel or
+ts-jest make. A title can hold any character, so inside the tree a test's titles are joined by an
+invisible separator, and its `-t` pattern by spaces as the runners join them.
+
+### Completion while typing
+
+Typing a word asks for completions, and typing more of the same word while that list is on its way
+waits for it and filters it, rather than asking again on every key: a slow server would otherwise
+fall behind and show nothing until typing stopped. tsserver loads a project, and its auto-imports,
+on its first completion, which takes seconds in a monorepo, so servers marked `warm_up` are asked
+once as the first file opens and show as loading the project until they answer.
+
+### Main toolbar
+
+The OS title bar is replaced by IntelliJ's main toolbar, drawn by the workspace: the project, whose
+menu lists recent projects; the Git branch, read from `.git/HEAD` and polled; and items features
+add, ordered by a number: the run configuration with Run, Debug and Stop, Search Everywhere and
+Settings. On macOS the window's buttons sit over its left end, gpui is told the app owns dragging
+the title bar, and empty parts of the bar move or zoom the window. The branch's menu lists local
+branches, then remote ones, most recently committed to first, and switches with `git switch`,
+which refuses rather than lose uncommitted work; its message is shown as it is.
+
+### Settings
+
+`Settings` (in `packages`, as plain data) is read from `settings.json` with a default for every
+field, so a partial or older file reads fine. `core` holds it as a global; changing it saves it and
+notifies observers, which is how everything follows at once: the app rebuilds the `Theme` (dark or
+light, with the font sizes) and re-applies indentation to open files, toolchains pick up whether to
+install tools, and the editor reads its font, completion, Parameter Info and inlay hint settings
+as it draws. The Settings screen lists each setting as data, with a label, a description and a
+control (a switch, a stepper or a choice), which is what its search runs over. Shortcuts added on
+its Keymap page are appended to `keymap.conf` and bound at once; removing one rebinds every key from
+the defaults, as gpui can't take a binding back alone.
+
+`settings.json` and the themes folder are looked at once a second (a few file times), and read again
+when they change, so they can be changed by hand or by an AI agent and the window follows.
+
+### Themes
+
+A theme is a TOML file: a `name`, the built-in theme it starts from (`appearance`, dark or light),
+and `[colors]` and `[syntax]` tables of `#rrggbb` or `#rrggbbaa` colors. The built-in themes are
+themselves such files (`crates/ui/themes`), setting every key, so the format is the one source of
+truth; the keys a file may set come from one list in `theme.rs`, which also writes the README that
+Gleipnir puts in the themes folder alongside full examples, so instructions can't drift from the
+code. A file with a mistake is left out, with the key and value that's wrong, shown in Settings.
+
+### Git
+
+Git is run, not reimplemented, so every repository format and setting works as it does in a
+terminal; what git says when it refuses is what's shown. `index::git_ops` holds the commands, each
+tested against a real repository, and `git_ui` the Commit window, the log and the diff view.
+
+An open file keeps its committed text (`git show HEAD:path`), read again after a save and whenever
+the project's git status changes, and compares its live text with it off the UI thread a moment
+after typing stops (`similar`'s line diff), so the gutter's change marks include unsaved edits.
+Rollback Lines puts a change's committed lines back as one undoable edit.
+
+Diffs and merges take their positions from the lengths of the diff's runs rather than from
+`similar`'s own indices, which around a deletion aren't always where the run is (a property test
+found this). A conflicted file's three versions come from git's index (`:1:`, `:2:`, `:3:`), and
+`merge3` merges them line by line as git does: what one side changed is taken, what both changed
+the same is taken once, and changes with nothing unchanged between them are a conflict.
+
+A commit is of the ticked files exactly, as IntelliJ's is: new ones are added, then `git commit --
+<files>`, which leaves anything else staged out of it. Push sets the upstream on a branch's first
+push; Update Project is `git pull`, as the person's git config has it.
+
+The log's graph (`git_ui::graph`) is worked out from each commit's parents, in the order the log
+lists them (`--topo-order`, children first). A lane waits for the commit named next in it; a
+commit takes the lane waiting for it, or the leftmost free one, and its first parent carries on
+there. A merge's other parents join a lane already waiting for them or start one, and several lanes
+waiting for one commit all end at its dot, which is how a fork shows. Lanes that end leave gaps the
+lanes to their right close, leaning over in that row. Each row keeps its lines from top to dot to
+bottom edge, so the log draws only the rows on screen, in a virtual list.
+
+Blame is `git blame --porcelain --contents -` with the editor's text on its input, so it describes
+what's on screen, unsaved edits included; whole messages come from one `git show` for all the
+commits. The editor has a general place for text beside lines (`GutterText`) and knows nothing of
+git: it moves the labels with each edit, blanks lines that change, shows a label's details on
+hover, and reports clicks. Git's side blames again a moment after typing stops, after a save and
+after a commit, and drops an answer about text that has changed since.
+
+Interactive rebase never opens an editor. The window builds the whole plan, and git is started
+with `GIT_SEQUENCE_EDITOR` set to copy our todo list over its own and `GIT_EDITOR=true`. New
+messages are written to files in the repository's git folder and applied by an `exec git commit
+--amend -F <file>` line after the commit they belong to; a squash is a `fixup` followed by such a
+line with the messages joined. So a rebase that stops at a conflict, and is continued later, even
+after a restart, still gets every message right. `rebase.missingCommitsCheck=error` and a check that
+HEAD hasn't moved since the window opened keep a commit from being lost. A stop lands in the
+Commit window like any conflict, with Continue (`--continue`, keeping git's messages) and Abort, as
+merges and cherry-picks that stop do too.
+
+Git runs with `GIT_OPTIONAL_LOCKS=0`, so reading the state, as `git status` does every time
+something changes, never holds the index lock a commit or rebase is about to need.
+
+### Inline suggestions
+
+The editor asks its suggester after each character typed or deleted at the end of a line, blank
+or not, shows the answer in grey after the cursor with its score, takes it with Tab as one undo
+step, or its next word or line, leaving the rest showing, and drops it when the cursor moves;
+typing what it says keeps the rest. A suggestion of several lines gets rows of its own under its
+line: the layout maps lines to rows (`Rows` in `element.rs`) rather than assuming one each, so
+clicks, the gutter and scrolling all account for them. Two suggesters stand behind it. The file's own
+looks for the end of what's been typed elsewhere in the file and offers what most often follows it
+there, or the punctuation the sibling lines end with, scored by the share of the evidence that
+agrees; it's instant and needs nothing. The model's is llama.cpp's server running a small
+fill-in-the-middle code model (Qwen2.5-Coder), given the code before and after the cursor and asked
+for the rest of the line. On a blank line, or after one ending in `{`, `(`, `[` or `:`, it may
+write more lines: statements as deep as the blank line, or a block's body and its closer, cut at
+the first line that leaves them, and then to the lines it's at least the minimum score sure of all
+together. It's also shown, through llama.cpp's `input_extra`, the piece of each recently used open
+file that shares the most names with the code around the cursor (`related.rs`, 6 KB at most), so a
+function defined in another file is called with its real arguments. A score is the probability of
+that exact text, the product of the odds the model gave each token. The file's answer shows at once when it's sure; otherwise the
+likelier of the two does.
+
+llama.cpp and the model are installed like any tool, pinned and checksummed (the model's download
+streams to disk and is hashed as it comes), when first wanted and only where installing is allowed.
+One server serves every window, on 127.0.0.1 and a free port; it's stopped at exit however
+Gleipnir ends, and one left by a crash is stopped on the next start, by the process id kept in the
+state folder.
+
+### Terminal
+
+`crates/terminal` runs each tab's program on a pseudo-terminal with alacritty_terminal
+(Apache-2.0), whose reader thread parses the output into a grid; the session hears of new output
+over a channel and redraws once per batch. The view draws the grid itself, in the editor's font:
+runs of cells styled alike are shaped together and placed at their columns, a wide character on
+its own so the rest stay aligned, with backgrounds, the selection and the cursor as quads. Keys go
+to the program as xterm sends them (`keys.rs`), after the IDE's own bindings: those the shell
+should have, like Ctrl with a letter, Tab and the arrows, are bound to `NoAction` in the
+`Terminal` context so the IDE's bindings for them stand aside. Colors are the theme's 16, xterm's
+cube and grays for the rest, and any a program sets. A shell's tab closes when it exits.
+
+Coding agents are tabs too (`agents.rs`). An agent is started through the person's login shell,
+interactively, as `$SHELL -l -i -c 'claude "$@"'`, so their `PATH` and any function wrapping the
+command apply, such as one choosing an account per folder; anything the IDE adds is passed after
+it, untouched. Other crates add to every agent's start through `add_agent_setup`: the agent
+crate's `launch.rs` gives Claude Code the window's MCP server with `--mcp-config` and a plugin
+holding the Gleipnir skill with `--plugin-dir` (written to the state folder, loaded for that
+session only) and a line saying it's in Gleipnir with `--append-system-prompt`, and Codex the
+server as `-c mcp_servers.gleipnir.*` overrides and the skill's text as that session's
+`developer_instructions`, after any the person has set themselves. The agent's own
+configuration isn't touched. Gleipnir never installs an agent, signs one in or sits between it
+and its service. Agents' tabs are in their own tool window on the right, Agents (the same tab
+strip, as `AgentsPanel` around a `TerminalPanel`), which offers the agents when it's empty rather
+than starting one.
+
+Using Claude Code this way is what Anthropic documents: its legal and compliance page allows "an
+end user … signing in to the unmodified Claude Code binary with their own Claude subscription",
+and its VS Code page says to "run `claude` in the editor's integrated terminal" where there's no
+extension. So that it stays that way, Gleipnir doesn't cross these lines, for any agent:
+
+- It never reads, stores, copies or forwards an agent's credentials or tokens, and offers no
+  sign-in of its own; the agent signs in through its maker's own flow.
+- It never types a prompt or presses Enter for the person, and never runs an agent headless
+  (`claude -p` and the like). Send to Agent types a reference and stops.
+- It never proxies an agent's traffic or points it elsewhere (`ANTHROPIC_BASE_URL` and the like),
+  and the MCP server never calls a model service.
+- It doesn't modify, bundle or install an agent, and uses agents' names only as plain text, with
+  icons of its own.
+
+### Project indentation
+
+Indentation is the language's, then the person's Code Style settings, then the project's:
+`.editorconfig` (every file from the one marked `root` down, nearest last, with its globs), and for
+files Prettier formats, the nearest Prettier config, with its `overrides`. Prettier's wins where it
+says something, and tabs or spaces it doesn't mention come from EditorConfig, as in Prettier.
+JavaScript configs (`prettier.config.js` and the like) are run with Node, as Prettier does, and
+remembered until they change; a project's are run in the background as it opens, so opening a file
+doesn't wait. Changing any of these files re-indents the open files.
+
+## Coding agents
+
+Agents like Claude Code and Codex are the person's own programs, signed in by them and run in
+Gleipnir's terminal. Gleipnir offers them tools through MCP and nothing more: it never sees their
+credentials or their traffic. The `agent` crate is the MCP server.
+
+- **One socket per window.** Each window with a project listens on a Unix socket in
+  `/tmp/gleipnir-<uid>`, a folder only its owner can enter (0700, checked to be ours and not a
+  link), the socket itself 0600. The folder is short on purpose: a socket's path can't be longer
+  than 104 bytes on macOS, and the temporary and state folders can be. A socket is named
+  `<pid>-<n>.sock` and removed when its window closes and when Gleipnir exits; ones a crash leaves
+  are removed at the next start, once their process is gone.
+- **`gleipnir mcp` is only a pipe.** An agent starts it as a stdio MCP server; it connects to the
+  socket named by `GLEIPNIR_SOCKET` and copies bytes both ways. It's handled at the top of `main`,
+  before GPUI, so it starts at once. `mcp_config_json` writes the configuration Claude Code's
+  `--mcp-config` takes, and `socket_path` gives a window's socket to whatever starts agents.
+- **The socket speaks MCP itself**: JSON-RPC 2.0, one message per line, as MCP's stdio transport
+  does. It's written by hand over serde_json (`rpc.rs`): the part of MCP that tools need is small,
+  and the official Rust SDK would bring tokio and much more besides. Each connection has a thread
+  reading and one writing. `initialize`, `ping`, `tools/list` and malformed messages are answered
+  there; tool calls go over a channel to the window, where each runs as a task of its own, so a
+  slow one, like a review, holds up no other, and answers go back as they finish. Arguments are
+  checked (`tools.rs`) before the workspace is touched, and a tool that fails answers with
+  `isError` and why, which the agent reads and can act on.
+- **Tools work on what the window has.** Paths are from the project root, and anything that
+  resolves outside it, by `..` or through a link, is refused. Lines and columns count from 1,
+  columns in characters. Reading takes an open file's buffer, with its unsaved edits, or else the
+  disk. `edit_file` makes its replacement in the buffer with `apply_external_edits`, one undo step,
+  and leaves it unsaved; a file that isn't open gets a tab beside the active one, without taking
+  focus (`Workspace::open_in_background`), as an unsaved change has to be somewhere the person can
+  see, save or undo it. Lookups ask the language servers, by position, or by a name found first in
+  the project's own symbol index. Tests run through the debugger as the gutter's Run icons run
+  them, and their results come from the same `TestRun` the Run panel shows.
+- **Proposed edits are reviewed in the diff view.** `propose_edit` opens git_ui's `DiffView` in
+  review mode: the file as it is on the left, the proposal on the right, ✓ and ✕ on each change,
+  and Accept All and Reject All. Accepting a change edits the buffer as an undoable step. If the
+  file changed meanwhile, as from another agent's edit, nothing is taken from the stale diff: the
+  proposal is carried over to the file as it is now with `merge3`, as git would, so the other
+  edit isn't undone, and changes that clash with it are left out. Proposals wait
+  their turn while another popup is open. The call waits for the person's decision, but only 50
+  seconds by default, and then answers "pending" with an id that `get_proposal` waits on again:
+  agents give up on a tool call after a while (Codex after a minute, unless configured), and an
+  answer sent after that would be lost, while asking again costs nothing.
+
 ## Testing
 
 | Layer | Approach |
 | --- | --- |
 | `text`, `syntax`, `index`, `packages` | Unit tests, property tests for edit and transform invariants |
 | `lsp`, `dap` | Scripted fake servers for protocol and failure cases |
+| MCP server | Our own client: the protocol line by line, tool calls against a real workspace, the socket with several clients at once, and the built `gleipnir mcp` as a subprocess. Never a real agent, which would spend the person's account |
 | Real servers and adapters | Integration tests against sample projects per language, reporting a skip when a tool is missing |
 | UI logic | GPUI's test support, simulating keystrokes without a window |
 | End to end | `script/e2e`: a scripted driver on the real app sends keys, asserts on state and takes screenshots. See `crates/gleipnir/src/driver.rs` |

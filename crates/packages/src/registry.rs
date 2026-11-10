@@ -184,6 +184,11 @@ impl Registry {
         &self.packages
     }
 
+    /// Every language, by name and file type, as packages declare them.
+    pub fn languages(&self) -> &[LanguageEntry] {
+        &self.languages
+    }
+
     pub fn errors(&self) -> &[String] {
         &self.errors
     }

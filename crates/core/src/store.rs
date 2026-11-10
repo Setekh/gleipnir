@@ -23,6 +23,20 @@ pub struct BufferStore {
 }
 
 impl BufferStore {
+    /// Every open buffer reads its committed text again, as after a commit or a checkout.
+    pub fn refresh_committed_texts(&self, cx: &mut gpui::App) {
+        for buffer in self.buffers.values().filter_map(|b| b.upgrade()) {
+            buffer.update(cx, |buffer, cx| buffer.refresh_committed_text(cx));
+        }
+    }
+
+    /// Every open buffer takes up indentation settings as they change.
+    pub fn apply_code_style(&self, cx: &mut gpui::App) {
+        for buffer in self.buffers.values().filter_map(|b| b.upgrade()) {
+            buffer.update(cx, |buffer, cx| buffer.apply_code_style(cx));
+        }
+    }
+
     pub fn new() -> Self {
         Self {
             buffers: HashMap::new(),

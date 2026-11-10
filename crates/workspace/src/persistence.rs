@@ -126,7 +126,34 @@ pub fn last_project() -> Option<PathBuf> {
 pub(crate) fn remember_last_project(root: &Path) -> Result<()> {
     fs::create_dir_all(state_dir())?;
     fs::write(last_project_path(), root.to_string_lossy().as_bytes())?;
-    Ok(())
+    let mut recent = recent_projects();
+    recent.retain(|p| p != root);
+    recent.insert(0, root.to_path_buf());
+    recent.truncate(RECENT_PROJECTS);
+    write_json(&recent_projects_path(), &recent)
+}
+
+/// How many projects the project menu offers.
+const RECENT_PROJECTS: usize = 15;
+
+fn recent_projects_path() -> PathBuf {
+    state_dir().join("recent-projects.json")
+}
+
+/// Projects opened before, most recent first, leaving out any that have gone.
+pub fn recent_projects() -> Vec<PathBuf> {
+    let saved: Vec<PathBuf> = fs::read(recent_projects_path())
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default();
+    let mut recent: Vec<PathBuf> = saved.into_iter().filter(|p| p.is_dir()).collect();
+    // From before the list was kept: the last project is at least known.
+    if recent.is_empty()
+        && let Some(last) = last_project()
+    {
+        recent.push(last);
+    }
+    recent
 }
 
 /// The project a file belongs to: the nearest folder above it that's a repository, or failing that

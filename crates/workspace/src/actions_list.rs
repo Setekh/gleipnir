@@ -4,7 +4,7 @@
 use gpui::{App, Window};
 
 /// Namespaces that are user-facing commands, rather than a widget's internal key handling.
-const COMMAND_NAMESPACES: &[&str] = &["editor", "workspace", "project_panel"];
+const COMMAND_NAMESPACES: &[&str] = &["editor", "workspace", "project_panel", "git", "terminal"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActionInfo {

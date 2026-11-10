@@ -8,6 +8,7 @@
 
 mod breakpoints;
 mod process;
+mod test_runs;
 #[cfg(test)]
 mod tests;
 
@@ -15,6 +16,7 @@ pub use breakpoints::{Breakpoint, Breakpoints};
 pub use process::{ProcessCommand, ProcessHandle, ProcessInfo, ProcessOutput, list_processes};
 
 use crate::buffer::{BufferEvent, BufferModel};
+use crate::test_results::TestRun;
 use crate::toolchains::Toolchains;
 use anyhow::{Result, anyhow};
 use futures::StreamExt as _;
@@ -261,6 +263,8 @@ pub struct Launch {
     env: Option<Env>,
     /// Forwards the output of a program the debugger asked us to start.
     _program_output: Option<Task<()>>,
+    /// For a test target, its results as they come in.
+    pub tests: Option<TestRun>,
 
     stopping: bool,
     _task: Option<Task<()>>,
@@ -311,6 +315,17 @@ impl Launch {
         if self.console.len() > CONSOLE_LINES {
             let excess = self.console.len() - CONSOLE_LINES;
             self.console.drain(..excess);
+        }
+    }
+
+    /// The program's own output, which a test run reads its results from.
+    fn program_output(&mut self, kind: ConsoleKind, text: &str) {
+        let shown = match &mut self.tests {
+            Some(tests) => tests.feed(kind, text),
+            None => vec![(kind, text.to_string())],
+        };
+        for (kind, text) in shown {
+            self.print(kind, &text);
         }
     }
 
@@ -422,6 +437,8 @@ pub struct Debugger {
     /// The last text seen of each file with breakpoints, so they can follow a change made while
     /// the file isn't open, like a branch switch.
     known_text: HashMap<PathBuf, String>,
+    /// Each test's last result, by file and function name, for the gutter.
+    test_marks: HashMap<PathBuf, HashMap<String, crate::TestState>>,
     _targets_task: Option<Task<()>>,
 }
 
@@ -461,6 +478,7 @@ impl Debugger {
             exception_choices: BTreeMap::new(),
             buffers: HashMap::new(),
             known_text: HashMap::new(),
+            test_marks: HashMap::new(),
             _targets_task: None,
         };
         this.refresh_targets(cx);
@@ -901,6 +919,7 @@ impl Debugger {
             process: None,
             env: None,
             _program_output: None,
+            tests: None,
             stopping: false,
             _task: None,
         };
@@ -936,6 +955,9 @@ impl Debugger {
                 }
             }
             if debug {
+                if !install_adapter(&this, id, &target.package_id, &toolchains, cx).await {
+                    return;
+                }
                 start_debugging(&this, id, &target, &env, cx).await;
             } else {
                 run_program(&this, id, &target, &env, cx).await;
@@ -1004,6 +1026,7 @@ impl Debugger {
             process: None,
             env: None,
             _program_output: None,
+            tests: None,
             stopping: false,
             _task: Some(task),
         });
@@ -1071,6 +1094,17 @@ impl Debugger {
             None => "Process finished".to_string(),
         };
         launch.println(ConsoleKind::Info, &format!("\n{message}"));
+        let stopped = launch.stopping;
+        let problem = launch
+            .tests
+            .as_mut()
+            .and_then(|tests| load_test_report(tests, &launch.target));
+        if let Some(problem) = problem {
+            launch.println(ConsoleKind::Stderr, &problem);
+        }
+        if let Some(tests) = &mut launch.tests {
+            tests.finish(code, stopped);
+        }
         launch.status = LaunchStatus::Finished(code);
         launch.process = None;
         for session in &mut launch.sessions {
@@ -1083,6 +1117,7 @@ impl Debugger {
             self.statuses.clear();
             self.breakpoint_ids.clear();
         }
+        self.locate_tests(id, cx);
         cx.emit(DebuggerEvent::LaunchesChanged);
         cx.emit(DebuggerEvent::MarksChanged);
         cx.notify();
@@ -1093,6 +1128,10 @@ impl Debugger {
             return;
         };
         launch.println(ConsoleKind::Error, &message);
+        let stopped = launch.stopping;
+        if let Some(tests) = &mut launch.tests {
+            tests.finish(Some(-1), stopped);
+        }
         launch.status = LaunchStatus::Failed(message);
         launch.process = None;
         for session in &mut launch.sessions {
@@ -1700,7 +1739,12 @@ impl Debugger {
                     Some("telemetry") => return,
                     _ => ConsoleKind::Info,
                 };
-                self.with_launch(id, |l| l.print(kind, &output.output));
+                self.with_launch(id, |l| match kind {
+                    ConsoleKind::Stdout | ConsoleKind::Stderr => {
+                        l.program_output(kind, &output.output)
+                    }
+                    _ => l.print(kind, &output.output),
+                });
                 cx.notify();
                 return;
             }
@@ -1809,7 +1853,7 @@ impl Debugger {
                     ProcessOutput::Exited(_) => break,
                 };
                 let alive = this.update(cx, |this, cx| {
-                    this.with_launch(id, |l| l.print(kind, &text));
+                    this.with_launch(id, |l| l.program_output(kind, &text));
                     cx.notify();
                 });
                 if alive.is_err() {
@@ -2139,7 +2183,7 @@ async fn run_into_console(
             }
         };
         let alive = this.update(cx, |this, cx| {
-            this.with_launch(id, |l| l.print(kind, &text));
+            this.with_launch(id, |l| l.program_output(kind, &text));
             cx.notify();
         });
         if alive.is_err() {
@@ -2191,6 +2235,87 @@ async fn run_build(
     .unwrap_or(false)
 }
 
+/// Installs the debugger a launch needs if it's missing and can be, saying so in its console.
+/// Returns whether to carry on.
+async fn install_adapter(
+    this: &gpui::WeakEntity<Debugger>,
+    id: LaunchId,
+    package_id: &str,
+    toolchains: &Entity<Toolchains>,
+    cx: &mut gpui::AsyncApp,
+) -> bool {
+    let Some(tool) = registry()
+        .package(package_id)
+        .and_then(|p| p.manifest.debugger.as_ref())
+        .map(|d| d.tool.clone())
+    else {
+        return true;
+    };
+    if !toolchains.update(cx, |t, cx| t.install_missing(package_id, &tool, cx)) {
+        return true;
+    }
+    this.update(cx, |this, cx| {
+        this.with_launch(id, |l| {
+            l.println(ConsoleKind::Info, &format!("Installing {tool}…"))
+        });
+        cx.notify();
+    })
+    .ok();
+    while toolchains.read_with(cx, |t, _| t.is_installing(&tool)) {
+        let live = this
+            .read_with(cx, |this, _| {
+                this.launch(id).is_some_and(|l| l.status.is_live())
+            })
+            .unwrap_or(false);
+        if !live {
+            return false;
+        }
+        cx.background_executor()
+            .timer(Duration::from_millis(100))
+            .await;
+    }
+    let error = toolchains.read_with(cx, |t, _| t.install_error(&tool).map(String::from));
+    match error {
+        Some(error) => {
+            this.update(cx, |this, cx| {
+                this.fail(id, format!("Couldn't install {tool}: {error}"), cx)
+            })
+            .ok();
+            false
+        }
+        None => true,
+    }
+}
+
+/// A test run's results to fill. A report from an earlier run is cleared away first, so a run
+/// that dies before writing its own isn't shown the old one.
+fn new_test_run(format: gleipnir_packages::TestFormat, target: &RunTarget) -> TestRun {
+    if let Some(report) = gleipnir_packages::js_report_of(target) {
+        std::fs::remove_file(&report).ok();
+        if let Some(folder) = report.parent() {
+            std::fs::create_dir_all(folder).ok();
+        }
+    }
+    let mut run = TestRun::new(format, &target.name);
+    if target.package_id == "typescript" {
+        run.set_jest_context(target.cwd.clone(), target.run.iter().any(|arg| arg == "-t"));
+    }
+    run
+}
+
+/// Reads the report a run writes when it ends, for runners that report that way. Says what went
+/// wrong if there's one that can't be read; a run that wrote none has said why itself.
+fn load_test_report(tests: &mut TestRun, target: &RunTarget) -> Option<String> {
+    let report = gleipnir_packages::js_report_of(target)?;
+    let json = std::fs::read_to_string(&report).ok()?;
+    tests.load_jest_report(&json).err().map(|error| {
+        format!(
+            "Couldn't read the test report {}: {error:#}",
+            report.display()
+        )
+    })
+}
+
 async fn run_program(
     this: &gpui::WeakEntity<Debugger>,
     id: LaunchId,
@@ -2202,6 +2327,9 @@ async fn run_program(
         this.with_launch(id, |l| {
             l.status = LaunchStatus::Running;
             l.println(ConsoleKind::Info, &target.run.join(" "));
+            l.tests = target
+                .test_format(false)
+                .map(|format| new_test_run(format, target));
         });
         cx.notify();
     })
@@ -2235,7 +2363,14 @@ async fn start_debugging_with(
 ) {
     let request_kind = if attach.is_some() { "attach" } else { "launch" };
     let prepared = this.update(cx, |this, cx| {
-        this.with_launch(id, |l| l.status = LaunchStatus::Starting);
+        this.with_launch(id, |l| {
+            l.status = LaunchStatus::Starting;
+            if attach.is_none() {
+                l.tests = target
+                    .test_format(true)
+                    .map(|format| new_test_run(format, target));
+            }
+        });
         cx.notify();
         let launch = match &attach {
             Some(arguments) => Ok(gleipnir_packages::DebugLaunch {

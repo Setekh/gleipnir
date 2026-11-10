@@ -8,6 +8,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::testing::{
+    Suite, TestPick, go_locate, go_select, has_odin_tests, is_js_test_file, js_select,
+    js_test_chain, js_test_target, odin_locate, odin_select, odin_test_name, odin_test_target,
+    rust_locate, rust_module_path, rust_select,
+};
+
 /// A process to start.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandSpec {
@@ -75,6 +81,19 @@ pub trait LanguageAdapter: Send + Sync {
     /// The test declared on a line, to run from the gutter, given the file's text.
     fn test_at(&self, _root: &Path, _file: &Path, _text: &str, _line: usize) -> Option<RunTarget> {
         None
+    }
+    /// A test target narrowed to some of its tests, as the results tree names them.
+    fn select_tests(&self, _target: &RunTarget, _picks: &[TestPick]) -> Option<RunTarget> {
+        None
+    }
+    /// Where tests of a suite are declared: a file and a line, from 0, for each name given.
+    fn locate_tests(
+        &self,
+        _target: &RunTarget,
+        _suite: &Suite,
+        names: &[String],
+    ) -> Vec<Option<(PathBuf, u32)>> {
+        vec![None; names.len()]
     }
 }
 
@@ -239,7 +258,7 @@ impl LanguageAdapter for RustAdapter {
                 }));
             }
             bins.dedup_by(|a, b| a.0 == b.0);
-            tests.push(rust_test_target(root, package, None, None));
+            tests.push(rust_test_target(root, package, None, false, &[], None));
             for (bin, source) in bins {
                 targets.push(RunTarget {
                     package_id: "rust".into(),
@@ -267,12 +286,44 @@ impl LanguageAdapter for RustAdapter {
             }
         }
         // Tests after what runs, as they're less often what's wanted.
+        if tests.len() > 1 {
+            targets.push(RunTarget {
+                package_id: "rust".into(),
+                name: "all tests".into(),
+                kind: RunTargetKind::Test,
+                build: Some(
+                    ["cargo", "test", "--no-run", "--workspace"]
+                        .map(String::from)
+                        .to_vec(),
+                ),
+                run: ["cargo", "test", "--workspace", "--no-fail-fast"]
+                    .map(String::from)
+                    .to_vec(),
+                program: None,
+                cwd: root.to_path_buf(),
+                source: None,
+                args: Vec::new(),
+            });
+        }
         targets.extend(tests);
         targets
     }
 
     fn debug_launch(&self, target: &RunTarget) -> Result<DebugLaunch> {
         lldb_launch(target)
+    }
+
+    fn select_tests(&self, target: &RunTarget, picks: &[TestPick]) -> Option<RunTarget> {
+        rust_select(target, picks)
+    }
+
+    fn locate_tests(
+        &self,
+        target: &RunTarget,
+        suite: &Suite,
+        names: &[String],
+    ) -> Vec<Option<(PathBuf, u32)>> {
+        rust_locate(target, suite, names)
     }
 
     /// Loads the toolchain's own formatters into lldb, as `rust-lldb` does, so strings, vectors
@@ -299,23 +350,55 @@ impl LanguageAdapter for RustAdapter {
         Some(json!({ "pid": pid }))
     }
 
-    /// A `#[test]` function: the line with `fn name(` under the attribute.
+    /// A `#[test]` function, the line with `fn name(` under the attribute, or a `mod` under
+    /// `#[cfg(test)]`, for every test in it. Named by their full path, to run exactly them.
     fn test_at(&self, root: &Path, file: &Path, text: &str, line: usize) -> Option<RunTarget> {
         let lines: Vec<&str> = text.lines().collect();
-        let name = rust_fn_name(lines.get(line)?)?;
-        let attributed = lines[..line]
-            .iter()
-            .rev()
-            .take_while(|l| {
+        let declared = lines.get(line)?;
+        let attributes = || {
+            lines[..line].iter().rev().take_while(|l| {
                 let l = l.trim();
                 l.starts_with("#[") || l.starts_with("//") || l.is_empty()
             })
-            .any(|l| l.trim().ends_with("test]"));
-        if !attributed {
+        };
+        let prefix = || {
+            let mut prefix = rust_module_path(file).unwrap_or_default();
+            for module in inline_modules(&lines, line) {
+                prefix.push_str(&module);
+                prefix.push_str("::");
+            }
+            prefix
+        };
+        let package = || cargo_package_of(file);
+        if let Some(module) = rust_inline_mod_name(declared) {
+            if !attributes().any(|l| l.contains("cfg(test)")) {
+                return None;
+            }
+            let filter = format!("{}{module}::", prefix());
+            let selector = rust_selector_for_file(file);
+            return Some(rust_test_target(
+                root,
+                &package()?,
+                Some(&filter),
+                false,
+                &selector,
+                Some(file),
+            ));
+        }
+        let name = rust_fn_name(declared)?;
+        if !attributes().any(|l| l.trim().ends_with("test]")) {
             return None;
         }
-        let package = cargo_package_of(file)?;
-        Some(rust_test_target(root, &package, Some(&name), Some(file)))
+        let filter = format!("{}{name}", prefix());
+        let selector = rust_selector_for_file(file);
+        Some(rust_test_target(
+            root,
+            &package()?,
+            Some(&filter),
+            true,
+            &selector,
+            Some(file),
+        ))
     }
 }
 
@@ -371,55 +454,151 @@ fn cargo_package_of(file: &Path) -> Option<String> {
     })
 }
 
-/// A package's tests, or one of them by name.
+/// The name of an inline module declared on a line: `mod tests {`.
+fn rust_inline_mod_name(line: &str) -> Option<String> {
+    let mut rest = line.trim_start();
+    for visibility in ["pub(crate) ", "pub(super) ", "pub "] {
+        rest = rest.strip_prefix(visibility).unwrap_or(rest);
+    }
+    let rest = rest.strip_prefix("mod ")?;
+    let name: String = rest
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    let after = rest[name.len()..].trim_start();
+    (!name.is_empty() && after.starts_with('{')).then_some(name)
+}
+
+/// The inline modules a line is inside, outermost first, found by counting braces above it.
+fn inline_modules(lines: &[&str], line: usize) -> Vec<String> {
+    let mut open: Vec<(String, i32)> = Vec::new();
+    let mut depth = 0i32;
+    for text in &lines[..line.min(lines.len())] {
+        let code = text.split("//").next().unwrap_or("");
+        if let Some(name) = rust_inline_mod_name(code) {
+            open.push((name, depth));
+        }
+        let mut in_string = false;
+        let mut previous = ' ';
+        for c in code.chars() {
+            match c {
+                '"' if previous != '\\' => in_string = !in_string,
+                '{' if !in_string => depth += 1,
+                '}' if !in_string => depth -= 1,
+                _ => {}
+            }
+            previous = c;
+        }
+        while open.last().is_some_and(|(_, at)| depth <= *at) {
+            open.pop();
+        }
+    }
+    open.into_iter().map(|(name, _)| name).collect()
+}
+
+/// The Cargo flags for the test binary a file's tests are built into, when it's clear which.
+fn rust_selector_for_file(file: &Path) -> Vec<String> {
+    let Some(dir) = file.ancestors().skip(1).find(|dir| {
+        fs::read_to_string(dir.join("Cargo.toml")).is_ok_and(|t| t.contains("[package]"))
+    }) else {
+        return Vec::new();
+    };
+    let Ok(relative) = file.strip_prefix(dir) else {
+        return Vec::new();
+    };
+    let parts: Vec<String> = relative
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let stem = |name: &str| name.trim_end_matches(".rs").to_string();
+    match parts
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["tests", file] => vec!["--test".into(), stem(file)],
+        ["tests", folder, "main.rs"] => vec!["--test".into(), folder.to_string()],
+        ["tests", ..] => Vec::new(),
+        ["src", "bin", file] => vec!["--bin".into(), stem(file)],
+        ["src", "bin", folder, ..] => vec!["--bin".into(), folder.to_string()],
+        ["src", "main.rs"] => match cargo_package_of(file) {
+            Some(package) => vec!["--bin".into(), package],
+            None => Vec::new(),
+        },
+        ["src", ..] if dir.join("src/lib.rs").is_file() => vec!["--lib".into()],
+        _ => Vec::new(),
+    }
+}
+
+/// A package's tests, or those named by a filter: one test when `exact`, else every test whose
+/// name contains it. `selector` picks the test binary, like `--lib`.
 fn rust_test_target(
     root: &Path,
     package: &str,
-    test: Option<&str>,
+    filter: Option<&str>,
+    exact: bool,
+    selector: &[String],
     source: Option<&Path>,
 ) -> RunTarget {
-    let mut run: Vec<String> = ["cargo", "test", "-p", package]
+    let mut base: Vec<String> = ["cargo", "test", "-p", package]
         .into_iter()
         .map(String::from)
         .collect();
-    if let Some(test) = test {
-        run.extend(["--".to_string(), test.to_string()]);
+    let mut build = base.clone();
+    build.insert(2, "--no-run".into());
+    build.extend(selector.iter().cloned());
+    base.push("--no-fail-fast".into());
+    base.extend(selector.iter().cloned());
+    let mut args = Vec::new();
+    if let Some(filter) = filter {
+        if exact {
+            args.push("--exact".to_string());
+        }
+        args.push(filter.to_string());
+    }
+    let mut run = base;
+    if !args.is_empty() {
+        run.push("--".into());
+        run.extend(args.iter().cloned());
     }
     RunTarget {
         package_id: "rust".into(),
-        name: match test {
-            Some(test) => format!("test {test}"),
+        name: match filter {
+            Some(test) if exact => format!("test {}", test.rsplit("::").next().unwrap_or(test)),
+            Some(group) => format!("tests in {package}::{}", group.trim_end_matches("::")),
             None => format!("tests in {package}"),
         },
         kind: RunTargetKind::Test,
-        build: Some(
-            ["cargo", "test", "--no-run", "-p", package]
-                .into_iter()
-                .map(String::from)
-                .collect(),
-        ),
+        build: Some(build),
         run,
         program: None,
         cwd: root.to_path_buf(),
         source: source.map(Path::to_path_buf),
-        args: test.map(|t| vec![t.to_string()]).unwrap_or_default(),
+        args,
     }
 }
 
-/// The unit-test binary Cargo built for a test target's package, asking Cargo where it put it.
+/// The test binary Cargo builds for a test target, asking Cargo where it put it: the library's,
+/// unless the target picks another.
 fn rust_test_binary(target: &RunTarget, env: &crate::Env) -> Result<PathBuf> {
-    let package = target
-        .run
+    let build = target
+        .build
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("{} has no test binary to debug", target.name))?;
+    let package = build
         .iter()
         .skip_while(|a| *a != "-p")
         .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("{} names no package", target.name))?;
+        .cloned()
+        .unwrap_or_default();
     let cargo = env
         .which("cargo")
         .ok_or_else(|| anyhow::anyhow!("cargo isn't on the PATH"))?;
     let mut command = std::process::Command::new(cargo);
     command
-        .args(["test", "--no-run", "--message-format=json", "-p", package])
+        .args(&build[1..])
+        .arg("--message-format=json")
         .current_dir(&target.cwd);
     env.apply(&mut command);
     let output = command.output()?;
@@ -430,9 +609,10 @@ fn rust_test_binary(target: &RunTarget, env: &crate::Env) -> Result<PathBuf> {
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
         .filter(|m| m["reason"] == "compiler-artifact" && m["profile"]["test"] == true)
         .filter(|m| {
-            m["package_id"]
-                .as_str()
-                .is_some_and(|id| id.contains(package.as_str()))
+            package.is_empty()
+                || m["package_id"]
+                    .as_str()
+                    .is_some_and(|id| id.contains(package.as_str()))
                 || m["target"]["name"].as_str().map(|n| n.replace('-', "_"))
                     == Some(package.replace('-', "_"))
         })
@@ -474,12 +654,14 @@ fn go_test_target(root: &Path, dir: &Path, test: Option<&str>) -> RunTarget {
     } else {
         format!("./{}", relative.display())
     };
-    let mut run = vec!["go".to_string(), "test".into()];
+    let mut run = vec!["go".to_string(), "test".into(), "-json".into()];
     let mut args = Vec::new();
     if let Some(test) = test {
         run.extend(["-run".to_string(), format!("^{test}$")]);
         args = vec!["-test.run".to_string(), format!("^{test}$")];
     }
+    // Under delve, results are read from the verbose output.
+    args.push("-test.v".into());
     run.push(package.clone());
     RunTarget {
         package_id: "go".into(),
@@ -492,7 +674,8 @@ fn go_test_target(root: &Path, dir: &Path, test: Option<&str>) -> RunTarget {
         run,
         program: Some(dir.to_path_buf()),
         cwd: root.to_path_buf(),
-        source: None,
+        // A package's tests run from its files, where nothing else does.
+        source: test.is_none().then(|| dir.to_path_buf()),
         args,
     }
 }
@@ -506,11 +689,18 @@ impl LanguageAdapter for GoAdapter {
 
     fn run_targets(&self, root: &Path) -> Vec<RunTarget> {
         let folders = folders(root, 4);
-        let tests: Vec<RunTarget> = folders
+        let mut tests: Vec<RunTarget> = folders
             .iter()
             .filter(|dir| has_go_tests(dir))
             .map(|dir| go_test_target(root, dir, None))
             .collect();
+        if tests.len() > 1 {
+            let mut all = go_test_target(root, root, None);
+            all.name = "all tests".into();
+            *all.run.last_mut().unwrap() = "./...".into();
+            all.program = None;
+            tests.insert(0, all);
+        }
         let mut targets: Vec<RunTarget> = folders
             .into_iter()
             .filter(|dir| is_go_main(dir))
@@ -547,6 +737,19 @@ impl LanguageAdapter for GoAdapter {
 
     fn attach_arguments(&self, pid: u32) -> Option<Value> {
         Some(json!({ "mode": "local", "processId": pid }))
+    }
+
+    fn select_tests(&self, target: &RunTarget, picks: &[TestPick]) -> Option<RunTarget> {
+        go_select(target, picks)
+    }
+
+    fn locate_tests(
+        &self,
+        target: &RunTarget,
+        suite: &Suite,
+        names: &[String],
+    ) -> Vec<Option<(PathBuf, u32)>> {
+        go_locate(target, suite, names)
     }
 
     /// A `func TestX(t *testing.T)` in a `_test.go` file.
@@ -619,7 +822,13 @@ impl LanguageAdapter for OdinAdapter {
     }
 
     fn run_targets(&self, root: &Path) -> Vec<RunTarget> {
-        folders(root, 3)
+        let folders = folders(root, 3);
+        let tests: Vec<RunTarget> = folders
+            .iter()
+            .filter(|dir| has_odin_tests(dir))
+            .map(|dir| odin_test_target(root, dir, &[]))
+            .collect();
+        let mut targets: Vec<RunTarget> = folders
             .into_iter()
             .filter(|dir| is_odin_main(dir))
             .map(|dir| {
@@ -646,7 +855,9 @@ impl LanguageAdapter for OdinAdapter {
                     args: Vec::new(),
                 }
             })
-            .collect()
+            .collect();
+        targets.extend(tests);
+        targets
     }
 
     fn debug_launch(&self, target: &RunTarget) -> Result<DebugLaunch> {
@@ -656,6 +867,32 @@ impl LanguageAdapter for OdinAdapter {
     fn attach_arguments(&self, pid: u32) -> Option<Value> {
         Some(json!({ "pid": pid }))
     }
+
+    /// An `@(test)` procedure, run by its package and name.
+    fn test_at(&self, root: &Path, file: &Path, text: &str, line: usize) -> Option<RunTarget> {
+        let lines: Vec<&str> = text.lines().collect();
+        let name = odin_test_name(&lines, line)?;
+        let package = lines
+            .iter()
+            .find_map(|l| l.trim().strip_prefix("package "))?
+            .trim();
+        let mut target = odin_test_target(root, file.parent()?, &[format!("{package}.{name}")]);
+        target.source = Some(file.to_path_buf());
+        Some(target)
+    }
+
+    fn select_tests(&self, target: &RunTarget, picks: &[TestPick]) -> Option<RunTarget> {
+        odin_select(target, picks)
+    }
+
+    fn locate_tests(
+        &self,
+        target: &RunTarget,
+        suite: &Suite,
+        names: &[String],
+    ) -> Vec<Option<(PathBuf, u32)>> {
+        odin_locate(target, suite, names)
+    }
 }
 
 pub struct TypeScriptAdapter;
@@ -663,6 +900,12 @@ pub struct TypeScriptAdapter;
 impl TypeScriptAdapter {
     /// Running one file directly, which is what "run this" means for a script.
     pub fn file_target(&self, root: &Path, file: &Path) -> RunTarget {
+        // A test file runs its tests, with the project's runner.
+        if is_js_test_file(file)
+            && let Some(target) = js_test_target(file, None)
+        {
+            return target;
+        }
         let name = file
             .file_name()
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
@@ -704,6 +947,18 @@ impl LanguageAdapter for TypeScriptAdapter {
             "address": "127.0.0.1",
             "port": 9229,
         }))
+    }
+
+    /// A `describe`, `it` or `test` on a line of a test file.
+    fn test_at(&self, _root: &Path, file: &Path, text: &str, line: usize) -> Option<RunTarget> {
+        if !is_js_test_file(file) {
+            return None;
+        }
+        js_test_target(file, Some(js_test_chain(text, line)?))
+    }
+
+    fn select_tests(&self, target: &RunTarget, picks: &[TestPick]) -> Option<RunTarget> {
+        js_select(target, picks)
     }
 
     /// The `scripts` in package.json, and its `main` file.
@@ -764,7 +1019,12 @@ impl LanguageAdapter for TypeScriptAdapter {
             "__workspaceFolder": target.cwd,
         });
         match (&target.program, target.kind) {
-            (Some(program), _) => launch["program"] = json!(program),
+            (Some(program), _) => {
+                launch["program"] = json!(program);
+                if !target.args.is_empty() {
+                    launch["args"] = json!(target.args);
+                }
+            }
             (None, RunTargetKind::Script) => {
                 launch["runtimeExecutable"] = json!("npm");
                 launch["runtimeArgs"] = json!(target.run[1..]);
@@ -826,6 +1086,7 @@ mod tests {
                 "app",
                 "extra",
                 "generate",
+                "all tests",
                 "tests in app",
                 "tests in lib",
                 "tests in gen"
@@ -863,7 +1124,7 @@ mod tests {
             [root_name.as_str(), "cmd/server", "tests in ./cmd/tool"]
         );
         assert_eq!(targets[1].run, ["go", "run", "./cmd/server"]);
-        assert_eq!(targets[2].run, ["go", "test", "./cmd/tool"]);
+        assert_eq!(targets[2].run, ["go", "test", "-json", "./cmd/tool"]);
         let test = GoAdapter
             .debug_launch(&targets[2])
             .unwrap()
@@ -962,10 +1223,19 @@ mod tests {
         assert!(RustAdapter.test_at(dir.path(), &file, &text, 0).is_none());
         let test = RustAdapter.test_at(dir.path(), &file, &text, 5).unwrap();
         assert_eq!(test.name, "test adds");
-        assert_eq!(test.run, ["cargo", "test", "-p", "calc", "--", "adds"]);
-        assert_eq!(test.args, ["adds"]);
+        assert_eq!(
+            test.run.join(" "),
+            "cargo test -p calc --no-fail-fast --lib -- --exact tests::adds"
+        );
+        assert_eq!(test.args, ["--exact", "tests::adds"]);
         let launch = RustAdapter.debug_launch(&test).unwrap().launch_arguments;
-        assert_eq!(launch["args"], json!(["adds"]));
+        assert_eq!(launch["args"], json!(["--exact", "tests::adds"]));
+        let module = RustAdapter.test_at(dir.path(), &file, &text, 3).unwrap();
+        assert_eq!(module.name, "tests in calc::tests");
+        assert_eq!(
+            module.run.join(" "),
+            "cargo test -p calc --no-fail-fast --lib -- tests::"
+        );
     }
 
     #[test]
@@ -981,8 +1251,11 @@ mod tests {
         let text = fs::read_to_string(&file).unwrap();
         let test = GoAdapter.test_at(dir.path(), &file, &text, 4).unwrap();
         assert_eq!(test.name, "test TestAdd");
-        assert_eq!(test.run, ["go", "test", "-run", "^TestAdd$", "./calc"]);
-        assert_eq!(test.args, ["-test.run", "^TestAdd$"]);
+        assert_eq!(
+            test.run,
+            ["go", "test", "-json", "-run", "^TestAdd$", "./calc"]
+        );
+        assert_eq!(test.args, ["-test.run", "^TestAdd$", "-test.v"]);
         assert!(GoAdapter.test_at(dir.path(), &file, &text, 0).is_none());
     }
 }

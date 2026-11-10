@@ -26,6 +26,7 @@ fn init(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gleipnir_ui::init_theme(cx);
         gleipnir_ui::bind_text_input_keys(cx);
+        gleipnir_ui::bind_context_menu_keys(cx);
         gleipnir_editor::bind_keys(cx);
         crate::bind_keys(cx);
     });
@@ -65,6 +66,10 @@ impl Panel for TestPanel {
     }
     fn position(&self) -> DockPosition {
         self.position
+    }
+    /// Stands in for one whose contents don't come back, like the Agents window.
+    fn reopens(&self) -> bool {
+        self.id != "right"
     }
 }
 
@@ -369,6 +374,25 @@ fn the_rail_buttons_toggle_their_panels(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn a_rail_button_hides_its_panel_even_when_the_panel_isnt_focused(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace_for(None, cx);
+    // Like Find Usages showing its results, which leaves focus in the editor.
+    cx.update(|_, cx| workspace.update(cx, |w, cx| w.show_panel("bottom", cx)));
+    cx.run_until_parked();
+    let visible = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| workspace.read(cx).is_dock_visible(DockPosition::Bottom))
+    };
+    assert!(visible(cx));
+    let button = cx.debug_bounds("rail-bottom").expect("a rail button");
+    cx.simulate_click(button.center(), Modifiers::none());
+    assert!(!visible(cx));
+    cx.simulate_click(button.center(), Modifiers::none());
+    assert!(visible(cx));
+    cx.simulate_click(button.center(), Modifiers::none());
+    assert!(!visible(cx));
+}
+
+#[gpui::test]
 fn docks_resize_by_dragging_their_edge_within_limits(cx: &mut TestAppContext) {
     let (workspace, cx) = workspace_for(None, cx);
     cx.update(|window, cx| workspace.update(cx, |w, cx| w.toggle_panel("left", window, cx)));
@@ -458,6 +482,21 @@ fn the_layout_comes_back_when_the_project_reopens(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(&keys("mod-\\"));
     open(&workspace, root.join("b.rs"), cx);
     cx.update(|window, cx| workspace.update(cx, |w, cx| w.toggle_panel("left", window, cx)));
+    let right = |cx: &mut Context<Workspace>| {
+        cx.new(|cx| TestPanel {
+            focus_handle: cx.focus_handle(),
+            id: "right",
+            position: DockPosition::Right,
+        })
+    };
+    cx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            let panel = right(cx);
+            w.add_panel(panel, cx);
+            w.toggle_panel("right", window, cx);
+        })
+    });
+    assert!(cx.update(|_, cx| workspace.read(cx).is_dock_visible(DockPosition::Right)));
     cx.update(|_, cx| workspace.update(cx, |w, cx| w.save_now(cx)));
     fs::remove_file(root.join("gone.rs")).unwrap();
 
@@ -470,6 +509,8 @@ fn the_layout_comes_back_when_the_project_reopens(cx: &mut TestAppContext) {
                 id: "left",
                 position: DockPosition::Left,
             });
+            workspace.add_panel(panel, cx);
+            let panel = right(cx);
             workspace.add_panel(panel, cx);
             assert!(workspace.restore_layout(window, cx));
             workspace
@@ -485,6 +526,8 @@ fn the_layout_comes_back_when_the_project_reopens(cx: &mut TestAppContext) {
         [vec!["a.rs"], vec!["gone.rs", "b.rs"][1..].to_vec()]
     );
     assert!(cx.update(|_, cx| reopened.read(cx).is_dock_visible(DockPosition::Left)));
+    // A panel that would come back empty stays closed.
+    assert!(!cx.update(|_, cx| reopened.read(cx).is_dock_visible(DockPosition::Right)));
     // The cursor is back where it was.
     let cursor = cx.update(|_, cx| {
         let pane = reopened.read(cx).panes()[0].clone();
@@ -704,4 +747,168 @@ fn a_tab_dragged_onto_another_moves_before_it(cx: &mut TestAppContext) {
     cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
     cx.run_until_parked();
     assert_eq!(tabs(&workspace, cx), [["c.rs", "a.rs", "b.rs"]]);
+}
+
+#[gpui::test]
+fn the_title_bar_shows_the_project_and_branch_and_offers_recent_projects(cx: &mut TestAppContext) {
+    let earlier = tempfile::tempdir().unwrap();
+    let earlier_root = std::fs::canonicalize(earlier.path()).unwrap();
+    let current = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(current.path())
+        .unwrap()
+        .join("fix-partner");
+    std::fs::create_dir_all(root.join(".git")).unwrap();
+    std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/master\n").unwrap();
+    // Opening one project, then another, leaves the first among the recent ones.
+    workspace_for(Some(&earlier_root), cx);
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|_, cx| workspace.read(cx).branch().map(String::from)),
+        Some("master".to_string())
+    );
+    let bar = cx.debug_bounds("title-bar").expect("a title bar");
+    assert_eq!(bar.top(), px(0.));
+    assert_eq!(bar.size.height, px(TITLE_BAR_HEIGHT));
+    assert!(cx.debug_bounds("title-branch").is_some());
+
+    let project = cx.debug_bounds("title-project").expect("the project");
+    cx.simulate_click(project.center(), Modifiers::none());
+    let labels = cx.update(|_, cx| {
+        workspace
+            .read(cx)
+            .open_menu()
+            .map(|menu| menu.read(cx).labels())
+            .unwrap_or_default()
+    });
+    let earlier_name = earlier_root
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_string();
+    assert!(labels.contains(&earlier_name), "{labels:?}");
+    assert!(!labels.contains(&"fix-partner".to_string()), "{labels:?}");
+    assert_eq!(labels.last().map(String::as_str), Some("Open…"));
+    // The menu opens below the bar.
+    let first = cx.debug_bounds("menu-item-0").expect("an item");
+    assert!(first.top() >= bar.bottom());
+    cx.simulate_keystrokes("escape");
+    assert!(cx.update(|_, cx| workspace.read(cx).open_menu().is_none()));
+}
+
+/// Runs git in a folder for a test's repository, with an identity so commits work anywhere.
+fn git(dir: &Path, args: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "init.defaultBranch=main",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "git {args:?}: {status:?}");
+}
+
+#[gpui::test]
+fn the_branch_menu_checks_out_creates_merges_and_deletes_with_git(cx: &mut TestAppContext) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    git(&root, &["init", "-q"]);
+    std::fs::write(root.join("a.txt"), "one\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "one"]);
+    git(&root, &["branch", "feature"]);
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    let branch = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| workspace.read(cx).branch().map(String::from))
+    };
+    assert_eq!(branch(cx).as_deref(), Some("main"));
+    let menu = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            workspace
+                .read(cx)
+                .open_menu()
+                .map(|m| m.read(cx).labels())
+                .unwrap_or_default()
+        })
+    };
+    // Clicks a menu item by its label, waiting for the menu to show.
+    let choose = |label: &str, cx: &mut VisualTestContext| {
+        run_until(cx, |cx| menu(cx).iter().any(|l| l == label));
+        let index = menu(cx).iter().position(|l| l == label).unwrap();
+        let item = cx
+            .debug_bounds(format!("menu-item-{index}").leak())
+            .unwrap();
+        cx.simulate_click(item.center(), Modifiers::none());
+    };
+    let open_branches = |cx: &mut VisualTestContext| {
+        let button = cx.debug_bounds("title-branch").expect("the branch");
+        cx.simulate_click(button.center(), Modifiers::none());
+    };
+    let message = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| workspace.read(cx).snapshot(window, cx).message)
+            .unwrap_or_default()
+    };
+
+    // Checking out another branch.
+    open_branches(cx);
+    run_until(cx, |cx| menu(cx).contains(&"feature".to_string()));
+    assert_eq!(menu(cx)[0], "New Branch…");
+    choose("feature", cx);
+    choose("Checkout", cx);
+    run_until(cx, |cx| branch(cx).as_deref() == Some("feature"));
+
+    // A new branch, named in a prompt, with a commit of its own.
+    open_branches(cx);
+    choose("New Branch…", cx);
+    run_until(cx, |cx| {
+        cx.update(|_, cx| {
+            workspace
+                .read(cx)
+                .active_modal::<crate::NamePrompt>()
+                .is_some()
+        })
+    });
+    cx.simulate_input("topic");
+    cx.simulate_keystrokes("enter");
+    run_until(cx, |cx| branch(cx).as_deref() == Some("topic"));
+    std::fs::write(root.join("b.txt"), "two\n").unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "two"]);
+
+    // Merged into main, then deleted, which git allows as it's merged.
+    git(&root, &["switch", "-q", "main"]);
+    run_until(cx, |cx| {
+        cx.update(|_, cx| workspace.update(cx, |w, cx| w.watch_branch_now(cx)));
+        branch(cx).as_deref() == Some("main")
+    });
+    open_branches(cx);
+    choose("topic", cx);
+    choose("Merge 'topic' into 'main'", cx);
+    run_until(cx, |cx| message(cx).contains("Merged topic into main"));
+    assert!(root.join("b.txt").exists());
+    open_branches(cx);
+    choose("topic", cx);
+    choose("Delete", cx);
+    run_until(cx, |cx| message(cx).contains("Deleted topic"));
+    let (local, _) = crate::workspace::list_branches(&root).unwrap();
+    assert!(!local.contains(&"topic".to_string()));
+
+    // Git won't switch over a change it would lose, and says why.
+    git(&root, &["switch", "-q", "feature"]);
+    std::fs::write(root.join("a.txt"), "feature\n").unwrap();
+    git(&root, &["commit", "-q", "-am", "feature"]);
+    git(&root, &["switch", "-q", "main"]);
+    std::fs::write(root.join("a.txt"), "uncommitted\n").unwrap();
+    cx.update(|_, cx| workspace.update(cx, |w, cx| w.watch_branch_now(cx)));
+    open_branches(cx);
+    choose("feature", cx);
+    choose("Checkout", cx);
+    run_until(cx, |cx| message(cx).contains("would be overwritten"));
+    assert_eq!(branch(cx).as_deref(), Some("main"));
 }

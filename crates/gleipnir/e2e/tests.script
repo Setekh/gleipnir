@@ -1,0 +1,99 @@
+# The test runner against real cargo, go and odin. Run with: script/e2e tests
+wait-timeout 180
+
+# Rust: run the test module from where the cursor is, see the tree, a failing test's own output and
+# the gutter's marks, then fix the test and rerun only what failed.
+open {dir}/src/lib.rs
+wait-match /panels/debug/targets tests in calc
+cursor 6:1
+action debugger::RunFile
+wait-match /panels/run/status Finished with exit code 101
+wait-state /panels/run/test_summary 1 failed, 1 passed of 2
+wait-match /panels/run/tests       Failed subtracts
+wait-match /editor/run_results 15: failed
+wait-match /editor/run_results 10: passed
+select-test tests::subtracts
+wait-match /panels/run/shown right: 3
+screenshot {shots}/tests-rust-failed.png
+write-file {dir}/src/lib.rs pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n\n    #[test]\n    fn adds() {\n        assert_eq!(add(2, 2), 4);\n    }\n\n    #[test]\n    fn subtracts() {\n        assert_eq!(add(2, -1), 1);\n    }\n}\n
+wait-match /editor/text add(2, -1), 1
+action debugger::RerunFailedTests
+wait-state /panels/run/name test subtracts
+wait-match /panels/run/status Finished with exit code 0
+wait-state /panels/run/test_summary 1 passed of 1
+wait-match /editor/run_results 15: passed
+
+# The crate's tests across its binaries: unit tests and an integration test.
+action debugger::RunConfiguration
+wait-state /modal Picker
+type tests in calc
+key enter
+wait-match /panels/run/status Finished with exit code 0
+wait-state /panels/run/test_summary 3 passed of 3
+wait-match /panels/run/tests   Passed api
+
+# Go: one test with subtests, from the cursor inside it.
+open {dir}/calc/calc_test.go
+cursor 12:3
+action debugger::RunFile
+wait-state /panels/run/name test TestTable
+wait-match /panels/run/status Finished with exit code 1
+wait-state /panels/run/test_summary 2 failed, 1 passed of 3
+select-test TestTable/two
+wait-match /panels/run/shown wrong answer
+wait-match /editor/run_results 11: failed
+screenshot {shots}/tests-go-failed.png
+
+# Odin: the package's tests, then the failing one alone from the gutter's line.
+open {dir}/odin/sums/sums_test.odin
+cursor 1:1
+action debugger::RunFile
+wait-state /panels/run/name tests in sums
+wait-match /panels/run/status Finished with exit code 1
+wait-state /panels/run/test_summary 1 failed, 1 passed of 2
+select-test fails
+wait-match /panels/run/shown expected 2 + 2 to be 5
+wait-match /editor/run_results 11: failed
+wait-match /editor/run_results 6: passed
+cursor 12:2
+action debugger::RunFile
+wait-state /panels/run/name test fails
+wait-match /panels/run/status Finished with exit code 1
+wait-state /panels/run/test_summary 1 failed of 1
+screenshot {shots}/tests-odin-failed.png
+
+# JavaScript with jest: the file's tests from outside any of them, the tree with its describes, a
+# failure's own output and the gutter's marks; then one test from the cursor inside it, rerun.
+open {dir}/js/src/add.test.js
+cursor 1:1
+action debugger::RunFile
+wait-state /panels/run/name tests in add.test.js
+wait-match /panels/run/status Finished with exit code 1
+wait-state /panels/run/test_summary 1 failed, 2 passed of 3
+wait-match /panels/run/tests       Passed adds them
+select-test add › fails on purpose
+wait-match /panels/run/shown Expected: 5
+wait-match /panels/run/shown add.test.js:9:23
+wait-match /editor/run_results 8: failed
+wait-match /editor/run_results 4: passed
+wait-match /editor/run_results 13: passed
+screenshot {shots}/tests-js-failed.png
+cursor 9:5
+action debugger::RunFile
+wait-state /panels/run/name test add › fails on purpose
+wait-match /panels/run/status Finished with exit code 1
+wait-state /panels/run/test_summary 1 failed of 1
+action debugger::RerunFailedTests
+wait-match /panels/run/status Finished with exit code 1
+wait-state /panels/run/test_summary 1 failed of 1
+
+# The same test under the debugger: jest runs in one process, and stops at the breakpoint in it.
+action debugger::ToggleBreakpoint
+action debugger::DebugFile
+wait-state /panels/debug/launch/name test add › fails on purpose
+wait-state /panels/debug/launch/status Paused
+wait-state /editor/execution_line 9
+screenshot {shots}/tests-js-debug.png
+action debugger::RemoveAllBreakpoints
+action debugger::Resume
+wait-match /panels/debug/launch/status Finished

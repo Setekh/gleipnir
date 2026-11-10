@@ -1,0 +1,36 @@
+# The terminal, as IntelliJ's: Alt+F12 opens a shell in the project folder, what's typed reaches
+# it and what it prints shows, Ctrl+C stops a program, Cmd+T opens another tab and Cmd+W closes it,
+# a full-screen program like vim draws and quits cleanly, and closing the last tab hides the tool
+# window.
+wait-idle
+key alt-f12
+wait-match /panels/terminal/tabs Local
+type echo hello-terminal\n
+wait-match /panels/terminal/screen hello-terminal
+type pwd\n
+wait-match /panels/terminal/screen /terminal/terminal
+type sleep 30\n
+key ctrl-c
+type echo stopped\n
+wait-match /panels/terminal/screen \nstopped
+screenshot {shots}/terminal.png
+type vim -u NONE -N main.rs\n
+wait-match /panels/terminal/screen fn main
+screenshot {shots}/terminal-vim.png
+key escape
+type :q!\n
+wait-match /panels/terminal/screen hello-terminal
+key cmd-t
+wait-state /panels/terminal/active 1
+wait-match /panels/terminal/tabs Local (2)
+key cmd-w
+wait-state /panels/terminal/active 0
+wait-match /panels/terminal/screen hello-terminal
+key cmd-w
+wait-state /panels/terminal/tabs []
+# The Agents tool window, on the right: shown empty it offers the agents, and starts none itself.
+action terminal::ToggleAgents
+wait 500
+expect-state /panels/agents/tabs []
+screenshot {shots}/agents.png
+action terminal::ToggleAgents

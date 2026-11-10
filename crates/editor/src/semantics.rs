@@ -173,6 +173,9 @@ pub(crate) struct SemanticsState {
     pub provider: Option<Rc<dyn SemanticsProvider>>,
     pub completion: Option<CompletionMenu>,
     completion_task: Option<Task<()>>,
+    /// Where the word starts that the request in flight is for, so typing more of the same word
+    /// waits for it rather than asking again.
+    completion_requested_at: Option<usize>,
     pub hover: Option<HoverPopup>,
     hover_task: Option<Task<()>>,
     hover_target: Option<usize>,
@@ -192,7 +195,8 @@ impl EditorView {
     }
 
     pub fn has_popups(&self) -> bool {
-        self.semantics.completion.is_some()
+        self.suggestion.current.is_some()
+            || self.semantics.completion.is_some()
             || self.semantics.hover.is_some()
             || self.semantics.signature.is_some()
     }
@@ -228,8 +232,10 @@ impl EditorView {
 
     pub(crate) fn close_popups(&mut self, cx: &mut Context<Self>) -> bool {
         let had = self.has_popups();
+        self.clear_suggestion(cx);
         self.semantics.completion = None;
         self.semantics.completion_task = None;
+        self.semantics.completion_requested_at = None;
         self.semantics.hover = None;
         self.semantics.hover_task = None;
         self.semantics.signature = None;
@@ -242,13 +248,17 @@ impl EditorView {
 
     /// Called after a character is typed, to start or update completion and signature help.
     pub(crate) fn after_typing(&mut self, typed: char, cx: &mut Context<Self>) {
+        self.typed_for_suggestion(typed, cx);
         let Some(provider) = self.semantics.provider.clone() else {
             return;
         };
         let triggers = provider.triggers(&self.buffer, cx);
         self.semantics.hover = None;
+        let editor_settings = gleipnir_core::settings(cx).editor.clone();
         if self.semantics.completion.is_some() {
             self.update_completions(cx);
+        } else if !editor_settings.completion_while_typing {
+            // Only Ctrl+Space asks.
         } else if is_word(typed) {
             self.request_completions(None, cx);
         } else if triggers.completion.contains(&typed) {
@@ -257,7 +267,8 @@ impl EditorView {
         self.check_signature(cx);
         if typed == ')' {
             self.semantics.signature = None;
-        } else if triggers.signature.contains(&typed)
+        } else if (editor_settings.parameter_info_while_typing
+            && triggers.signature.contains(&typed))
             || (typed == ',' && self.semantics.signature.is_some())
         {
             self.request_signature(cx);
@@ -266,6 +277,7 @@ impl EditorView {
 
     /// Called after deleting, which narrows or ends a completion.
     pub(crate) fn after_deleting(&mut self, cx: &mut Context<Self>) {
+        self.request_suggestion(cx);
         if self.semantics.completion.is_some() {
             self.update_completions(cx);
         }
@@ -318,11 +330,25 @@ impl EditorView {
         };
         let offset = self.selections.primary().head;
         let word_start = self.word_start(cx);
+        // Typing on through a word while its list is on the way: that list, filtered by what's
+        // been typed since, is as good, and asking again on every key would only queue up work
+        // for a slow server.
+        if trigger.is_none() && self.semantics.completion_requested_at == Some(word_start) {
+            return;
+        }
         let buffer = self.buffer.clone();
         let task = provider.completions(&buffer, offset, trigger, cx);
+        self.semantics.completion_requested_at = Some(word_start);
         self.semantics.completion_task = Some(cx.spawn(async move |this, cx| {
-            let Ok(completions) = task.await else { return };
+            let completions = task.await;
             this.update(cx, |this, cx| {
+                this.semantics.completion_requested_at = None;
+                let Ok(completions) = completions else { return };
+                // The caret has left the word since: the list is for somewhere else.
+                if this.word_start(cx) != word_start || this.selections.primary().head < word_start
+                {
+                    return;
+                }
                 let scroll = this
                     .semantics
                     .completion
@@ -430,6 +456,7 @@ impl EditorView {
         };
         let buffer = self.buffer.clone();
         let resolve = provider.resolve(&buffer, item.clone(), cx);
+        self.semantics.completion_requested_at = None;
         self.semantics.completion_task = Some(cx.spawn(async move |this, cx| {
             let item = resolve.await.unwrap_or(item);
             this.update(cx, |this, cx| this.apply_completion(item, cx))
@@ -638,7 +665,7 @@ impl EditorView {
             return Vec::new();
         };
         let mut popups = Vec::new();
-        let font = crate::element::editor_font(window);
+        let font = crate::element::editor_font(window, cx);
         let (menu_at, signature_at, hover_at) = {
             let buffer = self.buffer.read(cx).buffer();
             let below = |offset: usize| {
@@ -965,6 +992,31 @@ pub(crate) fn popup_bindings(cx: &mut App) {
         KeyBinding::new("enter", ConfirmCompletion, menu),
         KeyBinding::new("tab", ConfirmCompletion, menu),
         KeyBinding::new("escape", DismissPopups, Some("Editor && showing_popups")),
+        // A suggestion is taken with Tab, as Copilot's are, unless a completion list is open.
+        KeyBinding::new(
+            "tab",
+            AcceptSuggestion,
+            Some("Editor && has_suggestion && !showing_completions"),
+        ),
+        // Or a word or a line of it at a time, with the keys that would move that far.
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "alt-right"
+            } else {
+                "ctrl-right"
+            },
+            AcceptSuggestionWord,
+            Some("Editor && has_suggestion && !showing_completions"),
+        ),
+        KeyBinding::new(
+            if cfg!(target_os = "macos") {
+                "cmd-right"
+            } else {
+                "end"
+            },
+            AcceptSuggestionLine,
+            Some("Editor && has_suggestion && !showing_completions"),
+        ),
         KeyBinding::new("ctrl-space", ShowCompletions, Some("Editor")),
         KeyBinding::new("f2", NextProblem, Some("Editor")),
         KeyBinding::new("shift-f2", PreviousProblem, Some("Editor")),

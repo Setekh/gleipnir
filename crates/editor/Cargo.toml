@@ -19,5 +19,6 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+futures.workspace = true
 gpui = { workspace = true, features = ["test-support"] }
 tempfile = "3"

@@ -31,6 +31,8 @@ struct Fake {
     /// (label, text to insert, what to select in it, an import to add when resolved)
     items: Vec<FakeItem>,
     asked: Rc<RefCell<Vec<Option<char>>>>,
+    /// When set, completions wait until the test answers them, like a slow server.
+    held: Option<Rc<RefCell<Vec<futures::channel::oneshot::Sender<()>>>>>,
 }
 
 impl SemanticsProvider for Fake {
@@ -71,10 +73,21 @@ impl SemanticsProvider for Fake {
                 data: Rc::new(*import),
             })
             .collect();
-        Task::ready(Ok(Completions {
+        let completions = Completions {
             items,
             incomplete: false,
-        }))
+        };
+        match &self.held {
+            Some(held) => {
+                let (answer, answered) = futures::channel::oneshot::channel();
+                held.borrow_mut().push(answer);
+                cx.spawn(async move |_| {
+                    answered.await.ok();
+                    Ok(completions)
+                })
+            }
+            None => Task::ready(Ok(completions)),
+        }
     }
 
     fn resolve(
@@ -206,6 +219,36 @@ fn backspacing_widens_the_filter_and_leaving_the_word_closes_it(cx: &mut TestApp
         labels(&editor, cx).is_empty(),
         "moving the cursor closes it"
     );
+}
+
+#[gpui::test]
+fn typing_on_while_a_list_is_on_the_way_waits_for_it_rather_than_asking_again(
+    cx: &mut TestAppContext,
+) {
+    let held = Rc::new(RefCell::new(Vec::new()));
+    let fake = Fake {
+        held: Some(held.clone()),
+        ..items()
+    };
+    let asked = fake.asked.clone();
+    let (editor, cx) = with_fake("let x = ", fake, cx);
+    cx.simulate_input("are");
+    assert_eq!(asked.borrow().len(), 1, "one request for the whole word");
+    assert!(labels(&editor, cx).is_empty());
+    held.borrow_mut().remove(0).send(()).ok();
+    assert_eq!(
+        labels(&editor, cx),
+        ["area", "arena"],
+        "filtered by all typed"
+    );
+
+    // A list that arrives after the caret has left its word is dropped.
+    cx.simulate_input(" pr");
+    assert_eq!(asked.borrow().len(), 2);
+    cx.simulate_keystrokes("backspace backspace backspace backspace");
+    held.borrow_mut().remove(0).send(()).ok();
+    assert!(labels(&editor, cx).is_empty());
+    assert_eq!(text_of(&editor, cx), "let x = ar");
 }
 
 #[gpui::test]

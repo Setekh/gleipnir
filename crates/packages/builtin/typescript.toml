@@ -34,6 +34,8 @@ pairs = ["()", "[]", "{}", "\"\"", "''", "``"]
 [server]
 tool = "typescript-language-server"
 args = ["--stdio"]
+# tsserver loads a project, and its auto-imports, on the first completion: seconds in a monorepo.
+warm_up = true
 
 # Without this, a syntax-only server answers first while the project loads, and going to a
 # declaration lands on the import instead of the declaration.

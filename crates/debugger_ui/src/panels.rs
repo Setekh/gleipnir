@@ -1,7 +1,8 @@
 //! The Run panel, for programs run on their own, and the Debug panel: its toolbar, the frames of
 //! the stopped thread, the variables and watches, and the console.
 
-use crate::console::{self, ConsoleView};
+use crate::console::{self, ConsoleView, OpenLocation};
+use crate::test_view::{self, TestResultsView};
 use crate::variables::{self, Row, WatchShown};
 use crate::{EvaluateExpression, ViewBreakpoints};
 use gleipnir_code_nav::{Picker, PickerItem};
@@ -25,6 +26,7 @@ actions!(debug_panel, [AddWatch, CancelWatch]);
 
 pub fn bind_keys(cx: &mut App) {
     console::bind_keys(cx);
+    test_view::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new("enter", AddWatch, Some("WatchInput")),
         KeyBinding::new("escape", CancelWatch, Some("WatchInput")),
@@ -45,7 +47,7 @@ fn status_text(launch: &Launch) -> String {
     }
 }
 
-fn tool_button(
+pub(crate) fn tool_button(
     id: &'static str,
     icon: Icon,
     color: gpui::Hsla,
@@ -92,32 +94,135 @@ fn launch_tabs<T: 'static>(
         }))
 }
 
+/// Opens a place a console or test results asked for.
+fn open_location(
+    workspace: &WeakEntity<Workspace>,
+    OpenLocation(path, line, column): &OpenLocation,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    workspace
+        .update(cx, |workspace, cx| {
+            workspace
+                .open_path_at(path.clone(), Some((*line, *column)), window, cx)
+                .detach();
+        })
+        .ok();
+}
+
+/// A console and, beside it, test results, both opening what's clicked in them.
+fn console_and_tests<T: 'static>(
+    debugger: &Entity<Debugger>,
+    workspace: &WeakEntity<Workspace>,
+    evaluates: bool,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) -> (
+    Entity<ConsoleView>,
+    Entity<TestResultsView>,
+    Vec<Subscription>,
+) {
+    let console = cx.new(|cx| ConsoleView::new(debugger.clone(), evaluates, cx));
+    let tests = cx.new(|cx| TestResultsView::new(debugger.clone(), console.clone(), cx));
+    let (first, second) = (workspace.clone(), workspace.clone());
+    let subscriptions = vec![
+        cx.subscribe_in(&console, window, move |_, _, event, window, cx| {
+            open_location(&first, event, window, cx)
+        }),
+        cx.subscribe_in(&tests, window, move |_, _, event, window, cx| {
+            open_location(&second, event, window, cx)
+        }),
+    ];
+    (console, tests, subscriptions)
+}
+
+/// The console, with the test results beside it when the launch ran tests.
+fn console_body(
+    has_tests: bool,
+    console: &Entity<ConsoleView>,
+    tests: &Entity<TestResultsView>,
+    theme: &Theme,
+) -> gpui::Div {
+    if has_tests {
+        div()
+            .size_full()
+            .flex()
+            .flex_row()
+            .child(
+                div()
+                    .w(relative_width(0.4))
+                    .h_full()
+                    .border_r_1()
+                    .border_color(theme.border)
+                    .child(tests.clone()),
+            )
+            .child(div().flex_1().min_w_0().h_full().child(console.clone()))
+    } else {
+        div().size_full().child(console.clone())
+    }
+}
+
+/// The test results as text, a line per row, for tests and the driver.
+pub fn test_rows_text(
+    view: &TestResultsView,
+    debugger: &Debugger,
+    id: LaunchId,
+    cx: &App,
+) -> Vec<String> {
+    let Some(tests) = debugger.launch(id).and_then(|l| l.tests.as_ref()) else {
+        return Vec::new();
+    };
+    view.rows(cx)
+        .into_iter()
+        .map(|(index, depth)| {
+            let node = &tests.nodes()[index];
+            format!(
+                "{}{:?} {}",
+                "  ".repeat(depth),
+                tests.state(index),
+                if index == gleipnir_core::TEST_ROOT {
+                    "Test Results"
+                } else {
+                    &node.label
+                }
+            )
+        })
+        .collect()
+}
+
 pub struct RunPanel {
     debugger: Entity<Debugger>,
     console: Entity<ConsoleView>,
+    tests: Entity<TestResultsView>,
     focus_handle: FocusHandle,
-    _subscription: Subscription,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl RunPanel {
     pub fn new(
         debugger: Entity<Debugger>,
-        _: WeakEntity<Workspace>,
-        _: &mut Window,
+        workspace: WeakEntity<Workspace>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let console = cx.new(|cx| ConsoleView::new(debugger.clone(), false, cx));
-        let subscription = cx.observe(&debugger, |this, _, cx| this.sync(cx));
+        let (console, tests, mut subscriptions) =
+            console_and_tests(&debugger, &workspace, false, window, cx);
+        subscriptions.push(cx.observe(&debugger, |this, _, cx| this.sync(cx)));
         Self {
             debugger,
             console,
+            tests,
             focus_handle: cx.focus_handle(),
-            _subscription: subscription,
+            _subscriptions: subscriptions,
         }
     }
 
     pub fn console(&self) -> &Entity<ConsoleView> {
         &self.console
+    }
+
+    pub fn tests(&self) -> &Entity<TestResultsView> {
+        &self.tests
     }
 
     fn shown<'a>(&self, debugger: &'a Debugger) -> Option<&'a Launch> {
@@ -130,6 +235,7 @@ impl RunPanel {
     fn sync(&mut self, cx: &mut Context<Self>) {
         let id = self.shown(self.debugger.read(cx)).map(|l| l.id);
         self.console.update(cx, |c, cx| c.show(id, cx));
+        self.tests.update(cx, |t, cx| t.show(id, cx));
         cx.notify();
     }
 }
@@ -160,6 +266,9 @@ impl Panel for RunPanel {
                 "name": launch.name,
                 "status": status_text(launch),
                 "console": launch.console_text(),
+                "tests": test_rows_text(self.tests.read(cx), debugger, launch.id, cx),
+                "test_summary": launch.tests.as_ref().map(test_view::summary),
+                "shown": self.console.read(cx).shown_text(cx),
             }),
             None => serde_json::Value::Null,
         }
@@ -171,6 +280,7 @@ impl Render for RunPanel {
         let theme = cx.global::<Theme>().clone();
         let debugger = self.debugger.read(cx);
         let shown = self.shown(debugger);
+        let has_tests = shown.is_some_and(|l| l.tests.is_some());
         let (id, status, live) = match shown {
             Some(l) => (Some(l.id), status_text(l), l.status.is_live()),
             None => (None, String::new(), false),
@@ -238,7 +348,12 @@ impl Render for RunPanel {
                     ),
             )
             .child(match id {
-                Some(_) => div().flex_1().min_h_0().child(self.console.clone()),
+                Some(_) => div().flex_1().min_h_0().child(console_body(
+                    has_tests,
+                    &self.console,
+                    &self.tests,
+                    &theme,
+                )),
                 None => div()
                     .flex_1()
                     .p(px(12.))
@@ -289,32 +404,35 @@ pub struct DebugPanel {
     debugger: Entity<Debugger>,
     workspace: WeakEntity<Workspace>,
     console: Entity<ConsoleView>,
+    tests: Entity<TestResultsView>,
     focus_handle: FocusHandle,
     tab: Tab,
     /// Variables whose open state differs from the default, by name path.
     toggled: HashSet<String>,
     watch_input: Option<Entity<TextInput>>,
-    _subscription: Subscription,
+    _subscriptions: Vec<Subscription>,
 }
 
 impl DebugPanel {
     pub fn new(
         debugger: Entity<Debugger>,
         workspace: WeakEntity<Workspace>,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let console = cx.new(|cx| ConsoleView::new(debugger.clone(), true, cx));
-        let subscription = cx.observe(&debugger, |this, _, cx| this.sync(cx));
+        let (console, tests, mut subscriptions) =
+            console_and_tests(&debugger, &workspace, true, window, cx);
+        subscriptions.push(cx.observe(&debugger, |this, _, cx| this.sync(cx)));
         Self {
             debugger,
             workspace,
             console,
+            tests,
             focus_handle: cx.focus_handle(),
             tab: Tab::Debugger,
             toggled: HashSet::new(),
             watch_input: None,
-            _subscription: subscription,
+            _subscriptions: subscriptions,
         }
     }
 
@@ -329,6 +447,7 @@ impl DebugPanel {
     fn sync(&mut self, cx: &mut Context<Self>) {
         let id = self.debugger.read(cx).active_debug_launch().map(|l| l.id);
         self.console.update(cx, |c, cx| c.show(id, cx));
+        self.tests.update(cx, |t, cx| t.show(id, cx));
         cx.notify();
     }
 
@@ -821,7 +940,13 @@ impl DebugPanel {
                             .child(expression.clone()),
                     )
                     .child(div().flex_none().text_color(theme.text_faint).child("="))
-                    .child(div().min_w_0().truncate().text_color(color).child(text))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .text_color(color)
+                            .child(one_line(&text)),
+                    )
                     .into_any_element()
             }
             Row::Scope { name, .. } => div()
@@ -851,7 +976,7 @@ impl DebugPanel {
                         .min_w_0()
                         .truncate()
                         .text_color(theme.text)
-                        .child(value.clone()),
+                        .child(one_line(value)),
                 )
                 .when_some(type_name.clone().filter(|t| !t.is_empty()), |d, t| {
                     d.child(div().flex_none().text_color(theme.text_faint).child(t))
@@ -1019,10 +1144,12 @@ impl Render for DebugPanel {
                 .child(empty_hint("Nothing is being debugged.", true))
                 .into_any_element()
         } else if tab == Tab::Console {
-            div()
-                .size_full()
-                .child(self.console.clone())
-                .into_any_element()
+            let has_tests = self
+                .debugger
+                .read(cx)
+                .active_debug_launch()
+                .is_some_and(|l| l.tests.is_some());
+            console_body(has_tests, &self.console, &self.tests, &theme).into_any_element()
         } else {
             div()
                 .size_full()
@@ -1083,4 +1210,10 @@ impl Render for DebugPanel {
 
 fn relative_width(fraction: f32) -> gpui::Length {
     gpui::relative(fraction).into()
+}
+
+/// A value on one line, as a row has room for: a function's source or a long string's line
+/// breaks would otherwise spill over the rows below.
+fn one_line(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
 }

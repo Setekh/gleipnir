@@ -417,6 +417,137 @@ fn a_server_that_keeps_crashing_is_given_up_on(cx: &mut TestAppContext) {
     });
 }
 
+/// A TypeScript project on a machine without typescript-language-server, where installing is on
+/// and done by `install`, and servers start, as fakes, only once the tool is found.
+fn installing_setup(
+    install: impl Fn(&Path) -> Result<()> + Send + Sync + 'static,
+    cx: &mut TestAppContext,
+) -> (Setup, Arc<Mutex<u32>>) {
+    cx.executor().allow_parking();
+    let dir = tempfile::tempdir().unwrap();
+    let root = std::fs::canonicalize(dir.path()).unwrap();
+    let state: Shared = Arc::default();
+    let installs = Arc::new(Mutex::new(0));
+    let toolchains = cx.new(|cx| {
+        let mut toolchains = Toolchains::with_environment(
+            None,
+            gleipnir_packages::Env::from_pairs([("PATH", "/nonexistent")]),
+            root.join("tools"),
+            cx,
+        );
+        toolchains.set_auto_install(true);
+        let counted = installs.clone();
+        toolchains.set_installer(Arc::new(move |name, spec, cx| {
+            *counted.lock().unwrap() += 1;
+            let path = gleipnir_packages::tools::managed_binary(name, spec, cx.managed_dir)
+                .ok_or_else(|| anyhow!("can't be installed"))?;
+            std::thread::sleep(Duration::from_millis(50));
+            install(&path)?;
+            Ok(path)
+        }));
+        toolchains
+    });
+    wait(cx, |cx| {
+        toolchains.read_with(cx, |t, _| !t.packages().is_empty())
+    });
+    let fake = fake_launcher(state.clone(), None);
+    let found = toolchains.clone();
+    let launcher: Launcher = Rc::new(move |package, cwd, cx| {
+        found
+            .read(cx)
+            .tool_path(package, "typescript-language-server")
+            .ok_or_else(|| anyhow!("typescript-language-server isn't installed"))?;
+        fake(package, cwd, cx)
+    });
+    let servers =
+        cx.new(|cx| LanguageServers::with_launcher(Some(root.clone()), toolchains, launcher, cx));
+    let setup = Setup {
+        servers,
+        state,
+        _dir: dir,
+        root,
+    };
+    (setup, installs)
+}
+
+#[gpui::test]
+fn a_missing_server_installs_itself_and_then_starts(cx: &mut TestAppContext) {
+    let (s, installs) = installing_setup(
+        |path| {
+            std::fs::create_dir_all(path.parent().unwrap())?;
+            std::fs::write(path, "#!/bin/sh\n")?;
+            std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o755))?;
+            Ok(())
+        },
+        cx,
+    );
+    let model = buffer("let a = 1", &s.root.join("a.ts"), cx);
+    s.servers
+        .update(cx, |servers, cx| servers.register_buffer(&model, cx));
+    let status = |cx: &mut TestAppContext| {
+        s.servers
+            .read_with(cx, |sv, _| sv.status("typescript").cloned())
+    };
+    assert_eq!(status(cx), Some(ServerStatus::Installing));
+    wait(cx, |cx| {
+        status(cx) == Some(ServerStatus::Running { busy: None })
+    });
+    assert_eq!(*installs.lock().unwrap(), 1);
+    wait(cx, |_| s.state.lock().unwrap().documents.len() == 1);
+}
+
+#[gpui::test]
+fn a_server_that_loads_on_its_first_completion_is_warmed_up_once(cx: &mut TestAppContext) {
+    let s = setup(None, cx);
+    let mut models = Vec::new();
+    for name in ["a.ts", "b.ts"] {
+        let model = buffer("let a = 1", &s.root.join(name), cx);
+        s.servers
+            .update(cx, |servers, cx| servers.register_buffer(&model, cx));
+        models.push(model);
+    }
+    wait(cx, |cx| {
+        s.servers
+            .read_with(cx, |sv, _| sv.status("typescript").cloned())
+            == Some(ServerStatus::Running { busy: None })
+    });
+    let log = s.state.lock().unwrap().log.clone();
+    let completions = log
+        .iter()
+        .filter(|m| *m == "textDocument/completion")
+        .count();
+    assert_eq!(completions, 1, "{log:?}");
+    let opened = log
+        .iter()
+        .position(|m| m == "textDocument/didOpen")
+        .unwrap();
+    let warmed = log
+        .iter()
+        .position(|m| m == "textDocument/completion")
+        .unwrap();
+    assert!(opened < warmed, "{log:?}");
+}
+
+#[gpui::test]
+fn a_failed_install_is_reported_and_not_retried_by_itself(cx: &mut TestAppContext) {
+    let (s, installs) = installing_setup(|_| Err(anyhow!("npm isn't installed")), cx);
+    let model = buffer("let a = 1", &s.root.join("a.ts"), cx);
+    s.servers
+        .update(cx, |servers, cx| servers.register_buffer(&model, cx));
+    wait(cx, |cx| {
+        matches!(
+            s.servers.read_with(cx, |sv, _| sv.status("typescript").cloned()),
+            Some(ServerStatus::Missing(reason))
+                if reason == "couldn't install typescript-language-server: npm isn't installed"
+        )
+    });
+    let other = buffer("let b = 2", &s.root.join("b.ts"), cx);
+    s.servers
+        .update(cx, |servers, cx| servers.register_buffer(&other, cx));
+    cx.run_until_parked();
+    assert_eq!(*installs.lock().unwrap(), 1);
+}
+
 #[gpui::test]
 fn without_the_tool_the_server_is_reported_missing(cx: &mut TestAppContext) {
     cx.executor().allow_parking();

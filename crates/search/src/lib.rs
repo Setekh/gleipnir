@@ -121,6 +121,15 @@ pub fn add_to_workspace(workspace: &mut Workspace, _: &mut Window, _: &mut Conte
     workspace.register_action(|w, _: &GoToSymbol, window, cx| open(w, Tab::Symbols, window, cx));
     workspace.register_action(|w, _: &FindAction, window, cx| open(w, Tab::Actions, window, cx));
     workspace.register_action(|w, _: &RecentFiles, window, cx| open(w, Tab::Recent, window, cx));
+    // Search Everywhere's magnifier, at the right of the title bar as in IntelliJ.
+    workspace.add_title_item(gleipnir_workspace::TitleSide::Right, 80, |_, cx| {
+        let theme = cx.global::<gleipnir_ui::Theme>().clone();
+        Some(
+            gleipnir_workspace::title_button("title-search", gleipnir_ui::Icon::Search, &theme)
+                .on_click(|_, window, cx| window.dispatch_action(Box::new(SearchEverywhere), cx))
+                .into_any_element(),
+        )
+    });
 
     let shift = Rc::new(RefCell::new(DoubleTap::default()));
     let keys = shift.clone();

@@ -2,10 +2,12 @@
 
 pub mod assets;
 pub mod context_menu;
+pub mod links;
 pub mod list;
 pub mod markdown;
 pub mod text_input;
 pub mod theme;
+pub mod themes;
 
 use gpui::{Pixels, ShapedLine};
 
@@ -14,6 +16,7 @@ pub use context_menu::{ContextMenu, MenuDismissed, bind_keys as bind_context_men
 pub use list::ListNav;
 pub use text_input::{TextInput, TextInputEvent, bind_keys as bind_text_input_keys};
 pub use theme::{Theme, init_theme};
+pub use themes::{Themes, themes_dir};
 
 /// The character boundary nearest `x` in a shaped line. GPUI's `closest_index_for_x` compares each
 /// glyph with the one before it, so past the start of the last glyph there's nothing left to

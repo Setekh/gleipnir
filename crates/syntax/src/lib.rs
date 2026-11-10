@@ -9,6 +9,17 @@ mod highlight;
 mod symbols;
 
 pub use highlight::{HighlightKind, HighlightSpan, highlights, precompile_queries};
+
+/// Highlights a whole text at once, parsing it here: for text that isn't being edited, like a
+/// version of a file shown in a diff.
+pub fn highlight_text(language: Language, text: &str) -> Vec<HighlightSpan> {
+    let snapshot = gleipnir_text::Buffer::new(text).snapshot();
+    let syntax = Syntax::new(language);
+    let Some(parsed) = syntax.start_parse(snapshot.clone()).run() else {
+        return Vec::new();
+    };
+    highlights(language, &parsed.tree, &snapshot, 0..snapshot.len())
+}
 pub use symbols::{Symbol, SymbolKind, extract_symbols};
 
 use gleipnir_text::{AppliedEdit, Point as TextPoint, Snapshot};

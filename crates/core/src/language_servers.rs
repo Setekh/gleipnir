@@ -27,6 +27,8 @@ pub type Launcher =
 
 /// Where a server's own readiness report is kept among its progress, so it counts as busy.
 const SERVER_STATUS_TOKEN: &str = "\0server-status";
+/// Where the warm-up request is kept among a server's progress, so it counts as busy meanwhile.
+const WARM_UP_TOKEN: &str = "\0warm-up";
 
 /// More crashes than this in a minute and we stop restarting, as something's properly wrong.
 const MAX_RESTARTS_PER_MINUTE: usize = 3;
@@ -38,6 +40,8 @@ pub enum ServerStatus {
     Running {
         busy: Option<String>,
     },
+    /// The tool it needs is being installed, after which it starts.
+    Installing,
     /// The tool it needs isn't installed.
     Missing(String),
     Failed(String),
@@ -85,6 +89,8 @@ struct Server {
     crashes: Vec<Instant>,
     /// Progress tokens in flight, with their titles.
     progress: BTreeMap<String, String>,
+    /// Whether it's been sent its warm-up request, for servers that want one.
+    warmed: bool,
     _task: Option<Task<()>>,
 }
 
@@ -307,7 +313,10 @@ impl LanguageServers {
 
     fn ensure_server(&mut self, package_id: &str, cx: &mut Context<Self>) {
         if let Some(server) = self.servers.get(package_id)
-            && !matches!(server.status, ServerStatus::Missing(_))
+            && !matches!(
+                server.status,
+                ServerStatus::Missing(_) | ServerStatus::Installing
+            )
         {
             return;
         }
@@ -326,11 +335,43 @@ impl LanguageServers {
         let waiting: Vec<String> = self
             .servers
             .iter()
-            .filter(|(_, s)| matches!(s.status, ServerStatus::Missing(_)))
+            .filter(|(_, s)| {
+                matches!(
+                    s.status,
+                    ServerStatus::Missing(_) | ServerStatus::Installing
+                )
+            })
             .map(|(id, _)| id.clone())
             .collect();
         for package_id in waiting {
             self.start(&package_id, cx);
+        }
+    }
+
+    /// What a server whose tool couldn't be found is waiting for: its tool being installed, if
+    /// it can be, or the user.
+    fn install_missing(
+        &mut self,
+        package_id: &str,
+        reason: String,
+        cx: &mut Context<Self>,
+    ) -> ServerStatus {
+        let Some(tool) = registry()
+            .package(package_id)
+            .and_then(|p| p.manifest.server.as_ref())
+            .map(|s| s.tool.clone())
+        else {
+            return ServerStatus::Missing(reason);
+        };
+        let installing = self
+            .toolchains
+            .update(cx, |t, cx| t.install_missing(package_id, &tool, cx));
+        if installing {
+            return ServerStatus::Installing;
+        }
+        match self.toolchains.read(cx).install_error(&tool) {
+            Some(error) => ServerStatus::Missing(format!("couldn't install {tool}: {error}")),
+            None => ServerStatus::Missing(reason),
         }
     }
 
@@ -345,7 +386,8 @@ impl LanguageServers {
                     .remove(package_id)
                     .map(|s| s.crashes)
                     .unwrap_or_default();
-                let mut server = Server::new(ServerStatus::Missing(format!("{error:#}")));
+                let status = self.install_missing(package_id, format!("{error:#}"), cx);
+                let mut server = Server::new(status);
                 server.crashes = crashes;
                 self.servers.insert(package_id.to_string(), server);
                 cx.emit(LanguageServerEvent::StatusChanged(package_id.to_string()));
@@ -716,6 +758,67 @@ impl LanguageServers {
             document.synced.set(buffer.read(cx).buffer().version());
             document.opened_on = Some(handle.clone());
         }
+        self.warm_up(package_id, &handle, cx);
+    }
+
+    /// For a server that loads the project on its first completion, asks for one now, with the
+    /// server shown busy until it answers.
+    fn warm_up(&mut self, package_id: &str, handle: &Arc<LanguageServer>, cx: &mut Context<Self>) {
+        let wanted = registry()
+            .package(package_id)
+            .and_then(|p| p.manifest.server.as_ref())
+            .is_some_and(|s| s.warm_up);
+        let Some(document) = self.documents.values().find(|d| {
+            d.package_id == package_id
+                && d.opened_on.as_ref().is_some_and(|h| Arc::ptr_eq(h, handle))
+        }) else {
+            return;
+        };
+        let Some(server) = self.servers.get_mut(package_id) else {
+            return;
+        };
+        if !wanted || server.warmed {
+            return;
+        }
+        server.warmed = true;
+        server
+            .progress
+            .insert(WARM_UP_TOKEN.to_string(), "loading the project".to_string());
+        if let ServerStatus::Running { busy } = &mut server.status {
+            *busy = server.progress.values().next().cloned();
+        }
+        let request = handle.request::<req::Completion>(lsp::CompletionParams {
+            text_document_position: lsp::TextDocumentPositionParams {
+                text_document: lsp::TextDocumentIdentifier {
+                    uri: path_to_uri(&document.path),
+                },
+                position: lsp::Position::new(0, 0),
+            },
+            work_done_progress_params: Default::default(),
+            partial_result_params: Default::default(),
+            context: Some(lsp::CompletionContext {
+                trigger_kind: lsp::CompletionTriggerKind::INVOKED,
+                trigger_character: None,
+            }),
+        });
+        let package = package_id.to_string();
+        cx.emit(LanguageServerEvent::StatusChanged(package.clone()));
+        cx.spawn(async move |this, cx| {
+            // What it answers doesn't matter, only that it's done the work.
+            request.await.ok();
+            this.update(cx, |this, cx| {
+                if let Some(server) = this.servers.get_mut(&package) {
+                    server.progress.remove(WARM_UP_TOKEN);
+                    if let ServerStatus::Running { busy } = &mut server.status {
+                        *busy = server.progress.values().next().cloned();
+                    }
+                }
+                cx.emit(LanguageServerEvent::StatusChanged(package));
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     fn close_document(&mut self, id: EntityId) {
@@ -883,6 +986,7 @@ impl LanguageServers {
             .ok_or_else(|| anyhow!("no language server handles this file"))?;
         Err(match self.status(&package) {
             Some(ServerStatus::Starting) => anyhow!("the language server is still starting"),
+            Some(ServerStatus::Installing) => anyhow!("the language server is being installed"),
             Some(ServerStatus::Missing(reason)) | Some(ServerStatus::Failed(reason)) => {
                 anyhow!("{reason}")
             }
@@ -1396,6 +1500,7 @@ impl Server {
             handle: None,
             crashes: Vec::new(),
             progress: BTreeMap::new(),
+            warmed: false,
             _task: None,
         }
     }

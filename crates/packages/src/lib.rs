@@ -10,8 +10,11 @@ pub mod dirs;
 pub mod env;
 pub mod install;
 pub mod manifest;
+pub mod project_style;
 pub mod registry;
 pub mod sdk;
+pub mod settings;
+pub mod testing;
 pub mod tools;
 
 pub use adapters::{CommandSpec, DebugLaunch, RunTarget, RunTargetKind, adapter_for};
@@ -20,4 +23,7 @@ pub use env::Env;
 pub use manifest::{InstallSpec, Manifest, ToolSpec};
 pub use registry::{LanguageEntry, Package, Registry, registry};
 pub use sdk::{Sdk, detect_sdks};
+pub use testing::{
+    JS_NAME_SEPARATOR, JS_REPORTER_MARK, Suite, TestFormat, TestPick, is_js_test_file, js_report_of,
+};
 pub use tools::{Resolution, ResolveContext, ToolSource, resolve_tool};

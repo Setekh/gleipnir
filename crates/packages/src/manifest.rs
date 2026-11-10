@@ -61,6 +61,11 @@ pub struct ServerSpec {
     /// Sent as `initializationOptions`, for servers that are configured that way.
     #[serde(default)]
     pub initialization_options: Option<serde_json::Value>,
+    /// Asks for completions once the first file opens, for servers like tsserver that load the
+    /// project on the first request: the wait comes while the file is being read, not on the
+    /// first keystroke.
+    #[serde(default)]
+    pub warm_up: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]

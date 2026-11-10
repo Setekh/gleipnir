@@ -1,5 +1,8 @@
 //! The window's root view.
 
+mod title_bar;
+pub use title_bar::{TITLE_BAR_HEIGHT, TitleSide, current_branch, list_branches, title_button};
+
 use crate::actions_list::list_actions;
 use crate::dock::{Dock, DockPosition, MIN_CENTER_SIZE, MIN_DOCK_SIZE, Panel};
 use crate::pane::{Pane, PaneEvent};
@@ -86,6 +89,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("alt-shift-tab", FocusPreviousPane, None),
         KeyBinding::new("shift-escape", HideActiveDock, None),
     ]);
+    crate::name_prompt::bind_keys(cx);
 }
 
 /// Identifies a tab, for closing one other than the active one.
@@ -161,8 +165,14 @@ struct ActiveModal {
     name: &'static str,
     /// Where focus goes back to when the popup closes.
     restore_focus: Option<FocusHandle>,
+    /// What it pops up beside, like the caret, rather than at the top of the window.
+    anchor: Option<Bounds<Pixels>>,
     _subscription: Subscription,
 }
+
+/// How much room a popup shown beside something is given, to choose above or below it.
+const ANCHORED_WIDTH: f32 = 620.;
+const ANCHORED_HEIGHT: f32 = 320.;
 
 pub enum EmptyHint {
     Action(Box<dyn gpui::Action>),
@@ -206,6 +216,12 @@ pub struct Workspace {
     editor_hooks: Vec<EditorHook>,
     /// Extra things on the right of the status bar, before the cursor position.
     status_items: Vec<StatusItem>,
+    /// What features add to the title bar, and on which side.
+    title_items: Vec<(TitleSide, u8, StatusItem)>,
+    /// A menu opened from the title bar.
+    menu: Option<title_bar::OpenMenu>,
+    branch: Option<String>,
+    branch_task: Option<Task<()>>,
     nav_back: Vec<NavEntry>,
     nav_forward: Vec<NavEntry>,
     /// Buffers whose unsaved text is indexed for search, with the pending refresh.
@@ -231,6 +247,8 @@ pub struct WorkspaceSnapshot {
     pub recent_files: Vec<String>,
     /// Each started language server's state, by package id.
     pub language_servers: std::collections::BTreeMap<String, String>,
+    /// The theme in use, by name, with its background, to see a change to its file.
+    pub theme: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -314,6 +332,10 @@ impl Workspace {
             empty_hints: Vec::new(),
             editor_hooks: Vec::new(),
             status_items: Vec::new(),
+            title_items: Vec::new(),
+            menu: None,
+            branch: None,
+            branch_task: None,
             nav_back: Vec::new(),
             nav_forward: Vec::new(),
             indexed_buffers: HashMap::new(),
@@ -322,11 +344,42 @@ impl Workspace {
         if let Some(root) = &this.root {
             remember_last_project(root).ok();
         }
+        this.watch_branch(cx);
+        // Prettier configs in JavaScript run with Node, which is slow enough to do ahead of
+        // opening files, rather than as each opens.
+        if let Some(root) = this.root.clone() {
+            let ran = cx
+                .background_executor()
+                .spawn(async move { gleipnir_packages::project_style::prewarm_prettier(&root) });
+            cx.spawn(async move |this, cx| {
+                if ran.await {
+                    this.update(cx, |this, cx| {
+                        this.store
+                            .update(cx, |store, cx| store.apply_code_style(cx))
+                    })
+                    .ok();
+                }
+            })
+            .detach();
+        }
         // Language servers hear of files changed outside the editor, like on a branch switch.
         if let Some(project) = this.project.clone() {
             cx.subscribe(&project, |this, _, event, cx| {
+                // A commit, checkout or merge changes what open files are compared with.
+                if let ProjectEvent::GitStatusChanged = event {
+                    this.store
+                        .update(cx, |store, cx| store.refresh_committed_texts(cx));
+                }
                 if let ProjectEvent::FilesChanged(paths) = event {
                     this.language_servers.read(cx).files_changed(paths);
+                    // A change to `.editorconfig` or Prettier's config re-indents open files.
+                    if paths
+                        .iter()
+                        .any(|p| gleipnir_packages::project_style::is_style_config(p))
+                    {
+                        this.store
+                            .update(cx, |store, cx| store.apply_code_style(cx));
+                    }
                 }
             })
             .detach();
@@ -396,6 +449,11 @@ impl Workspace {
         self.root.as_deref()
     }
 
+    /// A handle to this workspace that doesn't keep it alive.
+    pub fn weak_handle(&self) -> WeakEntity<Self> {
+        self.weak_self.clone()
+    }
+
     pub fn store(&self) -> &Entity<BufferStore> {
         &self.store
     }
@@ -442,6 +500,18 @@ impl Workspace {
         cx: &mut Context<Self>,
         build: impl FnOnce(&mut Window, &mut Context<V>) -> V,
     ) -> Option<Entity<V>> {
+        self.toggle_modal_at(None, window, cx, build)
+    }
+
+    /// Like `toggle_modal`, but pops up just below `anchor`, or above it if there's no room below,
+    /// as IntelliJ's choosers appear beside the caret.
+    pub fn toggle_modal_at<V: ModalView>(
+        &mut self,
+        anchor: Option<Bounds<Pixels>>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        build: impl FnOnce(&mut Window, &mut Context<V>) -> V,
+    ) -> Option<Entity<V>> {
         let same_kind = self
             .modal
             .as_ref()
@@ -473,6 +543,7 @@ impl Workspace {
             type_id: std::any::TypeId::of::<V>(),
             name: name.rsplit("::").next().unwrap_or(name),
             restore_focus,
+            anchor,
             _subscription: subscription,
         });
         cx.notify();
@@ -692,6 +763,22 @@ impl Workspace {
     /// Shows a panel if it's hidden, or hides it if it's showing and focused. Otherwise just focuses
     /// it, so the same key can reach a panel that's visible but not in use.
     pub fn toggle_panel(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_panel_when(id, true, window, cx);
+    }
+
+    /// What clicking a panel's button on the rail does: hides it if it's showing, focused or not,
+    /// and otherwise shows and focuses it.
+    pub fn click_panel_button(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        self.toggle_panel_when(id, false, window, cx);
+    }
+
+    fn toggle_panel_when(
+        &mut self,
+        id: &str,
+        only_if_focused: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let found = self.docks.iter().find_map(|dock| {
             let index = dock.panels.iter().position(|p| p.id(cx) == id)?;
             Some((dock.position, index))
@@ -708,9 +795,12 @@ impl Workspace {
                 dock.panels[index].focus_handle(cx),
             )
         };
-        if visible && active && focus.contains_focused(window, cx) {
+        let focused = focus.contains_focused(window, cx);
+        if visible && active && (focused || !only_if_focused) {
             self.dock_mut(position).visible = false;
-            self.focus_center(window, cx);
+            if focused {
+                self.focus_center(window, cx);
+            }
         } else {
             let dock = self.dock_mut(position);
             dock.visible = true;
@@ -852,7 +942,9 @@ impl Workspace {
                     EditorEvent::GoToDefinition { .. }
                     | EditorEvent::GutterClicked { .. }
                     | EditorEvent::RunClicked { .. }
-                    | EditorEvent::GutterMenu { .. } => {}
+                    | EditorEvent::GutterMenu { .. }
+                    | EditorEvent::GutterTextClicked { .. }
+                    | EditorEvent::GutterTextMenu { .. } => {}
                 },
             ),
             cx.observe_in(&buffer, window, |this, _, window, cx| {
@@ -919,6 +1011,38 @@ impl Workspace {
         self.active_item_changed(cx);
         self.update_title(window, cx);
         editor
+    }
+
+    /// Opens a file in a tab of the active pane without switching to it or moving focus, unless
+    /// a tab somewhere already shows it, for changes made from outside, like an AI agent's, that
+    /// should stay unsaved and in view for the person to save or undo. Resolves to its buffer.
+    pub fn open_in_background(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Entity<BufferModel>>> {
+        let open = self.store.update(cx, |store, cx| store.open(&path, cx));
+        cx.spawn_in(window, async move |this, cx| {
+            let buffer = open.await?;
+            this.update_in(cx, |this, window, cx| {
+                let shown = this.center.panes().iter().any(|pane| {
+                    pane.read(cx)
+                        .items()
+                        .iter()
+                        .any(|item| item.read(cx).buffer() == &buffer)
+                });
+                if !shown {
+                    let (editor, subscriptions) = this.build_item(buffer.clone(), window, cx);
+                    let pane = this.active_pane.clone();
+                    pane.update(cx, |pane, cx| {
+                        pane.add_background_item(editor, subscriptions, cx)
+                    });
+                    this.update_title(window, cx);
+                }
+                buffer
+            })
+        })
     }
 
     pub fn new_untitled(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -1473,7 +1597,8 @@ impl Workspace {
                 .iter()
                 .map(|dock| SavedDock {
                     position: dock.position,
-                    visible: dock.visible,
+                    visible: dock.visible
+                        && dock.active_panel().is_none_or(|panel| panel.reopens(cx)),
                     size: dock.size.into(),
                     active_panel: dock.active_panel().map(|p| p.id(cx).to_string()),
                 })
@@ -1716,6 +1841,7 @@ impl Workspace {
                 .map(|(id, status)| {
                     let status = match status {
                         gleipnir_core::ServerStatus::Starting => "starting".to_string(),
+                        gleipnir_core::ServerStatus::Installing => "installing".to_string(),
                         gleipnir_core::ServerStatus::Running { busy: None } => {
                             "running".to_string()
                         }
@@ -1728,6 +1854,17 @@ impl Workspace {
                     (id.to_string(), status)
                 })
                 .collect(),
+            theme: {
+                let theme = cx.global::<Theme>();
+                let background = gpui::Rgba::from(theme.background);
+                format!(
+                    "{} (background #{:02x}{:02x}{:02x})",
+                    theme.name,
+                    (background.r * 255.).round() as u8,
+                    (background.g * 255.).round() as u8,
+                    (background.b * 255.).round() as u8,
+                )
+            },
         }
     }
 
@@ -1761,7 +1898,9 @@ impl Workspace {
                     DockPosition::Right => {
                         window_size.width - rail - rail - opposite(DockPosition::Left, self)
                     }
-                    DockPosition::Bottom => window_size.height - px(STATUS_BAR_HEIGHT),
+                    DockPosition::Bottom => {
+                        window_size.height - px(STATUS_BAR_HEIGHT) - px(TITLE_BAR_HEIGHT)
+                    }
                 };
                 let max = (available - px(MIN_CENTER_SIZE)).max(px(MIN_DOCK_SIZE));
                 self.dock_mut(position).size = requested.clamp(px(MIN_DOCK_SIZE), max);
@@ -2094,7 +2233,7 @@ impl Workspace {
                     .when(active, |b| b.bg(theme.selection_inactive))
                     .hover(|b| b.bg(theme.hover))
                     .on_click(cx.listener(move |this, _, window, cx| {
-                        this.toggle_panel(id, window, cx);
+                        this.click_panel_button(id, window, cx);
                     }))
                     .child(
                         svg()
@@ -2377,47 +2516,66 @@ impl Render for Workspace {
         let right = self.render_dock(DockPosition::Right, cx);
         let bottom = self.render_dock(DockPosition::Bottom, cx);
         let status = self.render_status_bar(cx);
-        let modal = self.modal.as_ref().map(|modal| {
-            div()
+        let title_bar = self.render_title_bar(window, cx);
+        let menu = self.render_menu();
+        let viewport = window.viewport_size();
+        let modal = self.modal.as_ref().map(|modal| match modal.anchor {
+            Some(anchor) => {
+                let left = anchor
+                    .left()
+                    .min(viewport.width - px(ANCHORED_WIDTH + 8.))
+                    .max(px(8.));
+                let room_below = viewport.height - anchor.bottom();
+                let placed = div().absolute().left(left);
+                if room_below >= px(ANCHORED_HEIGHT) || room_below >= anchor.top() {
+                    placed.top(anchor.bottom() + px(2.))
+                } else {
+                    placed.bottom(viewport.height - anchor.top() + px(2.))
+                }
+                .child(modal.view.clone())
+            }
+            None => div()
                 .absolute()
                 .top(px(72.))
                 .left_0()
                 .right_0()
                 .flex()
                 .justify_center()
-                .child(modal.view.clone())
+                .child(modal.view.clone()),
         });
 
-        root.child(
-            div()
-                .flex()
-                .flex_row()
-                .flex_1()
-                .min_h_0()
-                .children(left_rail)
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .min_h_0()
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .flex_1()
-                                .min_h_0()
-                                .children(left)
-                                .child(div().flex_1().min_w_0().min_h_0().child(center))
-                                .children(right),
-                        )
-                        .children(bottom),
-                )
-                .children(right_rail),
-        )
-        .child(status)
-        .children(modal)
+        root.child(title_bar)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_h_0()
+                    .children(left_rail)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h_0()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .children(left)
+                                    .child(div().flex_1().min_w_0().min_h_0().child(center))
+                                    .children(right),
+                            )
+                            .children(bottom),
+                    )
+                    .children(right_rail),
+            )
+            .child(status)
+            .children(modal)
+            .children(menu)
     }
 }
 
@@ -2437,6 +2595,13 @@ pub fn open_project_window(
             window_bounds: Some(WindowBounds::Windowed(bounds)),
             // Lets window manager rules, such as Hyprland's, target this app.
             app_id: Some("gleipnir".to_string()),
+            // The title bar is drawn by the workspace, as IntelliJ's main toolbar.
+            titlebar: Some(gpui::TitlebarOptions {
+                title: None,
+                appears_transparent: true,
+                traffic_light_position: Some(title_bar::window_buttons_position()),
+            }),
+            app_owns_titlebar_drag: true,
             // A scripted run shouldn't take focus from whatever else is going on.
             focus: !scripted,
             show: true,

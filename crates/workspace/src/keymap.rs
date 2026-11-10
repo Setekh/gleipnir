@@ -72,6 +72,115 @@ pub fn load_user_keymap(path: &Path, cx: &mut App) -> Vec<String> {
     errors
 }
 
+/// Where a person's own key bindings are kept.
+pub fn user_keymap_path() -> std::path::PathBuf {
+    gleipnir_packages::config_dir().join("keymap.conf")
+}
+
+/// Rebinds every key from scratch: the defaults, then the person's own. Set by the app, as only
+/// it knows every feature's defaults; used after a binding is removed, which gpui can't undo alone.
+#[derive(Clone)]
+pub struct KeymapReload(pub Rc<Rebind>);
+
+/// Binds every key again, returning problems with the person's keymap file.
+pub type Rebind = dyn Fn(&mut App) -> Vec<String>;
+
+impl gpui::Global for KeymapReload {}
+
+/// Every shortcut bound to each action, by the action's name, as (keystrokes, context) with the
+/// most recently bound, which wins, first.
+pub fn shortcuts_by_action(
+    cx: &App,
+) -> std::collections::HashMap<String, Vec<(String, Option<String>)>> {
+    let mut found: std::collections::HashMap<String, Vec<(String, Option<String>)>> =
+        std::collections::HashMap::new();
+    let keymap = cx.key_bindings();
+    let keymap = keymap.borrow();
+    for binding in keymap.bindings().rev() {
+        let name = binding.action().name();
+        if name == "zed::NoAction" || name.ends_with("::NoAction") {
+            continue;
+        }
+        let keys = binding
+            .keystrokes()
+            .iter()
+            .map(|k| k.unparse(cx.platform_info().os))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let context = binding.predicate().map(|p| p.to_string());
+        let shortcuts = found.entry(name.to_string()).or_default();
+        if !shortcuts.iter().any(|(k, c)| *k == keys && *c == context) {
+            shortcuts.push((keys, context));
+        }
+    }
+    found
+}
+
+/// The person's own bindings, from their keymap file.
+pub fn user_bindings(path: &Path) -> Vec<KeymapEntry> {
+    std::fs::read_to_string(path)
+        .map(|text| parse_keymap(&text).0)
+        .unwrap_or_default()
+}
+
+/// Binds keys to an action, at once and from now on, by adding it to the person's keymap.
+pub fn add_user_binding(
+    path: &Path,
+    keystrokes: &str,
+    action: &str,
+    cx: &mut App,
+) -> Result<(), String> {
+    let entry = KeymapEntry {
+        line: 0,
+        keystrokes: keystrokes.to_string(),
+        action: action.to_string(),
+        context: None,
+    };
+    let binding = build_binding(&entry, cx)?;
+    let mut text = std::fs::read_to_string(path).unwrap_or_default();
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(&format!("{keystrokes} = {action}\n"));
+    write_keymap(path, &text)?;
+    cx.bind_keys([binding]);
+    Ok(())
+}
+
+/// Takes one of the person's own bindings out of their keymap, and rebinds every key without it.
+pub fn remove_user_binding(
+    path: &Path,
+    keystrokes: &str,
+    action: &str,
+    cx: &mut App,
+) -> Result<(), String> {
+    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let (entries, _) = parse_keymap(&text);
+    let drop: Vec<usize> = entries
+        .iter()
+        .filter(|e| e.keystrokes == keystrokes && e.action == action)
+        .map(|e| e.line)
+        .collect();
+    let kept: String = text
+        .lines()
+        .enumerate()
+        .filter(|(index, _)| !drop.contains(&(index + 1)))
+        .map(|(_, line)| format!("{line}\n"))
+        .collect();
+    write_keymap(path, &kept)?;
+    if let Some(reload) = cx.try_global::<KeymapReload>().cloned() {
+        (reload.0)(cx);
+    }
+    Ok(())
+}
+
+fn write_keymap(path: &Path, text: &str) -> Result<(), String> {
+    if let Some(folder) = path.parent() {
+        std::fs::create_dir_all(folder).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, text).map_err(|e| e.to_string())
+}
+
 fn build_binding(entry: &KeymapEntry, cx: &App) -> Result<KeyBinding, String> {
     let action = cx
         .build_action(&entry.action, None)
