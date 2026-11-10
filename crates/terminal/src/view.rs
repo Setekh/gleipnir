@@ -51,6 +51,12 @@ pub struct TerminalView {
     focus_handle: FocusHandle,
     layout: Rc<Cell<Layout>>,
     selecting: bool,
+    /// The button the program's been told is held, while it hears the mouse.
+    reported: Option<crate::mouse::MouseButton>,
+    /// Scrolling short of a whole line so far, as a trackpad gives it, in lines.
+    wheel_rest: f32,
+    /// The cell the program was last told the pointer moved to; moves within it aren't told.
+    moved_to: Option<(usize, usize)>,
     _subscription: Subscription,
 }
 
@@ -74,6 +80,9 @@ impl TerminalView {
             focus_handle: cx.focus_handle(),
             layout: Default::default(),
             selecting: false,
+            reported: None,
+            wheel_rest: 0.,
+            moved_to: None,
             _subscription: subscription,
         }
     }
@@ -104,11 +113,48 @@ impl TerminalView {
         (x as usize, y as usize, side)
     }
 
+    /// Tells the program what the mouse did, if it asked to hear and Shift isn't held, which
+    /// keeps the mouse for selecting, as in other terminals. Whether it was told.
+    fn report_mouse(
+        &mut self,
+        action: crate::mouse::MouseAction,
+        position: Point<Pixels>,
+        modifiers: &gpui::Modifiers,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let mode = self.session.read(cx).mode();
+        if !crate::mouse::wants_mouse(mode) || modifiers.shift {
+            return false;
+        }
+        let (column, row, _) = self.cell_at(position);
+        if matches!(action, crate::mouse::MouseAction::Move(_))
+            && self.moved_to == Some((column, row))
+        {
+            return true;
+        }
+        self.moved_to = Some((column, row));
+        let held = crate::mouse::MouseModifiers {
+            shift: false,
+            alt: modifiers.alt,
+            control: modifiers.control,
+        };
+        if let Some(bytes) = crate::mouse::report(action, column, row, held, mode) {
+            self.session.update(cx, |session, _| session.write(bytes));
+        }
+        true
+    }
+
     fn mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         window.focus(&self.focus_handle, cx);
         let (column, row, side) = self.cell_at(event.position);
         if event.modifiers.secondary(cx) {
             self.open_link_at(column, row, cx);
+            return;
+        }
+        let button = crate::mouse::MouseButton::Left;
+        let action = crate::mouse::MouseAction::Press(button);
+        if self.report_mouse(action, event.position, &event.modifiers, cx) {
+            self.reported = Some(button);
             return;
         }
         let kind = match event.click_count {
@@ -123,8 +169,35 @@ impl TerminalView {
         cx.notify();
     }
 
+    /// Right and middle clicks, which only a program listening to the mouse hears.
+    fn other_mouse_down(
+        &mut self,
+        button: crate::mouse::MouseButton,
+        event: &MouseDownEvent,
+        cx: &mut Context<Self>,
+    ) {
+        let action = crate::mouse::MouseAction::Press(button);
+        if self.report_mouse(action, event.position, &event.modifiers, cx) {
+            self.reported = Some(button);
+        }
+    }
+
+    fn mouse_up(&mut self, event: &gpui::MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
+        self.selecting = false;
+        if let Some(button) = self.reported.take() {
+            let action = crate::mouse::MouseAction::Release(button);
+            self.report_mouse(action, event.position, &event.modifiers, cx);
+        }
+    }
+
     fn mouse_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selecting || event.pressed_button != Some(MouseButton::Left) {
+        if !self.selecting {
+            // A program listening hears moves as it asked: while a button's held, or all.
+            let action = crate::mouse::MouseAction::Move(self.reported);
+            self.report_mouse(action, event.position, &event.modifiers, cx);
+            return;
+        }
+        if event.pressed_button != Some(MouseButton::Left) {
             return;
         }
         let (column, row, side) = self.cell_at(event.position);
@@ -165,11 +238,27 @@ impl TerminalView {
 
     fn scroll_wheel(&mut self, event: &ScrollEvent, _: &mut Window, cx: &mut Context<Self>) {
         let layout = self.layout.get();
-        let lines = (event.delta.pixel_delta(layout.cell.height).y / layout.cell.height).round();
+        // A trackpad scrolls a little at a time; it adds up to lines.
+        let exact =
+            self.wheel_rest + event.delta.pixel_delta(layout.cell.height).y / layout.cell.height;
+        let lines = exact.trunc();
+        self.wheel_rest = exact - lines;
         if lines == 0. {
             return;
         }
         let mode = self.session.read(cx).mode();
+        // A program listening to the mouse, like Claude Code or vim, scrolls itself.
+        if crate::mouse::wants_mouse(mode) && !event.modifiers.shift {
+            let action = if lines > 0. {
+                crate::mouse::MouseAction::WheelUp
+            } else {
+                crate::mouse::MouseAction::WheelDown
+            };
+            for _ in 0..lines.abs() as usize {
+                self.report_mouse(action, event.position, &event.modifiers, cx);
+            }
+            return;
+        }
         self.session.update(cx, |session, _| {
             // Full-screen programs like `less` scroll themselves, given arrow keys.
             if mode.contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL) {
@@ -383,10 +472,21 @@ impl Render for TerminalView {
             }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
             .on_mouse_move(cx.listener(Self::mouse_move))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| this.selecting = false),
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(|this, event, _, cx| {
+                    this.other_mouse_down(crate::mouse::MouseButton::Right, event, cx)
+                }),
             )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|this, event, _, cx| {
+                    this.other_mouse_down(crate::mouse::MouseButton::Middle, event, cx)
+                }),
+            )
+            .on_mouse_up(MouseButton::Left, cx.listener(Self::mouse_up))
+            .on_mouse_up(MouseButton::Right, cx.listener(Self::mouse_up))
+            .on_mouse_up(MouseButton::Middle, cx.listener(Self::mouse_up))
             .on_scroll(cx.listener(Self::scroll_wheel))
             .child(
                 canvas(

@@ -413,8 +413,11 @@ plugins isn't used: it's undocumented for other editors and could change.
 Status: in progress. The terminal is built: `script/e2e terminal` opens a shell, types into it,
 stops a program with Ctrl+C, runs vim full-screen and quits it, and opens and closes tabs. Agent
 tabs start Claude Code and Codex through the login shell; Claude Code was seen starting in one,
-signed in with the person's own account. Send to Agent types `@file#L3-7` into the agent's tab. Agents have their own tool window on the right, which offers them
-when empty and never starts one unasked.
+signed in with the person's own account. Programs that ask for the mouse, like Claude Code's
+full-screen view, vim and htop, are sent its clicks, drags and wheel as xterm sends them; Shift
+keeps it for selecting. Send to Agent types `@file#L3-7` into the agent's tab. Agents have their
+own tool window on the right, which offers them when empty and never starts one unasked; as agents
+don't start again with the window, it doesn't reopen with it either.
 
 Gleipnir's MCP server and its fifteen tools (12.3 to 12.5) are built. Each
 window listens on its own socket, and `script/e2e agent` calls the tools as an agent does, by
@@ -435,7 +438,6 @@ Still open from M12:
 - **Codex's connection is untested live**: the check was interrupted by Codex's own update prompt.
 - **Typing in the terminal goes by keys**, without an input method, so composed characters (dead
   keys, Chinese and the like) can't be typed there yet; Option's own characters can.
-- **Programs can't use the mouse** in the terminal (clicks in vim or htop); the wheel scrolls.
 
 - **A proposed edit waits 50 seconds for the person**, then answers "pending" with an id that
   `get_proposal` waits on again, as Codex gives up on a tool call after a minute by default.

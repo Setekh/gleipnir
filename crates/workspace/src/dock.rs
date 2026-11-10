@@ -23,6 +23,11 @@ pub trait Panel: Focusable + Render + 'static {
         serde_json::Value::Null
     }
     fn restore_state(&mut self, _: serde_json::Value, _: &mut Window, _: &mut Context<Self>) {}
+    /// Whether the panel opens again with the window if it was showing when it closed. One whose
+    /// contents don't come back would only open empty.
+    fn reopens(&self) -> bool {
+        true
+    }
     /// A description for tests and the end-to-end driver, which can be more than what's saved.
     fn debug_state(&self, cx: &App) -> serde_json::Value {
         self.save_state(cx)
@@ -39,6 +44,7 @@ pub trait PanelHandle {
     fn save_state(&self, cx: &App) -> serde_json::Value;
     fn debug_state(&self, cx: &App) -> serde_json::Value;
     fn restore_state(&self, state: serde_json::Value, window: &mut Window, cx: &mut App);
+    fn reopens(&self, cx: &App) -> bool;
 }
 
 impl<T: Panel> PanelHandle for Entity<T> {
@@ -65,6 +71,9 @@ impl<T: Panel> PanelHandle for Entity<T> {
     }
     fn restore_state(&self, state: serde_json::Value, window: &mut Window, cx: &mut App) {
         self.update(cx, |panel, cx| panel.restore_state(state, window, cx));
+    }
+    fn reopens(&self, cx: &App) -> bool {
+        self.read(cx).reopens()
     }
 }
 

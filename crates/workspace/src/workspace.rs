@@ -1597,7 +1597,8 @@ impl Workspace {
                 .iter()
                 .map(|dock| SavedDock {
                     position: dock.position,
-                    visible: dock.visible,
+                    visible: dock.visible
+                        && dock.active_panel().is_none_or(|panel| panel.reopens(cx)),
                     size: dock.size.into(),
                     active_panel: dock.active_panel().map(|p| p.id(cx).to_string()),
                 })

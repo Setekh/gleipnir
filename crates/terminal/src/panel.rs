@@ -392,6 +392,10 @@ impl Panel for AgentsPanel {
     fn debug_state(&self, cx: &App) -> serde_json::Value {
         self.inner.read(cx).state(cx)
     }
+    /// Agents aren't started again with the window, so it would open empty.
+    fn reopens(&self) -> bool {
+        false
+    }
 }
 
 impl TerminalPanel {
@@ -489,32 +493,91 @@ impl Render for TerminalPanel {
                 .p(px(12.))
                 .text_color(theme.error)
                 .child(format!("The terminal couldn't start: {error}")),
-            (None, None) if self.kind == PanelKind::Agents => div()
-                .flex_1()
-                .p(px(12.))
-                .flex()
-                .flex_col()
-                .gap(px(8.))
-                .text_color(theme.text_muted)
-                .child("Start a coding agent: your own installed tool, signed in by you.")
-                .children(AGENTS.iter().map(|agent| {
-                    let agent = *agent;
+            (None, None) if self.kind == PanelKind::Agents => {
+                let shortcut = |agent: &Agent| -> String {
+                    let action: Box<dyn gpui::Action> = if agent.id == crate::agents::CLAUDE_CODE.id
+                    {
+                        Box::new(crate::OpenClaudeCode)
+                    } else {
+                        Box::new(crate::OpenCodex)
+                    };
+                    window
+                        .highest_precedence_binding_for_action(action.as_ref())
+                        .map(|binding| {
+                            binding
+                                .keystrokes()
+                                .iter()
+                                .map(|k| k.unparse(cx.platform_info().os))
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        })
+                        .unwrap_or_default()
+                };
+                let buttons: Vec<_> = AGENTS
+                    .iter()
+                    .map(|agent| {
+                        let agent = *agent;
+                        div()
+                            .id(agent.id)
+                            .debug_selector(move || format!("start-{}", agent.id))
+                            .w_full()
+                            .px(px(12.))
+                            .py(px(7.))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .gap(px(16.))
+                            .rounded(px(5.))
+                            .bg(theme.hover)
+                            .text_color(theme.text)
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.selection))
+                            .child(agent.name)
+                            .child(div().text_color(theme.text_faint).child(shortcut(&agent)))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_agent(&agent, None, window, cx)
+                            }))
+                    })
+                    .collect();
+                div().flex_1().flex().items_center().justify_center().p(px(16.)).child(
                     div()
-                        .id(agent.id)
-                        .debug_selector(move || format!("start-{}", agent.id))
-                        .px(px(10.))
-                        .py(px(5.))
-                        .rounded(px(4.))
-                        .border_1()
-                        .border_color(theme.border)
-                        .text_color(theme.text)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme.hover))
-                        .child(agent.name)
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.open_agent(&agent, None, window, cx)
-                        }))
-                })),
+                        .w_full()
+                        .max_w(px(280.))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            svg()
+                                .path(Icon::Agent.path())
+                                .size(px(28.))
+                                .text_color(theme.text_faint),
+                        )
+                        .child(
+                            div()
+                                .mt(px(4.))
+                                .text_size(px(14.))
+                                .text_color(theme.text)
+                                .child("Coding agents"),
+                        )
+                        .child(
+                            div()
+                                .text_center()
+                                .text_color(theme.text_muted)
+                                .child("Your own installed agent, signed in by you, working with what you have open."),
+                        )
+                        .child(
+                            div()
+                                .mt(px(10.))
+                                .w_full()
+                                .flex()
+                                .flex_col()
+                                .gap(px(6.))
+                                .children(buttons),
+                        ),
+                )
+            }
             (None, None) => div()
                 .flex_1()
                 .p(px(12.))
@@ -529,50 +592,57 @@ impl Render for TerminalPanel {
             .bg(theme.surface)
             .text_size(px(12.5))
             .text_color(theme.text)
-            .child(
-                div()
-                    .h(px(28.))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .border_b_1()
-                    .border_color(theme.border)
-                    .children(tabs)
-                    .child(
+            .when(
+                self.kind == PanelKind::Terminal || !self.tabs.is_empty(),
+                |d| {
+                    d.child(
                         div()
-                            .id("terminal-new")
-                            .debug_selector(|| "terminal-new".into())
-                            .mx(px(6.))
-                            .p(px(3.))
-                            .rounded(px(3.))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.hover))
+                            .h(px(28.))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .border_b_1()
+                            .border_color(theme.border)
+                            .children(tabs)
                             .child(
-                                svg()
-                                    .path(Icon::Plus.path())
-                                    .size(px(12.))
-                                    .text_color(theme.text_muted),
+                                div()
+                                    .id("terminal-new")
+                                    .debug_selector(|| "terminal-new".into())
+                                    .mx(px(6.))
+                                    .p(px(3.))
+                                    .rounded(px(3.))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(theme.hover))
+                                    .child(
+                                        svg()
+                                            .path(Icon::Plus.path())
+                                            .size(px(12.))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    .on_click(
+                                        cx.listener(|this, _, window, cx| this.new_tab(window, cx)),
+                                    ),
                             )
-                            .on_click(cx.listener(|this, _, window, cx| this.new_tab(window, cx))),
+                            .when(self.kind == PanelKind::Agents, |d| {
+                                d.child(
+                                    div()
+                                        .id("terminal-new-menu")
+                                        .debug_selector(|| "terminal-new-menu".into())
+                                        .px(px(4.))
+                                        .rounded(px(3.))
+                                        .cursor_pointer()
+                                        .text_color(theme.text_muted)
+                                        .hover(|s| s.bg(theme.hover))
+                                        .child("▾")
+                                        .on_click(cx.listener(
+                                            |this, event: &gpui::ClickEvent, window, cx| {
+                                                this.show_new_menu(event.position(), window, cx)
+                                            },
+                                        )),
+                                )
+                            }),
                     )
-                    .when(self.kind == PanelKind::Agents, |d| {
-                        d.child(
-                            div()
-                                .id("terminal-new-menu")
-                                .debug_selector(|| "terminal-new-menu".into())
-                                .px(px(4.))
-                                .rounded(px(3.))
-                                .cursor_pointer()
-                                .text_color(theme.text_muted)
-                                .hover(|s| s.bg(theme.hover))
-                                .child("▾")
-                                .on_click(cx.listener(
-                                    |this, event: &gpui::ClickEvent, window, cx| {
-                                        this.show_new_menu(event.position(), window, cx)
-                                    },
-                                )),
-                        )
-                    }),
+                },
             )
             .child(body)
     }

@@ -5,6 +5,7 @@
 mod agents;
 mod colors;
 mod keys;
+mod mouse;
 mod panel;
 mod session;
 mod view;

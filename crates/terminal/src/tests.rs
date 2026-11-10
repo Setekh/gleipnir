@@ -187,3 +187,54 @@ fn an_agent_starts_through_the_shell_with_what_the_ide_adds(cx: &mut TestAppCont
     let text = wait_for(&session, cx, |t| t.contains("brew install nothing"));
     assert!(text.contains("Nothing isn't installed"), "{text}");
 }
+
+#[gpui::test]
+fn the_wheel_reaches_a_program_listening_to_the_mouse(cx: &mut TestAppContext) {
+    cx.executor().allow_parking();
+    cx.update(gleipnir_ui::init_theme);
+    // Asks for the mouse as Claude Code does, full-screen: clicks, drags, all motion, in SGR
+    // form. Everything it's sent goes to a file.
+    let dir = tempfile::tempdir().unwrap();
+    let heard = dir.path().join("heard");
+    let script = format!(
+        "printf '\\033[?1049h\\033[?1000h\\033[?1002h\\033[?1003h\\033[?1006h'; \
+         stty raw -echo; echo ready; exec cat > '{}'",
+        heard.display()
+    );
+    let launch = Launch {
+        program: Some(("/bin/sh".into(), vec!["-c".into(), script])),
+        cwd: std::env::temp_dir(),
+        env: Default::default(),
+        title: "test".into(),
+    };
+    let session = cx.update(|cx| Session::spawn(launch, cx)).unwrap();
+    let (view, cx) = cx.add_window_view(|_, cx| TerminalView::new(session.clone(), cx));
+    let started = Instant::now();
+    while !session.read_with(cx, |s, _| s.screen_lines().join("\n").contains("ready")) {
+        assert!(started.elapsed() < Duration::from_secs(30));
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    cx.run_until_parked();
+    let at = view.read_with(cx, |v, _| v.cell_center(2, 3));
+    let line = view.read_with(cx, |v, _| v.cell_center(0, 1).y - v.cell_center(0, 0).y);
+    // Wheel events go to what's under the pointer.
+    cx.simulate_mouse_move(at, None, gpui::Modifiers::none());
+    cx.simulate_event(gpui::ScrollEvent {
+        position: at,
+        delta: gpui::ScrollDelta::Pixels(gpui::point(gpui::px(0.), line)),
+        ..Default::default()
+    });
+    let started = Instant::now();
+    loop {
+        cx.run_until_parked();
+        let text = std::fs::read_to_string(&heard).unwrap_or_default();
+        // The pointer arriving at column 3, row 4, then the wheel, up, there; no arrow keys.
+        if text.contains("\x1b[<64;3;4M") {
+            assert_eq!(text, "\x1b[<35;3;4M\x1b[<64;3;4M");
+            break;
+        }
+        assert!(started.elapsed() < Duration::from_secs(30), "{text:?}");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}

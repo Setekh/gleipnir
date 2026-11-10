@@ -67,6 +67,10 @@ impl Panel for TestPanel {
     fn position(&self) -> DockPosition {
         self.position
     }
+    /// Stands in for one whose contents don't come back, like the Agents window.
+    fn reopens(&self) -> bool {
+        self.id != "right"
+    }
 }
 
 fn workspace_for<'a>(
@@ -478,6 +482,21 @@ fn the_layout_comes_back_when_the_project_reopens(cx: &mut TestAppContext) {
     cx.simulate_keystrokes(&keys("mod-\\"));
     open(&workspace, root.join("b.rs"), cx);
     cx.update(|window, cx| workspace.update(cx, |w, cx| w.toggle_panel("left", window, cx)));
+    let right = |cx: &mut Context<Workspace>| {
+        cx.new(|cx| TestPanel {
+            focus_handle: cx.focus_handle(),
+            id: "right",
+            position: DockPosition::Right,
+        })
+    };
+    cx.update(|window, cx| {
+        workspace.update(cx, |w, cx| {
+            let panel = right(cx);
+            w.add_panel(panel, cx);
+            w.toggle_panel("right", window, cx);
+        })
+    });
+    assert!(cx.update(|_, cx| workspace.read(cx).is_dock_visible(DockPosition::Right)));
     cx.update(|_, cx| workspace.update(cx, |w, cx| w.save_now(cx)));
     fs::remove_file(root.join("gone.rs")).unwrap();
 
@@ -490,6 +509,8 @@ fn the_layout_comes_back_when_the_project_reopens(cx: &mut TestAppContext) {
                 id: "left",
                 position: DockPosition::Left,
             });
+            workspace.add_panel(panel, cx);
+            let panel = right(cx);
             workspace.add_panel(panel, cx);
             assert!(workspace.restore_layout(window, cx));
             workspace
@@ -505,6 +526,8 @@ fn the_layout_comes_back_when_the_project_reopens(cx: &mut TestAppContext) {
         [vec!["a.rs"], vec!["gone.rs", "b.rs"][1..].to_vec()]
     );
     assert!(cx.update(|_, cx| reopened.read(cx).is_dock_visible(DockPosition::Left)));
+    // A panel that would come back empty stays closed.
+    assert!(!cx.update(|_, cx| reopened.read(cx).is_dock_visible(DockPosition::Right)));
     // The cursor is back where it was.
     let cursor = cx.update(|_, cx| {
         let pane = reopened.read(cx).panes()[0].clone();
