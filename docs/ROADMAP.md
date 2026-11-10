@@ -56,7 +56,7 @@ Status: built and passing on macOS. See the notes below the table for what's sti
 | 2.2 | Window layout: tool rail, docks, resizing | Panels toggle and resize; layout restores on reopen |
 | 2.3 | Split panes and tabs | Split either direction; the same file in two panes stays in sync |
 | 2.4 | Project panel: lazy tree, keyboard nav, file icons | Opens a large repo instantly; follows external file changes |
-| 2.5 | Project panel: file ops, reveal active file, gitignored and git status colours | Create, rename, delete and move all work, with confirmation for delete |
+| 2.5 | Project panel: file ops, reveal active file (Alt+F1, or the target in its header), gitignored and git status colours | Create, rename, delete and move all work, with confirmation for delete |
 | 2.6 | Status bar and breadcrumbs | Shows position, encoding, line ending and indent; breadcrumbs are clickable |
 
 

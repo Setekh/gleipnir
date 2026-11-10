@@ -44,6 +44,14 @@ impl ListNav {
         }
     }
 
+    /// Moves the selection without scrolling to it, for when the list changed under the user
+    /// rather than the user moving.
+    pub fn set_selected(&mut self, index: usize) {
+        if index < self.count {
+            self.selected = Some(index);
+        }
+    }
+
     /// Moves the selection, wrapping at the ends.
     pub fn select_next(&mut self) {
         if self.count > 0 {

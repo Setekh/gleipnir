@@ -619,3 +619,82 @@ fn typing_in_the_tree_jumps_to_a_matching_name(cx: &mut TestAppContext) {
         s.cx.update(|_, cx| panel.read(cx).speed_search().map(String::from));
     assert_eq!(query, None);
 }
+
+/// How far down the tree is scrolled, in pixels, after drawing it.
+fn scrolled(s: &mut Setup) -> f32 {
+    s.cx.update(|window, _| window.refresh());
+    s.cx.run_until_parked();
+    let panel = s.panel.clone();
+    s.cx.update(|_, cx| {
+        let state = panel.read(cx).nav.scroll_handle().0.borrow();
+        assert!(state.deferred_scroll_to_item.is_none(), "drawn");
+        -f32::from(state.base_handle.offset().y)
+    })
+}
+
+fn many_files() -> Vec<(String, &'static str)> {
+    (0..120).map(|i| (format!("f{i:03}.txt"), "")).collect()
+}
+
+#[gpui::test]
+fn a_file_changing_on_disk_leaves_the_tree_where_it_was_scrolled(cx: &mut TestAppContext) {
+    let files = many_files();
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, c)| (p.as_str(), *c)).collect();
+    let (_dir, root) = project(&files);
+    let mut s = setup(&root, cx);
+    s.focus_panel();
+    s.keys("down");
+    assert_eq!(scrolled(&mut s), 0.);
+
+    // Scrolled well away from the selection, as with the wheel.
+    let panel = s.panel.clone();
+    s.cx.update(|_, cx| {
+        let handle = panel
+            .read(cx)
+            .nav
+            .scroll_handle()
+            .0
+            .borrow()
+            .base_handle
+            .clone();
+        handle.set_offset(gpui::point(px(0.), px(-1500.)));
+    });
+    assert_eq!(scrolled(&mut s), 1500.);
+
+    fs::write(root.join("f050.txt"), "changed").unwrap();
+    fs::write(root.join("new.txt"), "").unwrap();
+    s.wait_for_rows(|rows| rows.iter().any(|r| r.trim() == "new.txt"));
+    assert_eq!(scrolled(&mut s), 1500.);
+}
+
+#[gpui::test]
+fn the_target_button_shows_the_open_file_in_the_tree(cx: &mut TestAppContext) {
+    let files = many_files();
+    let files: Vec<(&str, &str)> = files.iter().map(|(p, c)| (p.as_str(), *c)).collect();
+    let (_dir, root) = project(&files);
+    let mut s = setup(&root, cx);
+    let workspace = s.workspace.clone();
+    let path = root.join("f100.txt");
+    let task = s
+        .cx
+        .update(|window, cx| workspace.update(cx, |w, cx| w.open_path(path.clone(), window, cx)));
+    resolve(s.cx, task).unwrap();
+    s.settle();
+
+    // Elsewhere in the tree, at its top.
+    let panel = s.panel.clone();
+    s.cx.update(|_, cx| panel.update(cx, |panel, cx| panel.select_row(0, cx)));
+    assert_eq!(scrolled(&mut s), 0.);
+
+    let button =
+        s.cx.debug_bounds("project-locate")
+            .expect("the target button");
+    s.cx.simulate_click(button.center(), Modifiers::none());
+    run_until(s.cx, |cx| {
+        cx.update(|_, cx| panel.read(cx).selected() == Some(path.as_path()))
+    });
+    assert!(
+        scrolled(&mut s) > 1000.,
+        "the open file is scrolled into view"
+    );
+}

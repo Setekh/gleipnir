@@ -494,11 +494,13 @@ impl ProjectPanel {
         self.rows = self.tree.as_ref().map_or_else(Vec::new, FileTree::rows);
 
         // A pending reveal completes as soon as its target is visible.
+        let mut revealed = false;
         if let Some(target) = self.pending_reveal.clone()
             && self.rows.iter().any(|row| row.entry.path == target)
         {
             self.selected = Some(target);
             self.pending_reveal = None;
+            revealed = true;
         }
         // If the selected entry went away, its parent is the nearest thing left.
         if let Some(selected) = self.selected.clone()
@@ -511,7 +513,13 @@ impl ProjectPanel {
                 .map(Path::to_path_buf);
         }
         self.rebuild_display();
-        self.sync_nav();
+        // Files changing on disk rebuild the rows too, and mustn't pull the tree back to the
+        // selection while the user has scrolled away from it.
+        if revealed {
+            self.sync_nav();
+        } else {
+            self.keep_nav_index();
+        }
         cx.notify();
     }
 
@@ -537,17 +545,24 @@ impl ProjectPanel {
         self.rows.iter().position(|row| &row.entry.path == selected)
     }
 
-    /// Scrolls the selected row into view, and keeps the list's own index in step.
-    fn sync_nav(&mut self) {
-        let Some(row) = self.selected_row_index() else {
-            return;
-        };
-        if let Some(display) = self
-            .display
+    fn selected_display_index(&self) -> Option<usize> {
+        let row = self.selected_row_index()?;
+        self.display
             .iter()
             .position(|d| d == &DisplayRow::Entry(row))
-        {
+    }
+
+    /// Scrolls the selected row into view, and keeps the list's own index in step.
+    fn sync_nav(&mut self) {
+        if let Some(display) = self.selected_display_index() {
             self.nav.select(display);
+        }
+    }
+
+    /// Keeps the list's own index on the selected row without scrolling to it.
+    fn keep_nav_index(&mut self) {
+        if let Some(display) = self.selected_display_index() {
+            self.nav.set_selected(display);
         }
     }
 
@@ -1488,10 +1503,11 @@ impl Render for ProjectPanel {
                     .border_color(theme.border)
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child("Project")
+                    .child(div().flex_1())
                     .when_some(self.speed.clone(), |header, query| {
                         header.child(
                             div()
-                                .ml_auto()
+                                .mr(px(6.))
                                 .px(px(6.))
                                 .py(px(1.))
                                 .rounded(px(4.))
@@ -1502,7 +1518,26 @@ impl Render for ProjectPanel {
                                 .font_weight(gpui::FontWeight::NORMAL)
                                 .child(format!("Search for: {query}")),
                         )
-                    }),
+                    })
+                    // IntelliJ's Select Opened File: shows the open file in the tree.
+                    .child(
+                        div()
+                            .id("project-locate")
+                            .debug_selector(|| "project-locate".into())
+                            .p(px(3.))
+                            .rounded(px(4.))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.hover))
+                            .child(
+                                svg()
+                                    .path(Icon::Locate.path())
+                                    .size(px(14.))
+                                    .text_color(theme.text_muted),
+                            )
+                            .on_click(|_, window, cx| {
+                                window.dispatch_action(Box::new(RevealActiveFile), cx)
+                            }),
+                    ),
             )
             .child(body)
             .children(menu)
