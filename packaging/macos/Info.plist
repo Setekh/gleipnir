@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- script/bundle fills in @VERSION@ and @BUILD@. -->
+<plist version="1.0">
+<dict>
+  <key>CFBundleName</key>
+  <string>Gleipnir</string>
+  <key>CFBundleDisplayName</key>
+  <string>Gleipnir</string>
+  <key>CFBundleIdentifier</key>
+  <string>dev.primordial-forge.gleipnir</string>
+  <key>CFBundleExecutable</key>
+  <string>gleipnir</string>
+  <key>CFBundleIconFile</key>
+  <string>Gleipnir</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>@VERSION@</string>
+  <key>CFBundleVersion</key>
+  <string>@BUILD@</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>en</string>
+  <key>LSApplicationCategoryType</key>
+  <string>public.app-category.developer-tools</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>11.0</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+  <key>NSHumanReadableCopyright</key>
+  <string>MIT License</string>
+</dict>
+</plist>

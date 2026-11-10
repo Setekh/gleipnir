@@ -3,6 +3,7 @@
 # emulation is slow, so the Cargo caches live in a named volume that survives between runs. Jobs are
 # limited because linking GPUI under emulation with a default Docker memory limit can run out.
 #   script/linux-check            build and test
+#   script/linux-check bundle     the Linux installer archive, into target/dist
 #   script/linux-check shell      a shell in the same environment
 set -eu
 
@@ -12,6 +13,7 @@ command=${1:-test}
 docker volume create gleipnir-linux-cache > /dev/null
 case "$command" in
     shell) inner='exec bash' ;;
+    bundle) inner='script/bundle' ;;
     test) inner='cargo build --workspace && cargo test --workspace' ;;
     *) echo "unknown command: $command" >&2; exit 2 ;;
 esac

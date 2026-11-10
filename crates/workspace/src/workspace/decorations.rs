@@ -192,8 +192,12 @@ fn resize_edge(at: Point<Pixels>, window: Size<Pixels>, tiling: Tiling) -> Optio
     }
 }
 
-/// A window button, as the title bar draws it.
+/// A window button, as the title bar draws it. Elsewhere than Linux only Close is drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(
+    not(any(target_os = "linux", target_os = "freebsd")),
+    expect(dead_code)
+)]
 pub enum WindowButton {
     Minimize,
     Maximize,

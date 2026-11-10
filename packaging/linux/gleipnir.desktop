@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Gleipnir
+GenericName=IDE
+Comment=An IDE for TypeScript, JavaScript, Odin, Rust, Go and C#
+Exec=gleipnir %f
+Icon=gleipnir
+Terminal=false
+Categories=Development;IDE;TextEditor;
+Keywords=editor;ide;code;
+StartupWMClass=gleipnir
+StartupNotify=true

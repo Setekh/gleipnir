@@ -23,6 +23,37 @@ needs the .NET SDK.
     cargo run -p gleipnir -- path/to/project   # a folder, or a file in one; the first build takes minutes
     cargo test --workspace
 
+## Installing
+
+Releases on GitHub have a disk image for macOS (Apple silicon) and an archive for Arch and Omarchy.
+
+- **macOS**: open `Gleipnir-<version>-macos-arm64.dmg` and drag Gleipnir into Applications. Until
+  releases are signed with a Developer ID, macOS blocks the first launch: open it once from
+  System Settings → Privacy & Security → Open Anyway, or run
+  `xattr -dr com.apple.quarantine /Applications/Gleipnir.app`. To open projects from a terminal,
+  link the program onto your `PATH`:
+  `ln -s /Applications/Gleipnir.app/Contents/MacOS/gleipnir /usr/local/bin/gleipnir`.
+- **Linux**: unpack `gleipnir-<version>-linux-x86_64.tar.gz` and run `./install.sh`, which puts the
+  program, its launcher and icons in `~/.local` (`PREFIX=/usr/local` for everyone;
+  `./install.sh --uninstall` takes them out). It's built on Arch, so it needs as new a glibc, and
+  it uses the desktop's libxcb, libxkbcommon and Vulkan driver, which Omarchy has.
+
+`script/bundle` builds the installer for the machine it runs on into `target/dist`;
+`script/linux-check bundle` builds the Linux one in Docker from any machine.
+
+## Releasing
+
+    script/release 0.2.0           # on a clean main: sets the version, runs script/check, commits, tags v0.2.0
+    git push origin main v0.2.0    # GitHub builds both installers and publishes the release
+
+The Release workflow can also be run by hand from the Actions tab, which builds the installers
+without publishing them. A version with a dash, like `0.2.0-rc.1`, is published as a pre-release.
+macOS releases are signed ad hoc unless the repository has these secrets: `MACOS_CERTIFICATE` (a
+Developer ID Application certificate exported as .p12, base64-encoded),
+`MACOS_CERTIFICATE_PASSWORD` and `APPLE_SIGNING_IDENTITY` (the certificate's name) to sign, and
+`APPLE_ID`, `APPLE_TEAM_ID` and `APPLE_APP_PASSWORD` (an app-specific password) to notarize too.
+The icon is `packaging/icon/gleipnir.svg`; its PNGs are rendered from it (with `resvg`, for one).
+
 ## Testing
 
     script/check                # formatting, lints and all tests: run before committing
@@ -75,6 +106,8 @@ searches much harder, and has found real bugs that the default run missed.
   extraction.
 - `crates/text`: rope buffer, undo, selections, and every editing command as a pure function.
 - `crates/test_support`: helpers shared by the UI tests.
+- `packaging`: the app icon; for macOS the `Info.plist` and the disk image window (`dmg.py` for
+  dmgbuild, and its background); for Linux the launcher and `install.sh`.
 
 ## Configuration
 

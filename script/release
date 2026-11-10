@@ -1,0 +1,41 @@
+#!/bin/sh
+# Starts a release from an up-to-date, clean main:
+#   script/release 0.2.0
+# Sets the version, runs script/check, then commits "Release 0.2.0" and tags it v0.2.0. Nothing
+# leaves this machine: pushing the tag has GitHub build the installers and publish the release.
+#   git push origin main v0.2.0
+set -eu
+
+version=${1:-}
+case "$version" in
+    "" | v* | *[!0-9A-Za-z.-]*)
+        echo "usage: script/release <version>, like 0.2.0 or 0.2.0-rc.1" >&2
+        exit 1
+        ;;
+esac
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+cd "$root"
+
+[ "$(git branch --show-current)" = main ] || { echo "release from main" >&2; exit 1; }
+[ -z "$(git status --porcelain)" ] || { echo "commit or stash your changes first" >&2; exit 1; }
+if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+    echo "v$version is already tagged" >&2
+    exit 1
+fi
+
+# The version in [workspace.package], which every crate shares.
+awk -v version="$version" '
+    /^\[/ { inside = ($0 == "[workspace.package]") }
+    inside && /^version *=/ { $0 = "version = \"" version "\"" }
+    { print }
+' Cargo.toml > Cargo.toml.new
+mv Cargo.toml.new Cargo.toml
+cargo update --workspace --offline 2>/dev/null || cargo update --workspace
+
+script/check
+
+git commit -q -am "Release $version"
+git tag -a "v$version" -m "Gleipnir $version"
+echo "Tagged v$version. To build the installers and publish the release:"
+echo "    git push origin main v$version"
