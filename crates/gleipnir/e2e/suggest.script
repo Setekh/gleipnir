@@ -13,7 +13,7 @@ wait-match /editor/text address2: types.maybe(Address),\n
 cursor 6:200
 type p
 wait-match /editor/suggestion es.string), (100%, this file)
-key alt-right
+key alt-right|ctrl-right
 wait-match /editor/text zip: types.maybe(types\n
 wait-match /editor/suggestion .string), (100%, this file)
 key tab

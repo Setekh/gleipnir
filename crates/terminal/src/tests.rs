@@ -77,9 +77,17 @@ fn typing_reaches_the_shell_and_resizing_tells_it(cx: &mut TestAppContext) {
     session.update(cx, |s, _| s.resize(40, 10, 8, 16));
     session.update(cx, |s, _| s.type_bytes(b"stty size\r".to_vec()));
     wait_for(&session, cx, |t| t.lines().any(|l| l == "10 40"));
-    // Ctrl+C stops what's running, and the shell carries on.
-    session.update(cx, |s, _| s.type_bytes(b"sleep 30\r".to_vec()));
+    // Ctrl+C stops what's running, and the shell carries on. Each step waits for the one before:
+    // a Ctrl+C that reaches bash while it is still reading the line discards that line and
+    // whatever was typed after it.
+    session.update(cx, |s, _| {
+        s.type_bytes(b"echo sleeping; sleep 30\r".to_vec())
+    });
+    wait_for(&session, cx, |t| t.lines().any(|l| l == "sleeping"));
     session.update(cx, |s, _| s.type_bytes(vec![0x03]));
+    wait_for(&session, cx, |t| {
+        t.lines().rev().find(|l| !l.trim().is_empty()) == Some("$")
+    });
     session.update(cx, |s, _| s.type_bytes(b"echo after\r".to_vec()));
     wait_for(&session, cx, |t| t.lines().any(|l| l == "after"));
 }

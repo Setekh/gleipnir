@@ -10,6 +10,18 @@ const MOD: &str = if cfg!(target_os = "macos") {
     "ctrl"
 };
 
+// IntelliJ's macOS and Windows/Linux keymaps differ for these, not just by the modifier.
+const GO_TO_FILE: &str = if cfg!(target_os = "macos") {
+    "cmd-shift-o"
+} else {
+    "ctrl-shift-n"
+};
+const GO_TO_CLASS: &str = if cfg!(target_os = "macos") {
+    "cmd-o"
+} else {
+    "ctrl-n"
+};
+
 struct Setup<'a> {
     workspace: Entity<Workspace>,
     cx: &'a mut VisualTestContext,
@@ -166,7 +178,7 @@ fn the_all_tab_groups_classes_files_and_symbols(cx: &mut TestAppContext) {
 #[gpui::test]
 fn camel_humps_find_types(cx: &mut TestAppContext) {
     let (_dir, mut s) = setup(FILES, cx);
-    s.cx.simulate_keystrokes(&format!("{MOD}-o"));
+    s.cx.simulate_keystrokes(GO_TO_CLASS);
     let results = s.search("UsCo");
     assert_eq!(
         results.first().map(String::as_str),
@@ -177,7 +189,7 @@ fn camel_humps_find_types(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_classes_tab_only_has_types(cx: &mut TestAppContext) {
     let (_dir, mut s) = setup(FILES, cx);
-    s.cx.simulate_keystrokes(&format!("{MOD}-o"));
+    s.cx.simulate_keystrokes(GO_TO_CLASS);
     let results = s.search("s");
     assert!(
         results
@@ -207,7 +219,7 @@ fn choosing_a_symbol_opens_its_file_at_it(cx: &mut TestAppContext) {
 #[gpui::test]
 fn go_to_file_with_a_line_number_jumps_there(cx: &mut TestAppContext) {
     let (_dir, mut s) = setup(FILES, cx);
-    s.cx.simulate_keystrokes(&format!("{MOD}-shift-o"));
+    s.cx.simulate_keystrokes(GO_TO_FILE);
     s.search("usercon:3:9");
     s.cx.simulate_keystrokes("enter");
     let state = s.editor_state();
@@ -232,12 +244,12 @@ fn tab_cycles_through_the_tabs(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_same_shortcut_closes_it_and_another_switches_tab(cx: &mut TestAppContext) {
     let (_dir, mut s) = setup(FILES, cx);
-    s.cx.simulate_keystrokes(&format!("{MOD}-shift-o"));
+    s.cx.simulate_keystrokes(GO_TO_FILE);
     assert!(s.popup().is_some());
-    s.cx.simulate_keystrokes(&format!("{MOD}-o"));
+    s.cx.simulate_keystrokes(GO_TO_CLASS);
     let popup = s.popup().expect("still open, on another tab");
     assert_eq!(s.cx.update(|_, cx| popup.read(cx).tab()), Tab::Classes);
-    s.cx.simulate_keystrokes(&format!("{MOD}-o"));
+    s.cx.simulate_keystrokes(GO_TO_CLASS);
     assert!(s.popup().is_none());
 }
 

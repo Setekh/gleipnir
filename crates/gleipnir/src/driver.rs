@@ -4,7 +4,9 @@
 //! Set `GLEIPNIR_SCRIPT` to a file with one command per line. Blank lines and `#` comments are
 //! ignored. The process exits 0 if every command succeeded, and 1 at the first failure.
 //!
-//!     key <keystrokes>            one or more space-separated keystrokes, like: key cmd-s down
+//!     key <keystrokes>            one or more space-separated keystrokes, like: key cmd-s down.
+//!                                 `mac|other` gives the macOS key and the Linux one, where the
+//!                                 platforms differ by more than Cmd for Ctrl: key cmd-t|ctrl-shift-t
 //!     do <EditorAction>           presses the key this platform binds to an editor action
 //!     action <namespace::Name>    dispatches an action to whatever has focus
 //!     double-shift                taps Shift twice, as real modifier events
@@ -272,6 +274,11 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
     match command {
         "key" => {
             for keystroke in rest.split_whitespace() {
+                let keystroke = match keystroke.split_once('|') {
+                    Some((mac, _)) if cfg!(target_os = "macos") => mac,
+                    Some((_, other)) => other,
+                    None => keystroke,
+                };
                 press(keystroke, window, cx)?;
             }
         }
