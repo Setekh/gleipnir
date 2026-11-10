@@ -3,9 +3,17 @@ use gleipnir_core::BufferStore;
 use gleipnir_test_support::{isolate_state, project, run_until};
 use gpui::{Modifiers, TestAppContext, VisualTestContext, size};
 
-fn setup(
-    cx: &mut TestAppContext,
-) -> (tempfile::TempDir, Entity<Workspace>, &mut VisualTestContext) {
+/// What a test holds until it ends: its project, and its turn with the settings file, which every
+/// test in this process shares, so one test's save can't land between another's save and its read.
+struct Held {
+    _project: tempfile::TempDir,
+    _settings: std::sync::MutexGuard<'static, ()>,
+}
+
+fn setup(cx: &mut TestAppContext) -> (Held, Entity<Workspace>, &mut VisualTestContext) {
+    static SETTINGS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A test that failed while holding it leaves it poisoned, which says nothing about the next.
+    let settings = SETTINGS.lock().unwrap_or_else(|e| e.into_inner());
     isolate_state();
     cx.executor().allow_parking();
     cx.update(|cx| {
@@ -28,7 +36,11 @@ fn setup(
     run_until(cx, |cx| {
         cx.update(|_, cx| !toolchains.read(cx).packages().is_empty())
     });
-    (dir, workspace, cx)
+    let held = Held {
+        _project: dir,
+        _settings: settings,
+    };
+    (held, workspace, cx)
 }
 
 /// Opens Settings at Languages & Tools, as Project Structure's shortcut does.
@@ -232,8 +244,23 @@ fn every_package_is_listed_with_its_tools(cx: &mut TestAppContext) {
             .collect()
     });
     let ids: Vec<&str> = listed.iter().map(|(id, _)| id.as_str()).collect();
-    assert_eq!(ids, ["rust", "go", "odin", "typescript"]);
+    assert_eq!(
+        ids,
+        [
+            "rust",
+            "go",
+            "odin",
+            "typescript",
+            "csharp",
+            "json",
+            "html",
+            "css",
+            "markdown"
+        ]
+    );
     assert!(listed[1].1.contains(&"gopls".to_string()) && listed[1].1.contains(&"dlv".to_string()));
+    assert_eq!(listed[4].1, ["csharp-ls"]);
+    assert_eq!(listed[8].1, ["marksman"]);
 }
 
 #[gpui::test]

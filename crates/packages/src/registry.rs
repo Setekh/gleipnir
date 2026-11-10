@@ -16,6 +16,17 @@ const BUILTIN: &[(&str, &str)] = &[
         "builtin/typescript.toml",
         include_str!("../builtin/typescript.toml"),
     ),
+    (
+        "builtin/csharp.toml",
+        include_str!("../builtin/csharp.toml"),
+    ),
+    ("builtin/json.toml", include_str!("../builtin/json.toml")),
+    ("builtin/html.toml", include_str!("../builtin/html.toml")),
+    ("builtin/css.toml", include_str!("../builtin/css.toml")),
+    (
+        "builtin/markdown.toml",
+        include_str!("../builtin/markdown.toml"),
+    ),
 ];
 
 #[derive(Clone, Debug)]
@@ -65,6 +76,11 @@ fn grammar(name: &str) -> Option<Language> {
         "typescript" => Language::TypeScript,
         "tsx" => Language::Tsx,
         "javascript" => Language::JavaScript,
+        "csharp" => Language::CSharp,
+        "json" => Language::Json,
+        "html" => Language::Html,
+        "css" => Language::Css,
+        "markdown" => Language::Markdown,
         _ => return None,
     })
 }
@@ -74,6 +90,10 @@ fn edit_config(spec: &LanguageSpec) -> EditConfig {
         tab_size: spec.tab_size.max(1),
         hard_tabs: spec.hard_tabs,
         line_comment: spec.line_comment.clone(),
+        block_comment: match spec.block_comment.as_deref() {
+            Some([open, close]) => Some((open.clone(), close.clone())),
+            _ => None,
+        },
         pairs: spec
             .pairs
             .iter()
@@ -267,7 +287,20 @@ mod tests {
         let registry = registry();
         assert!(registry.errors().is_empty(), "{:?}", registry.errors());
         let ids: Vec<&str> = registry.packages().iter().map(Package::id).collect();
-        assert_eq!(ids, ["rust", "go", "odin", "typescript"]);
+        assert_eq!(
+            ids,
+            [
+                "rust",
+                "go",
+                "odin",
+                "typescript",
+                "csharp",
+                "json",
+                "html",
+                "css",
+                "markdown"
+            ]
+        );
     }
 
     #[test]
@@ -282,8 +315,16 @@ mod tests {
             ("a.tsx", Some(Language::Tsx)),
             ("a.js", Some(Language::JavaScript)),
             ("a.JSX", Some(Language::JavaScript)),
-            ("README.md", None),
+            ("README.md", Some(Language::Markdown)),
+            ("Assets/Player.cs", Some(Language::CSharp)),
+            ("package.json", Some(Language::Json)),
+            ("Game.asmdef", Some(Language::Json)),
+            ("index.html", Some(Language::Html)),
+            ("Menu.uxml", Some(Language::Html)),
+            ("site.css", Some(Language::Css)),
+            ("Menu.uss", Some(Language::Css)),
             ("Makefile", None),
+            ("notes.txt", None),
         ] {
             assert_eq!(
                 r.language_for_path(Path::new(path)).map(|l| l.grammar),

@@ -40,10 +40,11 @@ impl HighlightKind {
         Some(match name {
             "attribute" | "preproc" => Self::Attribute,
             "comment" | "comment.documentation" => Self::Comment,
-            "constant" | "constant.builtin" | "boolean" => Self::Constant,
+            "constant" | "constant.builtin" | "boolean" | "text.strong" => Self::Constant,
             "constructor" | "type" | "type.builtin" => Self::Type,
             "escape" | "string.escape" => Self::StringEscape,
-            "field" | "property" => Self::Property,
+            // A JSON object's keys are its properties.
+            "field" | "property" | "property.definition" | "string.special.key" => Self::Property,
             "float" | "number" => Self::Number,
             "function.macro" => Self::Macro,
             "function" | "function.builtin" | "function.call" | "function.method" => Self::Function,
@@ -55,17 +56,27 @@ impl HighlightKind {
             | "conditional.ternary"
             | "include"
             | "repeat"
-            | "storageclass" => Self::Keyword,
-            "label" => Self::Label,
+            | "storageclass"
+            // CSS's at-rules.
+            | "charset"
+            | "import"
+            | "keyframes"
+            | "media"
+            | "supports"
+            // Markdown's headings.
+            | "text.title" => Self::Keyword,
+            "label" | "text.uri" => Self::Label,
             "namespace" | "module" => Self::Namespace,
             "operator" => Self::Operator,
-            "parameter" | "variable.parameter" => Self::Parameter,
+            "parameter" | "variable.parameter" | "text.emphasis" => Self::Parameter,
             "punctuation"
             | "punctuation.bracket"
             | "punctuation.delimiter"
             | "punctuation.special" => Self::Punctuation,
-            "character" | "string" | "string.special" => Self::String,
-            "tag" => Self::Tag,
+            // Markdown's code, inline and in blocks, reads as a literal.
+            "character" | "string" | "string.special" | "text.literal" => Self::String,
+            "text.reference" => Self::Function,
+            "tag" | "tag.error" => Self::Tag,
             "variable" => Self::Variable,
             "variable.builtin" => Self::VariableBuiltin,
             _ => return None,
@@ -99,9 +110,10 @@ const RUST_OVERRIDES: &str = r#"
 
 /// On a node captured by several patterns, which one applies. The query files were written for
 /// different editors and disagree: Go's ends with a catch-all `(identifier) @variable`, which only
-/// works if earlier patterns win, while the others start with theirs and refine it later.
+/// works if earlier patterns win, while the others start with theirs and refine it later. JSON's
+/// colors a key as a key before every string as a string.
 fn first_pattern_wins(language: Language) -> bool {
-    language == Language::Go
+    matches!(language, Language::Go | Language::Json)
 }
 
 fn query_source(language: Language) -> String {
@@ -117,12 +129,25 @@ fn query_source(language: Language) -> String {
         Language::TypeScript => format!("{js}\n{ts}"),
         Language::Tsx => format!("{js}\n{jsx}\n{ts}"),
         Language::JavaScript => format!("{js}\n{jsx}"),
+        Language::CSharp => tree_sitter_c_sharp::HIGHLIGHTS_QUERY.to_string(),
+        Language::Json => tree_sitter_json::HIGHLIGHTS_QUERY.to_string(),
+        Language::Html => tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
+        Language::Css => tree_sitter_css::HIGHLIGHTS_QUERY.to_string(),
+        Language::Markdown => tree_sitter_md::HIGHLIGHT_QUERY_BLOCK.to_string(),
     }
 }
 
 fn compile(language: Language) -> LanguageQuery {
-    let query = Query::new(&language.grammar(), &query_source(language))
-        .unwrap_or_else(|e| panic!("{language:?} highlight query: {e}"));
+    compile_query(
+        &language.grammar(),
+        &query_source(language),
+        &format!("{language:?}"),
+    )
+}
+
+fn compile_query(grammar: &tree_sitter::Language, source: &str, name: &str) -> LanguageQuery {
+    let query =
+        Query::new(grammar, source).unwrap_or_else(|e| panic!("{name} highlight query: {e}"));
     let kinds = query
         .capture_names()
         .iter()
@@ -156,6 +181,18 @@ fn compile(language: Language) -> LanguageQuery {
     }
 }
 
+/// The query for the text inside Markdown's blocks: emphasis, code spans, links.
+fn markdown_inline_query() -> &'static LanguageQuery {
+    static QUERY: OnceLock<LanguageQuery> = OnceLock::new();
+    QUERY.get_or_init(|| {
+        compile_query(
+            &tree_sitter_md::INLINE_LANGUAGE.into(),
+            tree_sitter_md::HIGHLIGHT_QUERY_INLINE,
+            "Markdown inline",
+        )
+    })
+}
+
 fn language_query(language: Language) -> &'static LanguageQuery {
     static QUERIES: OnceLock<HashMap<Language, LanguageQuery>> = OnceLock::new();
     QUERIES
@@ -183,7 +220,83 @@ pub fn highlights(
     if range.is_empty() {
         return Vec::new();
     }
-    let lq = language_query(language);
+    let mut found = Vec::new();
+    collect(
+        language_query(language),
+        tree,
+        snapshot,
+        range.clone(),
+        0,
+        &mut found,
+    );
+    if language == Language::Markdown {
+        // Inline captures are numbered after the block query's, so on the same text they win.
+        let offset = language_query(language).query.pattern_count();
+        for inline in markdown_inline_trees(tree, snapshot, range.clone()) {
+            collect(
+                markdown_inline_query(),
+                &inline,
+                snapshot,
+                range.clone(),
+                offset,
+                &mut found,
+            );
+        }
+    }
+    flatten(found, range, first_pattern_wins(language))
+}
+
+/// Parses the text of each Markdown block in a range with the inline grammar, in place, so its
+/// positions are the document's.
+fn markdown_inline_trees(tree: &Tree, snapshot: &Snapshot, range: Range<usize>) -> Vec<Tree> {
+    let mut parser = tree_sitter::Parser::new();
+    if parser
+        .set_language(&tree_sitter_md::INLINE_LANGUAGE.into())
+        .is_err()
+    {
+        return Vec::new();
+    }
+    let mut blocks = Vec::new();
+    let mut cursor = tree.walk();
+    'walk: loop {
+        let node = cursor.node();
+        let node_range = node.byte_range();
+        let overlaps = node_range.start < range.end && node_range.end > range.start;
+        if overlaps && node.kind() == "inline" {
+            blocks.push(node.range());
+        } else if overlaps && cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    let len = snapshot.len();
+    blocks
+        .into_iter()
+        .filter(|block| block.end_byte <= len)
+        .filter_map(|block| {
+            parser.set_included_ranges(&[block]).ok()?;
+            let mut read = |byte: usize, _: tree_sitter::Point| -> &[u8] {
+                let (chunk, start) = snapshot.chunk_at(byte.min(len));
+                &chunk.as_bytes()[byte.saturating_sub(start).min(chunk.len())..]
+            };
+            parser.parse_with_options(&mut read, None, None)
+        })
+        .collect()
+}
+
+/// Adds a query's captures in a range, with their pattern numbers shifted by `offset`.
+fn collect(
+    lq: &LanguageQuery,
+    tree: &Tree,
+    snapshot: &Snapshot,
+    range: Range<usize>,
+    offset: usize,
+    found: &mut Vec<(Range<usize>, usize, HighlightKind)>,
+) {
     let text = |node: Node<'_>| {
         let node_range = node.byte_range();
         // A tree with edits applied but not reparsed can briefly point past the text.
@@ -193,8 +306,7 @@ pub fn highlights(
     };
 
     let mut cursor = QueryCursor::new();
-    cursor.set_byte_range(range.clone());
-    let mut found: Vec<(Range<usize>, usize, HighlightKind)> = Vec::new();
+    cursor.set_byte_range(range);
     let mut captures = cursor.captures(&lq.query, tree.root_node(), text);
     while let Some((query_match, capture_index)) = captures.next() {
         let capture = query_match.captures[*capture_index];
@@ -214,9 +326,8 @@ pub fn highlights(
                 continue;
             }
         }
-        found.push((capture.node.byte_range(), pattern, kind));
+        found.push((capture.node.byte_range(), pattern + offset, kind));
     }
-    flatten(found, range, first_pattern_wins(language))
 }
 
 /// Paints captures over the range in increasing priority, so the one that should show goes last.

@@ -82,6 +82,36 @@ fn alive(pid: i32) -> bool {
     result == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
+/// The sockets of other Gleipnirs still running, newest first: the windows a file opened from
+/// outside could go to.
+pub fn live_sockets(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let me = std::process::id() as i32;
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .and_then(|n| n.strip_suffix(".sock"))
+                .and_then(|n| n.split('-').next())
+                .and_then(|pid| pid.parse::<i32>().ok())
+                .is_some_and(|pid| pid != me && pid > 0 && alive(pid))
+        })
+        .map(|entry| {
+            let made = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .unwrap_or(std::time::UNIX_EPOCH);
+            (made, entry.path())
+        })
+        .collect();
+    found.sort_by_key(|(made, _)| std::cmp::Reverse(*made));
+    found.into_iter().map(|(_, path)| path).collect()
+}
+
 /// Removes sockets left by Gleipnirs that ended without removing theirs, as after a crash. A
 /// socket's name starts with the process id that made it.
 pub fn remove_stale(dir: &Path) {

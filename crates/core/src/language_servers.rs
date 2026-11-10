@@ -131,7 +131,26 @@ fn language_id(language: Language, path: &Path) -> &'static str {
         Language::Tsx => "typescriptreact",
         Language::JavaScript if path.extension().is_some_and(|e| e == "jsx") => "javascriptreact",
         Language::JavaScript => "javascript",
+        Language::CSharp => "csharp",
+        Language::Json if allows_comments(path) => "jsonc",
+        Language::Json => "json",
+        Language::Html => "html",
+        Language::Css => "css",
+        Language::Markdown => "markdown",
     }
+}
+
+/// JSON files that are read with comments allowed, which the JSON server checks for by the
+/// document's language: TypeScript's and VS Code's configuration, and `.jsonc` files.
+fn allows_comments(path: &Path) -> bool {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    path.extension().is_some_and(|e| e == "jsonc")
+        || name.starts_with("tsconfig")
+        || name.starts_with("jsconfig")
+        || path
+            .parent()
+            .and_then(Path::file_name)
+            .is_some_and(|dir| dir == ".vscode")
 }
 
 fn to_lsp(point: Utf16Point) -> lsp::Position {

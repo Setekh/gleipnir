@@ -1,0 +1,59 @@
+# Markup languages and C# with real language servers: vscode-langservers-extracted for JSON, HTML
+# and CSS, Marksman for Markdown, and csharp-ls for C#, each installed into E2E_TOOLS as needed.
+# C# needs a .NET SDK. Run with: script/e2e languages
+wait-timeout 180
+
+# JSON: a syntax error is a problem.
+open {dir}/config.json
+expect-language JSON
+wait-parsed
+expect-highlights
+wait-state /language_servers/json running
+wait-match /editor/diagnostics Error
+screenshot {shots}/languages-json.png
+
+# HTML: an element's documentation.
+open {dir}/web/index.html
+expect-language HTML
+wait-state /language_servers/html running
+cursor 4:6
+action editor::ShowHover
+wait-match /editor/hover paragraph
+key escape
+
+# CSS: a property's documentation.
+open {dir}/web/site.css
+expect-language CSS
+wait-state /language_servers/css running
+cursor 2:4
+action editor::ShowHover
+wait-match /editor/hover color
+key escape
+
+# Markdown: a link to a heading goes to it.
+open {dir}/README.md
+expect-language Markdown
+wait-parsed
+expect-highlights
+wait-state /language_servers/markdown running
+cursor 3:19
+action code_nav::GoToDeclarationOrUsages
+wait-state /editor/cursor/0 4
+screenshot {shots}/languages-markdown.png
+
+# C#: the project loads, its type error is a problem, and a method's call goes to its body.
+open {dir}/Program.cs
+expect-language C#
+wait-parsed
+expect-highlights
+wait-state /language_servers/csharp running
+wait-match /editor/diagnostics Cannot implicitly convert
+cursor 3:18
+action editor::ShowHover
+wait-match /editor/hover Circle
+key escape
+cursor 4:33
+action code_nav::GoToDeclarationOrUsages
+wait-match /editor/path Shapes.cs
+expect-state /editor/cursor/0 11
+screenshot {shots}/languages-csharp.png

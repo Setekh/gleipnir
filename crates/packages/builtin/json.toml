@@ -1,0 +1,27 @@
+# JSON, with the language server VS Code uses. Unity's assembly definitions and input actions are
+# JSON too.
+[package]
+id = "json"
+name = "JSON"
+version = "0.1.0"
+
+[[language]]
+name = "JSON"
+grammar = "json"
+extensions = ["json", "jsonc", "asmdef", "asmref", "inputactions"]
+# Not JSON, but tsconfig, VS Code's settings and .jsonc files allow comments, and they're opened
+# as JSON with comments.
+line_comment = "//"
+tab_size = 2
+pairs = ["[]", "{}", "\"\""]
+
+[server]
+tool = "vscode-json-language-server"
+args = ["--stdio"]
+
+[server.initialization_options]
+provideFormatter = true
+
+[tool.vscode-json-language-server]
+binary = "vscode-json-language-server"
+install = { kind = "npm", packages = ["vscode-langservers-extracted@4.10.0"] }

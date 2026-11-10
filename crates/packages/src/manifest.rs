@@ -30,10 +30,13 @@ pub struct PackageInfo {
 #[serde(deny_unknown_fields)]
 pub struct LanguageSpec {
     pub name: String,
-    /// One of the grammars compiled in: rust, go, odin, typescript, tsx, javascript.
+    /// One of the grammars compiled in: rust, go, odin, typescript, tsx, javascript, csharp, json,
+    /// html, css, markdown.
     pub grammar: String,
     pub extensions: Vec<String>,
     pub line_comment: Option<String>,
+    /// What opens and closes a comment, as two strings, for a language with no line comment.
+    pub block_comment: Option<Vec<String>>,
     #[serde(default = "default_tab_size")]
     pub tab_size: usize,
     #[serde(default)]
@@ -134,6 +137,12 @@ pub enum InstallSpec {
     RustupComponent {
         component: String,
     },
+    /// A .NET tool from NuGet, `dotnet tool install` into a folder of its own, using the
+    /// project's .NET SDK. NuGet verifies the package's signature.
+    DotnetTool {
+        package: String,
+        version: String,
+    },
     /// Can't be installed by us; the hint says how.
     Manual {
         hint: String,
@@ -143,7 +152,9 @@ pub enum InstallSpec {
 impl InstallSpec {
     pub fn version(&self) -> Option<&str> {
         match self {
-            Self::GoInstall { version, .. } | Self::Download { version, .. } => Some(version),
+            Self::GoInstall { version, .. }
+            | Self::Download { version, .. }
+            | Self::DotnetTool { version, .. } => Some(version),
             Self::Npm { packages } => packages
                 .first()
                 .and_then(|p| p.rsplit_once('@'))
@@ -173,6 +184,9 @@ pub enum ArchiveFormat {
     Zip,
     #[serde(rename = "tar.gz")]
     TarGz,
+    /// The executable itself, not in an archive.
+    #[serde(rename = "binary")]
+    Binary,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -192,7 +206,19 @@ pub struct SdkSpec {
     pub env: BTreeMap<String, String>,
 }
 
-pub const GRAMMARS: &[&str] = &["rust", "go", "odin", "typescript", "tsx", "javascript"];
+pub const GRAMMARS: &[&str] = &[
+    "rust",
+    "go",
+    "odin",
+    "typescript",
+    "tsx",
+    "javascript",
+    "csharp",
+    "json",
+    "html",
+    "css",
+    "markdown",
+];
 
 /// Parses a manifest and checks that it makes sense, naming the problem if it doesn't.
 pub fn parse_manifest(source: &str, origin: &str) -> Result<Manifest> {
@@ -212,6 +238,16 @@ fn validate(manifest: &Manifest) -> Result<()> {
                 "language {} uses an unknown grammar {:?}",
                 language.name,
                 language.grammar
+            );
+        }
+        if language
+            .block_comment
+            .as_ref()
+            .is_some_and(|b| b.len() != 2)
+        {
+            bail!(
+                "in language {}, block_comment should be what opens and what closes a comment",
+                language.name
             );
         }
         if language.extensions.is_empty() {

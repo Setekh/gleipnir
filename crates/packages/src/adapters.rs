@@ -1056,9 +1056,12 @@ mod tests {
     }
 
     #[test]
-    fn every_builtin_package_has_an_adapter() {
+    fn every_builtin_package_with_a_debugger_has_an_adapter() {
+        // Those without, like JSON's or Markdown's, have nothing to run.
         for package in crate::registry().packages() {
-            assert!(adapter_for(package.id()).is_some(), "{}", package.id());
+            if package.manifest.debugger.is_some() {
+                assert!(adapter_for(package.id()).is_some(), "{}", package.id());
+            }
         }
     }
 
@@ -1188,12 +1191,9 @@ mod tests {
     fn a_project_without_any_of_these_has_no_targets() {
         let dir = project(&[("notes.txt", "")]);
         for package in crate::registry().packages() {
-            assert!(
-                adapter_for(package.id())
-                    .unwrap()
-                    .run_targets(dir.path())
-                    .is_empty()
-            );
+            if let Some(adapter) = adapter_for(package.id()) {
+                assert!(adapter.run_targets(dir.path()).is_empty());
+            }
         }
     }
 

@@ -122,7 +122,15 @@ pub fn is_entry_point(language: Language, line: &str) -> bool {
                 && line["main".len()..].trim_start().starts_with("::")
                 && line.contains("proc")
         }
-        Language::TypeScript | Language::Tsx | Language::JavaScript => false,
+        // Scripts run whole, and C# has no run configurations yet.
+        Language::TypeScript
+        | Language::Tsx
+        | Language::JavaScript
+        | Language::CSharp
+        | Language::Json
+        | Language::Html
+        | Language::Css
+        | Language::Markdown => false,
     }
 }
 

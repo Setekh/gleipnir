@@ -57,6 +57,14 @@ pub struct ResolveContext<'a> {
     pub env: &'a Env,
 }
 
+/// A system path, with a leading `~/` meaning the home folder, as for tools installed per user.
+fn expand_home(path: &str) -> PathBuf {
+    match (path.strip_prefix("~/"), std::env::var_os("HOME")) {
+        (Some(rest), Some(home)) => PathBuf::from(home).join(rest),
+        _ => PathBuf::from(path),
+    }
+}
+
 /// Where an installed copy of a tool lives, given how it's installed.
 pub fn managed_binary(name: &str, spec: &ToolSpec, managed_dir: &Path) -> Option<PathBuf> {
     let install = spec.install.as_ref()?;
@@ -65,6 +73,7 @@ pub fn managed_binary(name: &str, spec: &ToolSpec, managed_dir: &Path) -> Option
         InstallSpec::GoInstall { .. } => dir.join("bin").join(&spec.binary),
         InstallSpec::Npm { .. } => dir.join("node_modules/.bin").join(&spec.binary),
         InstallSpec::Download { binary, .. } => dir.join(platform_binary(binary)),
+        InstallSpec::DotnetTool { .. } => dir.join(&spec.binary),
         InstallSpec::RustupComponent { .. } | InstallSpec::Manual { .. } => return None,
     })
 }
@@ -133,7 +142,7 @@ pub fn resolve_tool(name: &str, spec: &ToolSpec, cx: &ResolveContext) -> Resolut
     candidates.extend(
         spec.system_paths
             .iter()
-            .map(|p| (ToolSource::System, PathBuf::from(p))),
+            .map(|p| (ToolSource::System, expand_home(p))),
     );
 
     for (source, path) in candidates {

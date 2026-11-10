@@ -8,6 +8,7 @@ pub mod git_ops;
 pub mod scan;
 pub mod search;
 pub mod tree;
+pub mod unity;
 pub mod watch;
 
 pub use git::{

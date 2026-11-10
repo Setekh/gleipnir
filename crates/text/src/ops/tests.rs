@@ -58,6 +58,7 @@ fn render(buffer: &Buffer, selections: &SelectionSet) -> String {
 fn config() -> EditConfig {
     EditConfig {
         line_comment: Some("//".to_string()),
+        block_comment: None,
         ..EditConfig::default()
     }
 }
@@ -406,6 +407,24 @@ fn comment_toggle_comments_everything_if_any_line_is_not_commented() {
         run("[// a\nb]", |cx| drop(cx.toggle_line_comment())),
         "// [// a\n// b]"
     );
+}
+
+#[test]
+fn without_a_line_comment_each_line_gets_a_block_comment_and_loses_it_again() {
+    // CSS's, as `<` and `>` mark selections here.
+    let css = EditConfig {
+        line_comment: None,
+        block_comment: Some(("/*".to_string(), "*/".to_string())),
+        ..config()
+    };
+    let toggle = |text| run_with(&css, text, |cx| drop(cx.toggle_line_comment()));
+    assert_eq!(toggle("  a { }|"), "  /* a { } */|");
+    assert_eq!(toggle("  /* a { } */|"), "  a { }|");
+    assert_eq!(toggle("/*a { }*/|"), "a { }|");
+    // The selection starts after the marker, as with line comments.
+    assert_eq!(toggle("[a\n\nb]"), "/* [a */\n\n/* b */]");
+    // Any line not yet commented means commenting them all.
+    assert_eq!(toggle("[/* a */\nb]"), "/* [/* a */ */\n/* b */]");
 }
 
 #[test]

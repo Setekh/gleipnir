@@ -1,0 +1,26 @@
+# HTML, with the language server VS Code uses, which also completes and checks the CSS and
+# JavaScript inside it. Unity's UI Toolkit layouts, UXML, read as HTML for highlighting.
+[package]
+id = "html"
+name = "HTML"
+version = "0.1.0"
+
+[[language]]
+name = "HTML"
+grammar = "html"
+extensions = ["html", "htm", "xhtml", "uxml"]
+block_comment = ["<!--", "-->"]
+tab_size = 2
+pairs = ["()", "[]", "{}", "\"\"", "''"]
+
+[server]
+tool = "vscode-html-language-server"
+args = ["--stdio"]
+
+[server.initialization_options]
+provideFormatter = true
+embeddedLanguages = { css = true, javascript = true }
+
+[tool.vscode-html-language-server]
+binary = "vscode-html-language-server"
+install = { kind = "npm", packages = ["vscode-langservers-extracted@4.10.0"] }

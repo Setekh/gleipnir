@@ -118,11 +118,18 @@ collapses into few parses.
 
 The grammars' highlight queries need care, as they were written for different editors:
 
-- **Precedence differs.** Go expects the first matching pattern to win on a node, the others the
-  last. See `first_pattern_wins`.
+- **Precedence differs.** Go and JSON expect the first matching pattern to win on a node, the
+  others the last. See `first_pattern_wins`.
 - **Odin's query uses Neovim's `#lua-match?`.** tree-sitter doesn't evaluate that, so without our
   handling every identifier matches those patterns.
 - **Rust's query has an upstream bug** in its constant pattern, corrected by an override query.
+- **Markdown is two grammars.** The buffer's tree is the block grammar's: headings, lists, code
+  blocks. The text in each block, with its emphasis, code and links, has a grammar of its own,
+  which highlighting parses over each block in view, in place, so its positions are the
+  document's, and paints over the block's colours.
+- **Markup languages map onto the same colours.** A JSON key is a property, CSS's at-rules are
+  keywords, and Markdown's headings, code, links and emphasis take keyword, string, label and
+  parameter colours, so themes need nothing new.
 
 ## Search Everywhere
 
@@ -163,8 +170,11 @@ Three separate concepts that are easy to blur together:
 
 ### Packages
 
-A package is a directory with a manifest. The five built-in languages use this same format, embedded
-in the binary, so the system is exercised from day one rather than added on later.
+A package is a directory with a manifest. The built-in languages use this same format, embedded
+in the binary, so the system is exercised from day one rather than added on later. Markdown, JSON,
+HTML, CSS and C# are packages like the others, with servers from npm (VS Code's JSON, HTML and CSS
+servers), a release download (Marksman) and a .NET tool (csharp-ls). A language with no line
+comment can give a `block_comment`, which Comment Line then puts around each line.
 
 ```toml
 # packages/go/package.toml
@@ -558,6 +568,11 @@ credentials or their traffic. The `agent` crate is the MCP server.
   than 104 bytes on macOS, and the temporary and state folders can be. A socket is named
   `<pid>-<n>.sock` and removed when its window closes and when Gleipnir exits; ones a crash leaves
   are removed at the next start, once their process is gone.
+- **A file opened from outside goes to the window that has it.** `gleipnir <file>[:line[:col]]`,
+  as Unity starts its script editor, first offers the file to each running window's socket with
+  `open_file` and `activate`. Each window's tools only reach its own project's files, so the one
+  that holds the file accepts it, and the new process exits; with none, it starts as usual. See
+  [UNITY.md](UNITY.md).
 - **`gleipnir mcp` is only a pipe.** An agent starts it as a stdio MCP server; it connects to the
   socket named by `GLEIPNIR_SOCKET` and copies bytes both ways. It's handled at the top of `main`,
   before GPUI, so it starts at once. `mcp_config_json` writes the configuration Claude Code's

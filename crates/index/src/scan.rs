@@ -16,6 +16,9 @@ pub fn scan_files(root: &Path) -> Vec<Arc<str>> {
 /// The same, for one folder within the project. Ignore rules still come from the whole project.
 pub fn scan_under(root: &Path, dir: &Path) -> Vec<Arc<str>> {
     let found = Mutex::new(Vec::new());
+    // In a Unity project, what Unity makes isn't the project's: its folders and `.meta` files.
+    let unity = crate::unity::is_unity_project(root);
+    let unity_root = root.to_path_buf();
     let walker = WalkBuilder::new(dir)
         .hidden(false)
         .git_ignore(true)
@@ -25,7 +28,17 @@ pub fn scan_under(root: &Path, dir: &Path) -> Vec<Arc<str>> {
         .require_git(false)
         .parents(true)
         .follow_links(false)
-        .filter_entry(|entry| entry.file_name() != ".git")
+        .filter_entry(move |entry| {
+            if entry.file_name() == ".git" {
+                return false;
+            }
+            !(unity
+                && (crate::unity::is_generated(&unity_root, entry.path())
+                    || entry
+                        .file_name()
+                        .to_str()
+                        .is_some_and(crate::unity::is_meta)))
+        })
         .build_parallel();
     walker.run(|| {
         let found = &found;

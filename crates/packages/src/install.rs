@@ -29,6 +29,9 @@ pub fn describe_install(name: &str, spec: &ToolSpec) -> String {
             format!("go install {module}@{version}")
         }
         Some(InstallSpec::Npm { packages }) => format!("npm install {}", packages.join(" ")),
+        Some(InstallSpec::DotnetTool { package, version }) => {
+            format!("dotnet tool install {package} --version {version}")
+        }
         Some(InstallSpec::Download {
             version, assets, ..
         }) => match pick_asset(assets) {
@@ -157,13 +160,36 @@ fn install_into(
             cx.env.apply(&mut command);
             run(&mut command, "npm install")
         }
+        InstallSpec::DotnetTool { package, version } => {
+            let dotnet = cx
+                .env
+                .which("dotnet")
+                .ok_or_else(|| anyhow!(".NET isn't available. Choose a .NET SDK first"))?;
+            let mut command = Command::new(dotnet);
+            command
+                .args([
+                    "tool",
+                    "install",
+                    package,
+                    "--version",
+                    version,
+                    "--tool-path",
+                ])
+                .arg(dir);
+            cx.env.apply(&mut command);
+            run(&mut command, "dotnet tool install")
+        }
         InstallSpec::Download { assets, binary, .. } => {
             let asset = pick_asset(assets)
                 .ok_or_else(|| anyhow!("there's no download for {}", platform_key()))?;
             let bytes = fetch(&asset.url)?;
             verify_sha256(&bytes, &asset.sha256)?;
-            extract(&bytes, asset.format, dir)?;
             let executable = dir.join(platform_binary(binary));
+            if asset.format == ArchiveFormat::Binary {
+                fs::write(&executable, &bytes)?;
+            } else {
+                extract(&bytes, asset.format, dir)?;
+            }
             if !executable.exists() {
                 bail!("the download doesn't contain {}", platform_binary(binary));
             }
@@ -244,6 +270,7 @@ fn extract(bytes: &[u8], format: ArchiveFormat, dir: &Path) -> Result<()> {
             }
             Ok(())
         }
+        ArchiveFormat::Binary => unreachable!("written as it is, not extracted"),
         ArchiveFormat::Zip => {
             let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))?;
             for index in 0..archive.len() {
@@ -464,6 +491,8 @@ mod tests {
     #[test]
     #[ignore]
     fn real_install_of_every_installable_builtin_tool() {
+        // REAL_INSTALL_ONLY=<tool> installs just that one.
+        let only = std::env::var("REAL_INSTALL_ONLY").ok();
         let managed = tempfile::tempdir().unwrap();
         let base = crate::env::user_env();
         for package in crate::registry().packages() {
@@ -480,8 +509,10 @@ mod tests {
                         InstallSpec::GoInstall { .. }
                             | InstallSpec::Npm { .. }
                             | InstallSpec::Download { .. }
+                            | InstallSpec::DotnetTool { .. }
                     )
-                ) {
+                ) || only.as_deref().is_some_and(|only| only != name)
+                {
                     continue;
                 }
                 let started = std::time::Instant::now();

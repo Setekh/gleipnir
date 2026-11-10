@@ -12,6 +12,7 @@ mod bridge;
 mod ide;
 pub mod launch;
 mod proposals;
+pub mod remote;
 pub mod rpc;
 mod socket;
 pub mod tools;

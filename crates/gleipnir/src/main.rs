@@ -21,6 +21,61 @@ const DISK_POLL_INTERVAL: Duration = Duration::from_secs(10);
 struct LaunchTarget {
     root: Option<PathBuf>,
     file: Option<PathBuf>,
+    /// Where in the file, counted from 1, as editors and Unity's `$(Line)` count.
+    line: Option<u32>,
+    column: Option<u32>,
+}
+
+/// The command line: a folder or a file, which may end in `:line` or `:line:column`, and
+/// `--line N` and `--column N` for programs that pass them separately, as Unity can.
+fn parse_arguments(args: impl Iterator<Item = std::ffi::OsString>) -> LaunchTarget {
+    let mut path = None;
+    let (mut line, mut column) = (None, None);
+    let mut args = args.peekable();
+    while let Some(arg) = args.next() {
+        let number = |value: Option<std::ffi::OsString>| {
+            value.and_then(|v| v.to_str().and_then(|v| v.parse::<u32>().ok()))
+        };
+        match arg.to_str() {
+            Some("--line" | "-l") => line = number(args.next()),
+            Some("--column" | "-c") => column = number(args.next()),
+            _ => path = Some(PathBuf::from(arg)),
+        }
+    }
+    let mut target = launch_target(path.map(|path| split_position(path, &mut line, &mut column)));
+    target.line = line;
+    target.column = column;
+    target
+}
+
+/// `file.cs:12` or `file.cs:12:4`, when there's no file with that name.
+fn split_position(path: PathBuf, line: &mut Option<u32>, column: &mut Option<u32>) -> PathBuf {
+    if path.exists() {
+        return path;
+    }
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    let mut parts = text.rsplitn(3, ':');
+    let last = parts.next().and_then(|n| n.parse::<u32>().ok());
+    let middle = parts.next();
+    let first = parts.next();
+    match (first, middle, last) {
+        (Some(file), Some(l), Some(c)) if l.parse::<u32>().is_ok() => {
+            *line = line.or(l.parse().ok());
+            *column = column.or(Some(c));
+            PathBuf::from(file)
+        }
+        (None, Some(file), Some(l)) => {
+            *line = line.or(Some(l));
+            PathBuf::from(file)
+        }
+        (Some(file), Some(rest), Some(l)) => {
+            *line = line.or(Some(l));
+            PathBuf::from(format!("{file}:{rest}"))
+        }
+        _ => path,
+    }
 }
 
 /// A folder opens as a project. A file opens in the project it belongs to. With neither, the last
@@ -30,14 +85,20 @@ fn launch_target(argument: Option<PathBuf>) -> LaunchTarget {
         Some(path) if path.is_dir() => LaunchTarget {
             root: Some(path),
             file: None,
+            line: None,
+            column: None,
         },
         Some(path) => LaunchTarget {
             root: project_root_for(&absolute(&path)),
-            file: Some(path),
+            file: Some(absolute(&path)),
+            line: None,
+            column: None,
         },
         None => LaunchTarget {
             root: last_project(),
             file: None,
+            line: None,
+            column: None,
         },
     }
 }
@@ -109,8 +170,15 @@ fn main() {
     if args.next().is_some_and(|first| first == "mcp") {
         std::process::exit(gleipnir_agent::mcp_main(args.collect()));
     }
-    let target = launch_target(std::env::args_os().nth(1).map(PathBuf::from));
+    let target = parse_arguments(std::env::args_os().skip(1));
     let script = std::env::var_os("GLEIPNIR_SCRIPT").map(PathBuf::from);
+    // A file goes to the window that already has its project, as when Unity opens a script.
+    if script.is_none()
+        && let Some(file) = &target.file
+        && gleipnir_agent::remote::open_in_running_window(file, target.line, target.column)
+    {
+        return;
+    }
     // Asking the login shell for its environment takes about a second, so start it now. An app
     // started from the Dock has a bare PATH without it, and wouldn't find any tools.
     gleipnir_packages::env::warm_up();
@@ -186,9 +254,15 @@ fn main() {
 
             let window = open_project_window(target.root.clone(), false, cx);
             if let Some(file) = target.file.clone() {
+                let position = target.line.map(|line| {
+                    (
+                        line.saturating_sub(1) as usize,
+                        target.column.map_or(0, |c| c.saturating_sub(1) as usize),
+                    )
+                });
                 window
                     .update(cx, |workspace, window, cx| {
-                        workspace.open_path(file, window, cx).detach();
+                        workspace.open_path_at(file, position, window, cx).detach();
                     })
                     .ok();
             }
@@ -369,4 +443,39 @@ fn set_menus(cx: &mut App) {
         }
     }
     cx.set_menus(menus);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_position_comes_after_the_file_or_in_its_own_arguments() {
+        let parse = |args: &[&str]| {
+            let target = parse_arguments(args.iter().map(std::ffi::OsString::from));
+            let name = target
+                .file
+                .as_ref()
+                .and_then(|f| f.file_name())
+                .map(|n| n.to_string_lossy().into_owned());
+            (name, target.line, target.column)
+        };
+        let some = |s: &str| Some(s.to_string());
+        assert_eq!(
+            parse(&["/nowhere/Player.cs:12"]),
+            (some("Player.cs"), Some(12), None)
+        );
+        assert_eq!(
+            parse(&["/nowhere/Player.cs:12:4"]),
+            (some("Player.cs"), Some(12), Some(4))
+        );
+        assert_eq!(
+            parse(&["/nowhere/Player.cs", "--line", "7", "--column", "2"]),
+            (some("Player.cs"), Some(7), Some(2))
+        );
+        assert_eq!(
+            parse(&["/nowhere/Player.cs"]),
+            (some("Player.cs"), None, None)
+        );
+    }
 }

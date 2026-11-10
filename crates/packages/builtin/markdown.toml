@@ -1,0 +1,33 @@
+# Markdown, with Marksman: links between documents and to headings, their completion and
+# renaming, and broken links as problems.
+[package]
+id = "markdown"
+name = "Markdown"
+version = "0.1.0"
+
+[[language]]
+name = "Markdown"
+grammar = "markdown"
+extensions = ["md", "markdown"]
+block_comment = ["<!--", "-->"]
+tab_size = 2
+# No quotes: prose is full of apostrophes.
+pairs = ["()", "[]", "``"]
+
+[server]
+tool = "marksman"
+args = ["server"]
+
+[tool.marksman]
+binary = "marksman"
+
+[tool.marksman.install]
+kind = "download"
+version = "2026-02-08"
+binary = "marksman"
+assets = [
+    { platform = "macos-aarch64", format = "binary", url = "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-macos", sha256 = "6a801c17b5ac0dba69787c5282b3b3bd416e66c96253fae098d311c6bbd1833b" },
+    { platform = "macos-x86_64", format = "binary", url = "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-macos", sha256 = "6a801c17b5ac0dba69787c5282b3b3bd416e66c96253fae098d311c6bbd1833b" },
+    { platform = "linux-aarch64", format = "binary", url = "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-linux-arm64", sha256 = "db8e124527f7f8048e3e6c91821b9c52ef173d92c01e47d221bf1337afd962fb" },
+    { platform = "linux-x86_64", format = "binary", url = "https://github.com/artempyanykh/marksman/releases/download/2026-02-08/marksman-linux-x64", sha256 = "be5098e8213219269c47fc0d916a66fa31ce0602ec967475c722260aabf26087" },
+]

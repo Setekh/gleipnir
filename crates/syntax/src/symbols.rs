@@ -54,9 +54,11 @@ pub struct Symbol {
     pub column: u32,
 }
 
-/// Each pattern captures the declaration as `@<kind>` and its name as `@name`.
-fn query_source(language: Language) -> &'static str {
-    match language {
+/// Each pattern captures the declaration as `@<kind>` and its name as `@name`. Data and markup
+/// languages declare nothing worth searching for: Markdown's headings would bury a project's code
+/// in every README's "Usage", and Marksman gives a file's structure its headings.
+fn query_source(language: Language) -> Option<&'static str> {
+    Some(match language {
         Language::Rust => {
             r#"
             (struct_item name: (type_identifier) @name) @class
@@ -97,8 +99,28 @@ fn query_source(language: Language) -> &'static str {
         }
         Language::JavaScript => JS_QUERY,
         Language::TypeScript | Language::Tsx => TS_QUERY,
-    }
+        Language::CSharp => CSHARP_QUERY,
+        Language::Json | Language::Html | Language::Css | Language::Markdown => return None,
+    })
 }
+
+const CSHARP_QUERY: &str = r#"
+    (class_declaration name: (identifier) @name) @class
+    (record_declaration name: (identifier) @name) @class
+    (struct_declaration name: (identifier) @name) @class
+    (delegate_declaration name: (identifier) @name) @class
+    (interface_declaration name: (identifier) @name) @interface
+    (enum_declaration name: (identifier) @name) @enum
+    (enum_member_declaration name: (identifier) @name) @enum_member
+    (method_declaration name: (identifier) @name) @method
+    (constructor_declaration name: (identifier) @name) @method
+    (property_declaration name: (identifier) @name) @variable
+    (event_declaration name: (identifier) @name) @variable
+    (event_field_declaration
+        (variable_declaration (variable_declarator name: (identifier) @name))) @variable
+    (namespace_declaration name: (_) @name) @module
+    (file_scoped_namespace_declaration name: (_) @name) @module
+"#;
 
 /// JavaScript's grammar has no type declarations, so it gets a subset of TypeScript's patterns.
 const JS_QUERY: &str = r#"
@@ -130,14 +152,15 @@ struct SymbolQuery {
     name_capture: u32,
 }
 
-fn symbol_query(language: Language) -> &'static SymbolQuery {
+fn symbol_query(language: Language) -> Option<&'static SymbolQuery> {
     static QUERIES: OnceLock<HashMap<Language, SymbolQuery>> = OnceLock::new();
     QUERIES
         .get_or_init(|| {
             Language::ALL
                 .into_iter()
-                .map(|language| {
-                    let query = Query::new(&language.grammar(), query_source(language))
+                .filter_map(|language| Some((language, query_source(language)?)))
+                .map(|(language, source)| {
+                    let query = Query::new(&language.grammar(), source)
                         .unwrap_or_else(|e| panic!("{language:?} symbol query: {e}"));
                     let name_capture = query
                         .capture_index_for_name("name")
@@ -153,7 +176,6 @@ fn symbol_query(language: Language) -> &'static SymbolQuery {
                 .collect()
         })
         .get(&language)
-        .expect("every language has a symbol query")
 }
 
 fn kind_for_capture(name: &str) -> Option<SymbolKind> {
@@ -186,6 +208,10 @@ const FUNCTION_SCOPES: &[&str] = &[
     "method_definition",
     "generator_function_declaration",
     "closure_expression",
+    "constructor_declaration",
+    "local_function_statement",
+    "lambda_expression",
+    "accessor_declaration",
 ];
 
 fn inside_function(node: Node) -> bool {
@@ -206,9 +232,10 @@ fn text<'a>(node: Node, source: &'a str) -> &'a str {
 /// What a declaration belongs to: the type of a Rust `impl`, a Go method's receiver, the class of a
 /// JavaScript method, and so on. Only the nearest one, which is what a person would look for.
 fn container_of(node: Node, source: &str) -> Option<String> {
-    if node.kind() == "method_declaration" {
+    if node.kind() == "method_declaration"
+        && let Some(receiver) = node.child_by_field_name("receiver")
+    {
         // A Go method's container is its receiver's type, with any pointer stripped.
-        let receiver = node.child_by_field_name("receiver")?;
         let mut stack = vec![receiver];
         while let Some(n) = stack.pop() {
             if n.kind() == "type_identifier" {
@@ -230,6 +257,9 @@ fn container_of(node: Node, source: &str) -> Option<String> {
             | "abstract_class_declaration"
             | "interface_declaration"
             | "internal_module"
+            | "struct_declaration"
+            | "record_declaration"
+            | "enum_declaration"
             | "class" => parent.child_by_field_name("name"),
             "type_spec" => parent.child_by_field_name("name"),
             _ => None,
@@ -251,7 +281,9 @@ pub fn extract_symbols(language: Language, source: &str) -> Vec<Symbol> {
     let Some(tree) = parser.parse(source, None) else {
         return Vec::new();
     };
-    let symbol_query = symbol_query(language);
+    let Some(symbol_query) = symbol_query(language) else {
+        return Vec::new();
+    };
     let query = &symbol_query.query;
     let capture_names = query.capture_names();
 
@@ -455,6 +487,42 @@ mod tests {
                 "function Tools::inner",
             ]
         );
+    }
+
+    #[test]
+    fn csharp_declarations_belong_to_their_types() {
+        let source = "namespace Game;\n\npublic interface IDamageable { void Hit(int amount); }\n\npublic class Player : MonoBehaviour, IDamageable\n{\n    public int Health { get; private set; }\n    public event System.Action Died;\n    public Player() {}\n    public void Hit(int amount) { void Local() {} }\n}\n\npublic struct Stats { public float Speed() => 1f; }\npublic enum Team { Red, Blue }\npublic record Score(int Value);\n";
+        assert_eq!(
+            summary(Language::CSharp, source),
+            [
+                "module Game",
+                "interface IDamageable",
+                "method IDamageable::Hit",
+                "class Player",
+                "variable Player::Health",
+                "variable Player::Died",
+                "method Player::Player",
+                "method Player::Hit",
+                "class Stats",
+                "method Stats::Speed",
+                "enum Team",
+                "enum member Team::Red",
+                "enum member Team::Blue",
+                "class Score",
+            ]
+        );
+    }
+
+    #[test]
+    fn markup_languages_have_no_symbols() {
+        for (language, source) in [
+            (Language::Markdown, "# Usage\n"),
+            (Language::Json, "{ \"a\": 1 }"),
+            (Language::Html, "<p id=\"a\"></p>"),
+            (Language::Css, ".a { color: red; }"),
+        ] {
+            assert!(extract_symbols(language, source).is_empty(), "{language:?}");
+        }
     }
 
     #[test]

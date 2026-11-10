@@ -165,6 +165,7 @@ const TOOLS: &[Tool] = &[
                     "column": { "type": "integer", "minimum": 1, "description": "Column, from 1, counting characters (default 1)" },
                     "end_line": { "type": "integer", "minimum": 1, "description": "Selects from line and column to here" },
                     "end_column": { "type": "integer", "minimum": 1, "description": "Column the selection ends before (default: the end of end_line)" },
+                    "activate": { "type": "boolean", "description": "Also brings the window to the front with keyboard focus in the editor, as when the person opens the file themselves (default false)" },
                 },
                 "required": ["path"],
                 "additionalProperties": false,
@@ -341,6 +342,8 @@ pub enum ToolCall {
         at: Option<Position>,
         /// Where a selection from `at` ends; a column of `None` is the end of the line.
         select_to: Option<(usize, Option<usize>)>,
+        /// Brings the window forward and focuses the editor, as for a file opened from outside.
+        activate: bool,
     },
     EditFile(Edit),
     SaveFile(FilePath),
@@ -419,6 +422,7 @@ pub fn parse(name: &str, arguments: &Value, root: &Path) -> Result<ToolCall, Str
                     column: column.unwrap_or(1),
                 }),
                 select_to: end_line.map(|end| (end, end_column)),
+                activate: args.optional_bool("activate")?.unwrap_or(false),
             }
         }
         "edit_file" => ToolCall::EditFile(edit(&args, root)?),

@@ -40,6 +40,8 @@ pub struct Row {
 struct IgnoreRules {
     root: PathBuf,
     matchers: Vec<Gitignore>,
+    /// A Unity project, whose generated folders count as ignored whatever `.gitignore` says.
+    unity: bool,
 }
 
 impl IgnoreRules {
@@ -65,6 +67,7 @@ impl IgnoreRules {
         Self {
             root: root.to_path_buf(),
             matchers,
+            unity: crate::unity::is_unity_project(root),
         }
     }
 
@@ -78,6 +81,9 @@ impl IgnoreRules {
 
     /// Git's precedence: the deepest file with an opinion decides, and global rules come last.
     fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+        if self.unity && crate::unity::is_generated(&self.root, path) {
+            return true;
+        }
         for matcher in self.matchers.iter().rev() {
             let matched = matcher.matched_path_or_any_parents(path, is_dir);
             if matched.is_ignore() {
@@ -117,6 +123,10 @@ pub fn read_directory(root: &Path, dir: &Path) -> io::Result<Vec<DirEntry>> {
         let item = item?;
         let name = item.file_name().to_string_lossy().into_owned();
         if HIDDEN_NAMES.contains(&name.as_str()) {
+            continue;
+        }
+        // A Unity asset's `.meta` goes wherever the asset does, so it needn't be seen.
+        if rules.unity && crate::unity::is_meta(&name) {
             continue;
         }
         let path = item.path();
@@ -371,6 +381,37 @@ mod tests {
 
     fn names(entries: &[DirEntry]) -> Vec<&str> {
         entries.iter().map(|e| e.name.as_str()).collect()
+    }
+
+    #[test]
+    fn a_unity_projects_metas_are_hidden_and_its_generated_folders_ignored() {
+        let dir = project(&[
+            "ProjectSettings/ProjectVersion.txt",
+            "Assets/Player.cs",
+            "Assets/Player.cs.meta",
+            "Assets/Art/",
+            "Assets/Art.meta",
+            "Library/ScriptAssemblies/Game.dll",
+            "Packages/manifest.json",
+        ]);
+        let root = dir.path();
+        let assets = read_directory(root, &root.join("Assets")).unwrap();
+        assert_eq!(names(&assets), ["Art", "Player.cs"]);
+        let top = read_directory(root, root).unwrap();
+        let library = top.iter().find(|e| e.name == "Library").unwrap();
+        assert!(library.ignored);
+        assert!(!top.iter().find(|e| e.name == "Assets").unwrap().ignored);
+
+        let files = crate::scan_files(root);
+        let files: Vec<&str> = files.iter().map(|f| &**f).collect();
+        assert_eq!(
+            files,
+            [
+                "Assets/Player.cs",
+                "Packages/manifest.json",
+                "ProjectSettings/ProjectVersion.txt"
+            ]
+        );
     }
 
     fn ignored(root: &Path, dir: &str, name: &str) -> bool {

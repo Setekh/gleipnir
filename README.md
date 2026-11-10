@@ -1,21 +1,24 @@
 # Gleipnir
 
-An IDE written in Rust on [GPUI](https://gpui.rs), for TypeScript, JavaScript, Odin, Rust and Go.
+An IDE written in Rust on [GPUI](https://gpui.rs), for TypeScript, JavaScript, Odin, Rust, Go and
+C#, with Markdown, JSON, HTML and CSS, and Unity projects (see [docs/UNITY.md](docs/UNITY.md)).
 
 Status: a project-based editor with a file tree, tabs, split panes, image and SVG previews,
 multi-cursor editing, IntelliJ-style Search Everywhere, per-project SDKs with managed tool installs,
 and code intelligence from language servers: completion, documentation, go to declaration and
 implementations, usages, problems, rename, quick fixes and reformatting. Programs run and debug from
-the IDE in all five languages, IntelliJ style: breakpoints in the gutter (conditions, hit counts,
-logpoints), stepping, frames, a variables tree with watches, values shown beside the code, and a
-console. Git works as in IntelliJ too: changes in the gutter, the Commit window, a log with its
-branch graph, blame, merges and interactive rebase. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
-for the design and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
+the IDE in TypeScript, JavaScript, Odin, Rust and Go, IntelliJ style: breakpoints in the gutter
+(conditions, hit counts, logpoints), stepping, frames, a variables tree with watches, values shown
+beside the code, and a console. Git works as in IntelliJ too: changes in the gutter, the Commit
+window, a log with its branch graph, blame, merges and interactive rebase. See
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and [docs/ROADMAP.md](docs/ROADMAP.md)
+for the plan.
 
 ## Building
 
 Requires [rustup](https://rustup.rs); `rust-toolchain.toml` selects the compiler version. On macOS you
-also need Xcode. On Arch or Omarchy, `sudo script/linux-deps` installs the system packages.
+also need Xcode. On Arch or Omarchy, `sudo script/linux-deps` installs the system packages. C#
+needs the .NET SDK.
 
     cargo run -p gleipnir -- path/to/project   # a folder, or a file in one; the first build takes minutes
     cargo test --workspace
@@ -27,6 +30,7 @@ also need Xcode. On Arch or Omarchy, `sudo script/linux-deps` installs the syste
     script/e2e                  # drives the real app; needs a display
     PROFILE=release script/e2e perf
     script/e2e code             # real language servers, installed into target/e2e-tools as needed
+    script/e2e languages        # likewise for Markdown, JSON, HTML, CSS and C#
     script/e2e debug            # real debuggers, likewise; E2E_TOOLS=<folder> uses another folder
     script/e2e tests            # the test runner, with cargo, go, odin and npm on the PATH
     GLEIPNIR_TOOLS=~/path/to/state/tools cargo test -p gleipnir-dap --test adapters   # headless

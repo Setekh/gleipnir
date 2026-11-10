@@ -156,13 +156,13 @@ pub fn recent_projects() -> Vec<PathBuf> {
     recent
 }
 
-/// The project a file belongs to: the nearest folder above it that's a repository, or failing that
-/// the folder it's in.
+/// The project a file belongs to: the nearest folder above it that's a repository or a Unity
+/// project, which is often a folder in one, or failing that the folder it's in.
 pub fn project_root_for(path: &Path) -> Option<PathBuf> {
     let start = if path.is_dir() { path } else { path.parent()? };
     start
         .ancestors()
-        .find(|dir| dir.join(".git").exists())
+        .find(|dir| dir.join(".git").exists() || gleipnir_index::unity::is_unity_project(dir))
         .map(Path::to_path_buf)
         .or_else(|| Some(start.to_path_buf()))
 }
@@ -170,6 +170,25 @@ pub fn project_root_for(path: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod persistence_tests {
     use super::*;
+
+    #[test]
+    fn a_unity_project_in_a_repository_is_its_own_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path();
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        let game = repo.join("Game");
+        std::fs::create_dir_all(game.join("ProjectSettings")).unwrap();
+        std::fs::write(game.join("ProjectSettings/ProjectVersion.txt"), "").unwrap();
+        std::fs::create_dir_all(game.join("Assets/Scripts")).unwrap();
+        let script = game.join("Assets/Scripts/Player.cs");
+        std::fs::write(&script, "").unwrap();
+        assert_eq!(project_root_for(&script), Some(game));
+        std::fs::write(repo.join("README.md"), "").unwrap();
+        assert_eq!(
+            project_root_for(&repo.join("README.md")),
+            Some(repo.to_path_buf())
+        );
+    }
 
     #[test]
     fn state_file_names_are_flat() {

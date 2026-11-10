@@ -1,0 +1,24 @@
+# CSS, with the language server VS Code uses. Unity's UI Toolkit style sheets, USS, are CSS.
+[package]
+id = "css"
+name = "CSS"
+version = "0.1.0"
+
+[[language]]
+name = "CSS"
+grammar = "css"
+extensions = ["css", "uss"]
+block_comment = ["/*", "*/"]
+tab_size = 2
+pairs = ["()", "[]", "{}", "\"\"", "''"]
+
+[server]
+tool = "vscode-css-language-server"
+args = ["--stdio"]
+
+[server.initialization_options]
+provideFormatter = true
+
+[tool.vscode-css-language-server]
+binary = "vscode-css-language-server"
+install = { kind = "npm", packages = ["vscode-langservers-extracted@4.10.0"] }

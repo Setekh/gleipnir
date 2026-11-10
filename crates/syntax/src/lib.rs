@@ -34,16 +34,26 @@ pub enum Language {
     TypeScript,
     Tsx,
     JavaScript,
+    CSharp,
+    Json,
+    Html,
+    Css,
+    Markdown,
 }
 
 impl Language {
-    pub const ALL: [Language; 6] = [
+    pub const ALL: [Language; 11] = [
         Language::Rust,
         Language::Go,
         Language::Odin,
         Language::TypeScript,
         Language::Tsx,
         Language::JavaScript,
+        Language::CSharp,
+        Language::Json,
+        Language::Html,
+        Language::Css,
+        Language::Markdown,
     ];
 
     pub fn name(self) -> &'static str {
@@ -54,6 +64,11 @@ impl Language {
             Self::TypeScript => "TypeScript",
             Self::Tsx => "TSX",
             Self::JavaScript => "JavaScript",
+            Self::CSharp => "C#",
+            Self::Json => "JSON",
+            Self::Html => "HTML",
+            Self::Css => "CSS",
+            Self::Markdown => "Markdown",
         }
     }
 
@@ -65,6 +80,13 @@ impl Language {
             Self::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Self::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Self::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
+            Self::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+            Self::Json => tree_sitter_json::LANGUAGE.into(),
+            Self::Html => tree_sitter_html::LANGUAGE.into(),
+            Self::Css => tree_sitter_css::LANGUAGE.into(),
+            // Markdown's block structure. The text inside blocks has a grammar of its own, which
+            // highlighting runs over each block's text in view.
+            Self::Markdown => tree_sitter_md::LANGUAGE.into(),
         }
     }
 }
@@ -209,6 +231,10 @@ impl Syntax {
             "function_expression",
             "function",
             "generator_function_declaration",
+            "constructor_declaration",
+            "local_function_statement",
+            "lambda_expression",
+            "anonymous_method_expression",
         ];
         let tree = self.tree.as_ref()?;
         let mut node = tree.root_node().descendant_for_byte_range(offset, offset)?;

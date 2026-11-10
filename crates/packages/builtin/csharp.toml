@@ -1,0 +1,39 @@
+# C#, with csharp-ls on Roslyn, for .NET projects and Unity's: it opens the solution in the
+# project's folder, which Unity writes once an external editor is set up (see docs/UNITY.md).
+[package]
+id = "csharp"
+name = "C#"
+version = "0.1.0"
+
+[[language]]
+name = "C#"
+grammar = "csharp"
+extensions = ["cs", "csx"]
+line_comment = "//"
+tab_size = 4
+pairs = ["()", "[]", "{}", "\"\"", "''"]
+
+[server]
+tool = "csharp-ls"
+
+[tool.csharp-ls]
+binary = "csharp-ls"
+# Where `dotnet tool install --global` puts it.
+system_paths = ["~/.dotnet/tools/csharp-ls"]
+install = { kind = "dotnet-tool", package = "csharp-ls", version = "0.28.0" }
+
+[sdk]
+kind = "dotnet"
+name = ".NET SDK"
+binary = "dotnet"
+version_args = ["--version"]
+detect = [
+    "env:DOTNET_ROOT",
+    "path:dotnet",
+    "dir:~/.dotnet",
+    "dir:/usr/share/dotnet",
+    "dir:/usr/lib/dotnet",
+    "dir:/usr/local/share/dotnet",
+    "dir:/opt/homebrew/opt/dotnet/libexec",
+]
+env = { DOTNET_ROOT = "{sdk}", PATH = "{sdk}:{PATH}" }

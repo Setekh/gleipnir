@@ -269,6 +269,11 @@ pub fn file_icon(path: &Path) -> FileIcon {
         Some(Language::Odin) => FileIcon::Badge("Od", color(0x82b6ee)),
         Some(Language::TypeScript | Language::Tsx) => FileIcon::Badge("TS", color(0x6fa8e8)),
         Some(Language::JavaScript) => FileIcon::Badge("JS", color(0xe0c65c)),
+        Some(Language::CSharp) => FileIcon::Badge("C#", color(0x9b7fe0)),
+        Some(Language::Json) => FileIcon::Badge("{}", color(0xd8b45a)),
+        Some(Language::Html) => FileIcon::Badge("<>", color(0xe58b5c)),
+        Some(Language::Css) => FileIcon::Badge("#", color(0x6aa6e0)),
+        Some(Language::Markdown) => FileIcon::Badge("M", color(0x8fb0c8)),
         None => FileIcon::Plain,
     }
 }
@@ -313,7 +318,15 @@ mod tests {
             file_icon(Path::new("a.tsx")),
             FileIcon::Badge("TS", _)
         ));
-        assert_eq!(file_icon(Path::new("README.md")), FileIcon::Plain);
+        assert!(matches!(
+            file_icon(Path::new("README.md")),
+            FileIcon::Badge("M", _)
+        ));
+        assert!(matches!(
+            file_icon(Path::new("Assets/Player.cs")),
+            FileIcon::Badge("C#", _)
+        ));
         assert_eq!(file_icon(Path::new("Makefile")), FileIcon::Plain);
+        assert_eq!(file_icon(Path::new("notes.txt")), FileIcon::Plain);
     }
 }

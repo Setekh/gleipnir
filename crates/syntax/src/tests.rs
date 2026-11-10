@@ -48,7 +48,94 @@ fn sample(language: Language) -> &'static str {
         }
         Language::Tsx => "const V = (p: { n: string }) => <div className=\"a\">{p.n}</div>;\n",
         Language::JavaScript => "export function f(a) { return <b>{a}</b>; }\n",
+        Language::CSharp => {
+            "using System;\n\nnamespace App;\n\npublic class Player : MonoBehaviour\n{\n    [SerializeField] private float speed = 5f;\n\n    void Update()\n    {\n        transform.Translate(Vector3.forward * speed * Time.deltaTime);\n    }\n}\n"
+        }
+        Language::Json => "{\n  \"name\": \"app\",\n  \"version\": 1,\n  \"private\": true\n}\n",
+        Language::Html => {
+            "<!doctype html>\n<html>\n  <body class=\"main\">\n    <!-- note -->\n    <p>Hi</p>\n  </body>\n</html>\n"
+        }
+        Language::Css => {
+            "@media (min-width: 600px) {\n  .card > a:hover { color: #fff; margin: 0 4px; }\n}\n"
+        }
+        Language::Markdown => {
+            "# Title\n\nSome *emphasis* and `code`.\n\n```rust\nfn main() {}\n```\n"
+        }
     }
+}
+
+#[test]
+fn markup_and_csharp_highlight_by_role() {
+    let json = "{ \"name\": \"app\", \"n\": 1, \"ok\": true }";
+    assert_eq!(
+        kind_of(Language::Json, json, "\"name\""),
+        Some(HighlightKind::Property)
+    );
+    assert_eq!(
+        kind_of(Language::Json, json, "\"app\""),
+        Some(HighlightKind::String)
+    );
+    assert_eq!(
+        kind_of(Language::Json, json, "1"),
+        Some(HighlightKind::Number)
+    );
+    assert_eq!(
+        kind_of(Language::Json, json, "true"),
+        Some(HighlightKind::Constant)
+    );
+
+    let html = "<div class=\"a\"><!-- c --></div>";
+    assert_eq!(
+        kind_of(Language::Html, html, "div"),
+        Some(HighlightKind::Tag)
+    );
+    assert_eq!(
+        kind_of(Language::Html, html, "class"),
+        Some(HighlightKind::Attribute)
+    );
+    assert_eq!(
+        kind_of(Language::Html, html, "<!--"),
+        Some(HighlightKind::Comment)
+    );
+
+    let css = "@media screen { .card { color: red; } }";
+    assert_eq!(
+        kind_of(Language::Css, css, "@media"),
+        Some(HighlightKind::Keyword)
+    );
+    assert_eq!(
+        kind_of(Language::Css, css, "color"),
+        Some(HighlightKind::Property)
+    );
+
+    let cs = "class Player { void Update() { int n = 1; } }";
+    assert_eq!(
+        kind_of(Language::CSharp, cs, "class"),
+        Some(HighlightKind::Keyword)
+    );
+    assert_eq!(
+        kind_of(Language::CSharp, cs, "Player"),
+        Some(HighlightKind::Type)
+    );
+    assert_eq!(
+        kind_of(Language::CSharp, cs, "Update"),
+        Some(HighlightKind::Function)
+    );
+
+    // Headings come from the block grammar, emphasis and code from the inline one inside it.
+    let md = "# Title\n\nSome *soft* and `code`.\n";
+    assert_eq!(
+        kind_of(Language::Markdown, md, "Title"),
+        Some(HighlightKind::Keyword)
+    );
+    assert_eq!(
+        kind_of(Language::Markdown, md, "soft"),
+        Some(HighlightKind::Parameter)
+    );
+    assert_eq!(
+        kind_of(Language::Markdown, md, "code"),
+        Some(HighlightKind::String)
+    );
 }
 
 #[test]

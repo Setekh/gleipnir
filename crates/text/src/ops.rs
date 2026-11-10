@@ -16,6 +16,8 @@ pub struct EditConfig {
     pub tab_size: usize,
     pub hard_tabs: bool,
     pub line_comment: Option<String>,
+    /// What opens and closes a comment, for languages with no line comment, like HTML and CSS.
+    pub block_comment: Option<(String, String)>,
     /// Characters that auto-close, as (open, close). Quotes have open == close.
     pub pairs: Vec<(char, char)>,
 }
@@ -26,6 +28,7 @@ impl Default for EditConfig {
             tab_size: 4,
             hard_tabs: false,
             line_comment: None,
+            block_comment: None,
             pairs: vec![('(', ')'), ('[', ']'), ('{', '}'), ('"', '"'), ('\'', '\'')],
         }
     }
@@ -606,7 +609,10 @@ impl EditContext<'_> {
     /// goes at the shallowest indent, so a block keeps its shape. Blank lines are left alone.
     pub fn toggle_line_comment(&mut self) -> Vec<AppliedEdit> {
         let Some(marker) = self.config.line_comment.clone() else {
-            return Vec::new();
+            return match self.config.block_comment.clone() {
+                Some((open, close)) => self.toggle_block_comment_per_line(&open, &close),
+                None => Vec::new(),
+            };
         };
         let lines: Vec<usize> = self
             .selected_lines()
@@ -650,6 +656,52 @@ impl EditContext<'_> {
                 })
                 .collect()
         };
+        self.apply_line_edits(edits)
+    }
+
+    /// Comments each touched line on its own with a block comment, as IntelliJ does in HTML, or
+    /// uncomments them if they all already are. Blank lines are left alone.
+    fn toggle_block_comment_per_line(&mut self, open: &str, close: &str) -> Vec<AppliedEdit> {
+        let lines: Vec<usize> = self
+            .selected_lines()
+            .into_iter()
+            .filter(|&line| !self.buffer.line(line).trim().is_empty())
+            .collect();
+        if lines.is_empty() {
+            return Vec::new();
+        }
+        let wrapped = |text: &str| {
+            let inner = text.trim();
+            inner.len() >= open.len() + close.len()
+                && inner.starts_with(open)
+                && inner.ends_with(close)
+        };
+        let all_commented = lines.iter().all(|&line| wrapped(&self.buffer.line(line)));
+        let mut edits = Vec::new();
+        for &line in &lines {
+            let text = self.buffer.line(line);
+            let start = self.buffer.line_start(line);
+            let indent = text.len() - text.trim_start().len();
+            let end = text.trim_end().len();
+            if all_commented {
+                let mut open_end = indent + open.len();
+                if text[open_end..].starts_with(' ') {
+                    open_end += 1;
+                }
+                let mut close_start = end - close.len();
+                if close_start > open_end && text[..close_start].ends_with(' ') {
+                    close_start -= 1;
+                }
+                edits.push(TextEdit::new(start + indent..start + open_end, ""));
+                edits.push(TextEdit::new(start + close_start..start + end, ""));
+            } else {
+                edits.push(TextEdit::new(
+                    start + indent..start + indent,
+                    format!("{open} "),
+                ));
+                edits.push(TextEdit::new(start + end..start + end, format!(" {close}")));
+            }
+        }
         self.apply_line_edits(edits)
     }
 

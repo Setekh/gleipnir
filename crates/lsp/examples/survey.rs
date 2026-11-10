@@ -28,6 +28,8 @@ struct Sample {
     member_access: (&'static str, usize),
     call_args: (&'static str, usize),
     symbol_query: &'static str,
+    /// A command to run in the project first, like restoring a .NET project's packages.
+    setup: &'static [&'static str],
 }
 
 const SAMPLES: &[Sample] = &[
@@ -51,6 +53,7 @@ const SAMPLES: &[Sample] = &[
         member_access: ("circle.area()", 7),
         call_args: ("scale(circle", 6),
         symbol_query: "Circle",
+        setup: &[],
     },
     Sample {
         package: "go",
@@ -69,6 +72,7 @@ const SAMPLES: &[Sample] = &[
         member_access: ("circle.Area()", 7),
         call_args: ("scale(circle", 6),
         symbol_query: "Circle",
+        setup: &[],
     },
     Sample {
         package: "typescript",
@@ -90,6 +94,7 @@ const SAMPLES: &[Sample] = &[
         member_access: ("circle.area()", 7),
         call_args: ("scale(circle", 6),
         symbol_query: "Circle",
+        setup: &[],
     },
     Sample {
         package: "odin",
@@ -105,9 +110,31 @@ const SAMPLES: &[Sample] = &[
         member_access: ("circle.radius)", 7),
         call_args: ("scale(area", 6),
         symbol_query: "Circle",
+        setup: &[],
+    },
+    Sample {
+        package: "csharp",
+        language_id: "csharp",
+        files: &[
+            (
+                "Sample.csproj",
+                "<Project Sdk=\"Microsoft.NET.Sdk\">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net10.0</TargetFramework>\n  </PropertyGroup>\n</Project>\n",
+            ),
+            (
+                "Program.cs",
+                "using System;\n\nvar circle = new Circle { Radius = 2 };\nvar total = Scale(circle.Area(), 2);\nint broken = \"oops\";\nConsole.WriteLine($\"{total} {broken}\");\n\nstatic double Scale(double value, double factor) => value * factor;\n\npublic interface IShape\n{\n    double Area();\n}\n\npublic class Circle : IShape\n{\n    public double Radius { get; init; }\n\n    public double Area() => 3.14 * Radius * Radius;\n}\n",
+            ),
+        ],
+        main: "Program.cs",
+        usage: ("circle.Area()", 7),
+        declaration: ("public double Area() =>", 14),
+        interface_method: ("double Area();", 7),
+        member_access: ("circle.Area()", 7),
+        call_args: ("Scale(circle", 6),
+        symbol_query: "Circle",
+        setup: &["dotnet", "restore", "--nologo", "-v", "q"],
     },
 ];
-
 fn position(text: &str, (needle, offset): (&str, usize)) -> lsp::Position {
     let at = text
         .find(needle)
@@ -175,6 +202,13 @@ fn main() -> anyhow::Result<()> {
             let full = root.join(path);
             std::fs::create_dir_all(full.parent().unwrap())?;
             std::fs::write(full, text)?;
+        }
+        if let [program, args @ ..] = sample.setup {
+            std::process::Command::new(program)
+                .args(args)
+                .current_dir(&root)
+                .env("DOTNET_NOLOGO", "1")
+                .status()?;
         }
         let package = registry().package(sample.package).unwrap();
         let sdk_spec = package.manifest.sdk.as_ref();

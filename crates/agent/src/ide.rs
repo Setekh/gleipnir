@@ -71,7 +71,8 @@ pub(crate) async fn run(
             path,
             at,
             select_to,
-        } => open_file(workspace, &path, at, select_to, cx).await,
+            activate,
+        } => open_file(workspace, &path, at, select_to, activate, cx).await,
         ToolCall::EditFile(edit) => edit_file(workspace, &edit, cx).await,
         ToolCall::SaveFile(path) => save_file(workspace, &path, cx).await,
         ToolCall::RunTests { path, choice, wait } => {
@@ -772,16 +773,25 @@ async fn open_file(
     path: &FilePath,
     at: Option<Position>,
     select_to: Option<(usize, Option<usize>)>,
+    activate: bool,
     cx: &mut AsyncWindowContext,
 ) -> Outcome {
     let (open, focus) = update(workspace, cx, |w, window, cx| {
         // Showing a file mustn't take the keyboard from where the person is typing, as to the
-        // agent in the terminal. In the editor, it's natural for it to follow.
+        // agent in the terminal. In the editor, it's natural for it to follow. A file opened from
+        // outside, as from Unity, is what the person wants to type in, so it takes the window.
         let in_editor = w
             .panes()
             .iter()
             .any(|pane| pane.focus_handle(cx).contains_focused(window, cx));
-        let focus = if in_editor { None } else { window.focused(cx) };
+        let focus = if in_editor || activate {
+            None
+        } else {
+            window.focused(cx)
+        };
+        if activate {
+            window.activate_window();
+        }
         w.record_position(cx);
         (w.open_path(path.absolute.clone(), window, cx), focus)
     })?;

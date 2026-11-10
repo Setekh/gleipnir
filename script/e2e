@@ -73,6 +73,24 @@ make_code_fixtures() {
     printf 'function total(values: number[]): number {\n  let sum = 0;\n  for (const v of values) {\n    sum += v;\n  }\n  return sum;\n}\n\nconsole.log("total", total([1, 2, 3]));\n' > "$dir/scripts/count.ts"
 }
 
+# Markup and C#: a .NET console project, with Markdown, JSON, HTML and CSS beside it.
+make_language_fixtures() {
+    dir=$1
+    mkdir -p "$dir/web"
+    printf '<Project Sdk="Microsoft.NET.Sdk">\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net10.0</TargetFramework>\n    <Nullable>enable</Nullable>\n  </PropertyGroup>\n</Project>\n' > "$dir/Demo.csproj"
+    printf 'namespace Demo;\n\npublic interface IShape\n{\n    double Area();\n}\n\npublic class Circle : IShape\n{\n    public double Radius { get; init; }\n\n    public double Area() => 3.14 * Radius * Radius;\n}\n' > "$dir/Shapes.cs"
+    printf 'using Demo;\n\nvar circle = new Circle { Radius = 2 };\nSystem.Console.WriteLine(circle.Area());\nint broken = "oops";\n' > "$dir/Program.cs"
+    printf '# Demo\n\nSee [the setup](#setup).\n\n## Setup\n\nRun it.\n' > "$dir/README.md"
+    printf '{\n  "name": "demo",\n  "version" 1\n}\n' > "$dir/config.json"
+    printf '<!doctype html>\n<html>\n  <body>\n    <p class="lead">Hi</p>\n  </body>\n</html>\n' > "$dir/web/index.html"
+    printf '.lead {\n  color: red;\n}\n' > "$dir/web/site.css"
+    # csharp-ls loads the project as it's built, which needs its packages restored.
+    if command -v dotnet > /dev/null; then
+        (cd "$dir" && DOTNET_NOLOGO=1 DOTNET_CLI_TELEMETRY_OPTOUT=1 dotnet restore --nologo -v q > /dev/null)
+    fi
+    git -C "$dir" init -q
+}
+
 # Tests in each language with tests: a crate, a Go module and an Odin package, each with one test
 # that fails.
 make_test_fixtures() {
@@ -97,8 +115,8 @@ make_test_fixtures() {
     printf "const { add } = require('./add')\n\ndescribe('add', () => {\n  it('adds two numbers', () => {\n    expect(add(2, 2)).toBe(4)\n  })\n\n  it('fails on purpose', () => {\n    expect(add(2, 2)).toBe(5)\n  })\n\n  describe('negatives', () => {\n    it('adds them', () => {\n      expect(add(-1, -1)).toBe(-2)\n    })\n  })\n})\n" > "$dir/js/src/add.test.js"
 }
 
-# `code`, `debug` and `tests` drive real language servers, debuggers and test runners, so they
-# only run when asked for.
+# `code`, `languages`, `debug` and `tests` drive real language servers, debuggers and test
+# runners, so they only run when asked for.
 # They install the tools they need as the app does, into E2E_TOOLS, a managed tools folder kept
 # between runs (target/e2e-tools unless given). The others never install anything.
 scripts=${*:-editing workspace search toolchains themes git suggest terminal agent perf}
@@ -106,8 +124,12 @@ failed=0
 for name in $scripts; do
     # The folder is named after the script, which is what shows as the project's name.
     dir="$work/$name/$name"
-    if [ "$name" = code ] || [ "$name" = debug ] || [ "$name" = tests ]; then
-        if [ "$name" = tests ]; then make_test_fixtures "$dir"; else make_code_fixtures "$dir"; fi
+    if [ "$name" = code ] || [ "$name" = languages ] || [ "$name" = debug ] || [ "$name" = tests ]; then
+        case $name in
+            tests) make_test_fixtures "$dir" ;;
+            languages) make_language_fixtures "$dir" ;;
+            *) make_code_fixtures "$dir" ;;
+        esac
         tools=${E2E_TOOLS:-$root/target/e2e-tools}
         mkdir -p "$work/$name/state" "$tools"
         ln -s "$tools" "$work/$name/state/tools"

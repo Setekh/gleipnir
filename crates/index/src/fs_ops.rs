@@ -69,7 +69,8 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Renames within a folder, returning the new path.
+/// Renames within a folder, returning the new path. In a Unity project, its `.meta` is renamed
+/// to match.
 pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf> {
     validate_file_name(new_name)?;
     let parent = path.parent().context("can't rename this")?;
@@ -77,10 +78,19 @@ pub fn rename(path: &Path, new_name: &str) -> Result<PathBuf> {
     if target == path {
         return Ok(target);
     }
+    let meta =
+        crate::unity::meta_of(path).map(|meta| (meta, parent.join(format!("{new_name}.meta"))));
     if !same_file(path, &target) {
         ensure_free(&target)?;
+        if let Some((_, meta_target)) = &meta {
+            ensure_free(meta_target)?;
+        }
     }
     fs::rename(path, &target).with_context(|| format!("can't rename {}", path.display()))?;
+    if let Some((meta, meta_target)) = meta {
+        fs::rename(&meta, &meta_target)
+            .with_context(|| format!("renamed, but can't rename {}", meta.display()))?;
+    }
     Ok(target)
 }
 
@@ -95,18 +105,85 @@ pub fn move_into(path: &Path, dir: &Path) -> Result<PathBuf> {
         return Ok(target);
     }
     ensure_free(&target)?;
+    // A Unity asset's `.meta` goes with it, so Unity still knows it by its GUID.
+    let meta = crate::unity::meta_of(path).and_then(|meta| {
+        let meta_target = dir.join(meta.file_name()?);
+        Some((meta, meta_target))
+    });
+    if let Some((_, meta_target)) = &meta {
+        ensure_free(meta_target)?;
+    }
     fs::rename(path, &target).with_context(|| format!("can't move {}", path.display()))?;
+    if let Some((meta, meta_target)) = meta {
+        fs::rename(&meta, &meta_target)
+            .with_context(|| format!("moved, but can't move {}", meta.display()))?;
+    }
     Ok(target)
 }
 
-/// Moves to the system Trash, so a mistake can be recovered.
+/// Moves to the system Trash, so a mistake can be recovered. A Unity asset's `.meta` goes too,
+/// so putting both back restores it as it was.
 pub fn move_to_trash(path: &Path) -> Result<()> {
-    trash::delete(path).with_context(|| format!("can't move {} to the Trash", path.display()))
+    let meta = crate::unity::meta_of(path);
+    trash::delete(path).with_context(|| format!("can't move {} to the Trash", path.display()))?;
+    if let Some(meta) = meta {
+        trash::delete(&meta)
+            .with_context(|| format!("moved to the Trash, but can't move {}", meta.display()))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unity_project() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("ProjectSettings")).unwrap();
+        fs::write(dir.path().join("ProjectSettings/ProjectVersion.txt"), "").unwrap();
+        fs::create_dir_all(dir.path().join("Assets/Scripts")).unwrap();
+        fs::create_dir_all(dir.path().join("Assets/Other")).unwrap();
+        fs::write(
+            dir.path().join("Assets/Scripts/Player.cs"),
+            "class Player {}",
+        )
+        .unwrap();
+        fs::write(dir.path().join("Assets/Scripts/Player.cs.meta"), "guid: 1").unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_unity_assets_meta_is_renamed_and_moved_with_it() {
+        let dir = unity_project();
+        let scripts = dir.path().join("Assets/Scripts");
+        let renamed = rename(&scripts.join("Player.cs"), "Hero.cs").unwrap();
+        assert!(renamed.is_file());
+        assert_eq!(
+            fs::read_to_string(scripts.join("Hero.cs.meta")).unwrap(),
+            "guid: 1"
+        );
+        assert!(!scripts.join("Player.cs.meta").exists());
+
+        let other = dir.path().join("Assets/Other");
+        move_into(&renamed, &other).unwrap();
+        assert!(other.join("Hero.cs").is_file());
+        assert!(other.join("Hero.cs.meta").is_file());
+        assert!(!scripts.join("Hero.cs.meta").exists());
+    }
+
+    #[test]
+    fn nothing_moves_if_the_metas_new_place_is_taken() {
+        let dir = unity_project();
+        let scripts = dir.path().join("Assets/Scripts");
+        fs::write(scripts.join("Hero.cs.meta"), "someone else's").unwrap();
+        assert!(rename(&scripts.join("Player.cs"), "Hero.cs").is_err());
+        assert!(scripts.join("Player.cs").is_file());
+        assert!(scripts.join("Player.cs.meta").is_file());
+        assert_eq!(
+            fs::read_to_string(scripts.join("Hero.cs.meta")).unwrap(),
+            "someone else's"
+        );
+    }
 
     #[test]
     fn creating_a_file_refuses_to_overwrite() {
