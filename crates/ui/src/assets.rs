@@ -40,6 +40,10 @@ pub enum Icon {
     Commit,
     Terminal,
     Agent,
+    WindowMinimize,
+    WindowMaximize,
+    WindowRestore,
+    WindowClose,
 }
 
 impl Icon {
@@ -78,11 +82,31 @@ impl Icon {
             Self::Commit => "icons/commit.svg",
             Self::Terminal => "icons/terminal.svg",
             Self::Agent => "icons/agent.svg",
+            Self::WindowMinimize => "icons/window-minimize.svg",
+            Self::WindowMaximize => "icons/window-maximize.svg",
+            Self::WindowRestore => "icons/window-restore.svg",
+            Self::WindowClose => "icons/window-close.svg",
         }
     }
 }
 
 const FILES: &[(&str, &[u8])] = &[
+    (
+        "icons/window-minimize.svg",
+        include_bytes!("../assets/icons/window-minimize.svg"),
+    ),
+    (
+        "icons/window-maximize.svg",
+        include_bytes!("../assets/icons/window-maximize.svg"),
+    ),
+    (
+        "icons/window-restore.svg",
+        include_bytes!("../assets/icons/window-restore.svg"),
+    ),
+    (
+        "icons/window-close.svg",
+        include_bytes!("../assets/icons/window-close.svg"),
+    ),
     (
         "icons/agent.svg",
         include_bytes!("../assets/icons/agent.svg"),

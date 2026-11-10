@@ -1,12 +1,13 @@
-//! One editor pane: a row of tabs and the active editor below them.
+//! One editor pane: a row of tabs and the active one below them, an editor or an image's preview.
 
+use crate::image_view::ImageView;
 use crate::workspace::{CloseTabAt, Workspace};
-use gleipnir_core::DiskStatus;
+use gleipnir_core::{BufferModel, DiskStatus};
 use gleipnir_editor::EditorView;
 use gleipnir_ui::{FileIcon, Icon, Theme, file_icon};
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, MouseButton, SharedString,
-    Subscription, WeakEntity, Window, div, prelude::*, px, svg,
+    AnyView, App, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable, MouseButton,
+    SharedString, Subscription, WeakEntity, Window, div, prelude::*, px, svg,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,6 +19,95 @@ pub enum PaneEvent {
 }
 
 impl EventEmitter<PaneEvent> for Pane {}
+
+/// What a tab shows: a file's text in an editor, or an image.
+#[derive(Clone, PartialEq)]
+pub enum PaneItem {
+    Editor(Entity<EditorView>),
+    Image(Entity<ImageView>),
+}
+
+impl PaneItem {
+    pub fn editor(&self) -> Option<&Entity<EditorView>> {
+        match self {
+            Self::Editor(editor) => Some(editor),
+            Self::Image(_) => None,
+        }
+    }
+
+    pub fn image(&self) -> Option<&Entity<ImageView>> {
+        match self {
+            Self::Image(image) => Some(image),
+            Self::Editor(_) => None,
+        }
+    }
+
+    pub fn entity_id(&self) -> EntityId {
+        match self {
+            Self::Editor(editor) => editor.entity_id(),
+            Self::Image(image) => image.entity_id(),
+        }
+    }
+
+    pub fn buffer<'a>(&self, cx: &'a App) -> Option<&'a Entity<BufferModel>> {
+        self.editor().map(|editor| editor.read(cx).buffer())
+    }
+
+    pub fn path(&self, cx: &App) -> Option<PathBuf> {
+        match self {
+            Self::Editor(editor) => editor.read(cx).buffer().read(cx).path().map(PathBuf::from),
+            Self::Image(image) => Some(image.read(cx).path().to_path_buf()),
+        }
+    }
+
+    pub fn is_dirty(&self, cx: &App) -> bool {
+        self.buffer(cx)
+            .is_some_and(|buffer| buffer.read(cx).buffer().is_dirty())
+    }
+
+    /// Whether two tabs show the same thing: the same buffer, or the same image.
+    pub fn same_content(&self, other: &PaneItem, cx: &App) -> bool {
+        match (self, other) {
+            (Self::Editor(a), Self::Editor(b)) => a.read(cx).buffer() == b.read(cx).buffer(),
+            (Self::Image(a), Self::Image(b)) => a.read(cx).path() == b.read(cx).path(),
+            _ => false,
+        }
+    }
+
+    fn disk_status(&self, cx: &App) -> DiskStatus {
+        match self {
+            Self::Editor(editor) => editor.read(cx).buffer().read(cx).disk_status(),
+            Self::Image(image) if !image.read(cx).path().exists() => DiskStatus::Deleted,
+            Self::Image(_) => DiskStatus::InSync,
+        }
+    }
+
+    pub fn focus_handle(&self, cx: &App) -> FocusHandle {
+        match self {
+            Self::Editor(editor) => editor.read(cx).focus_handle(cx),
+            Self::Image(image) => image.read(cx).focus_handle(cx),
+        }
+    }
+
+    fn view(&self) -> AnyView {
+        match self {
+            Self::Editor(editor) => editor.clone().into(),
+            Self::Image(image) => image.clone().into(),
+        }
+    }
+}
+
+impl From<Entity<EditorView>> for PaneItem {
+    fn from(editor: Entity<EditorView>) -> Self {
+        Self::Editor(editor)
+    }
+}
+
+impl From<Entity<ImageView>> for PaneItem {
+    fn from(image: Entity<ImageView>) -> Self {
+        Self::Image(image)
+    }
+}
 
 /// A tab being dragged: where it came from, and what it's called for the preview.
 #[derive(Clone)]
@@ -49,7 +139,7 @@ impl Render for TabPreview {
 pub struct Pane {
     focus_handle: FocusHandle,
     workspace: WeakEntity<Workspace>,
-    items: Vec<Entity<EditorView>>,
+    items: Vec<PaneItem>,
     active: usize,
     /// While restoring a layout, the saved position of each item.
     restored_order: Vec<usize>,
@@ -78,16 +168,25 @@ impl Pane {
         }
     }
 
-    pub fn items(&self) -> &[Entity<EditorView>] {
+    pub fn items(&self) -> &[PaneItem] {
         &self.items
+    }
+
+    /// The tabs that are editors, leaving out images.
+    pub fn editors(&self) -> impl Iterator<Item = &Entity<EditorView>> {
+        self.items.iter().filter_map(PaneItem::editor)
     }
 
     pub fn active_index(&self) -> usize {
         self.active
     }
 
-    pub fn active_item(&self) -> Option<&Entity<EditorView>> {
+    pub fn active_item(&self) -> Option<&PaneItem> {
         self.items.get(self.active)
+    }
+
+    pub fn active_editor(&self) -> Option<&Entity<EditorView>> {
+        self.active_item().and_then(PaneItem::editor)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -97,15 +196,12 @@ impl Pane {
     /// Adds a tab after the active one, and activates it.
     pub(crate) fn add_item(
         &mut self,
-        item: Entity<EditorView>,
+        item: impl Into<PaneItem>,
         subscriptions: Vec<Subscription>,
         cx: &mut Context<Self>,
     ) {
-        let buffer = item.read(cx).buffer().clone();
-        let mut subscriptions = subscriptions;
-        // Tab titles show the name and whether it's dirty, which change with the buffer. Cursor
-        // movement doesn't matter here, as that's only in the status bar.
-        subscriptions.push(cx.observe(&buffer, |_, _, cx| cx.notify()));
+        let item = item.into();
+        let subscriptions = self.observe_item(&item, subscriptions, cx);
         self.item_subscriptions
             .insert(item.entity_id(), subscriptions);
 
@@ -123,7 +219,7 @@ impl Pane {
     /// Adds a tab after the active one, leaving the active one as it is, unless there's none.
     pub(crate) fn add_background_item(
         &mut self,
-        item: Entity<EditorView>,
+        item: impl Into<PaneItem>,
         subscriptions: Vec<Subscription>,
         cx: &mut Context<Self>,
     ) {
@@ -140,14 +236,13 @@ impl Pane {
     pub(crate) fn insert_restored(
         &mut self,
         saved_index: usize,
-        item: Entity<EditorView>,
+        item: impl Into<PaneItem>,
         subscriptions: Vec<Subscription>,
         saved_active: usize,
         cx: &mut Context<Self>,
     ) {
-        let buffer = item.read(cx).buffer().clone();
-        let mut subscriptions = subscriptions;
-        subscriptions.push(cx.observe(&buffer, |_, _, cx| cx.notify()));
+        let item = item.into();
+        let subscriptions = self.observe_item(&item, subscriptions, cx);
         self.item_subscriptions
             .insert(item.entity_id(), subscriptions);
 
@@ -166,13 +261,23 @@ impl Pane {
         cx.notify();
     }
 
+    /// Tab titles show the name and whether it's dirty, which change with an editor's buffer.
+    /// Cursor movement doesn't matter here, as that's only in the status bar.
+    fn observe_item(
+        &self,
+        item: &PaneItem,
+        mut subscriptions: Vec<Subscription>,
+        cx: &mut Context<Self>,
+    ) -> Vec<Subscription> {
+        if let Some(buffer) = item.buffer(cx).cloned() {
+            subscriptions.push(cx.observe(&buffer, |_, _, cx| cx.notify()));
+        }
+        subscriptions
+    }
+
     /// Removes a tab, returning whether it was there. The next tab along becomes active, as in most
     /// editors, so closing several in a row walks steadily through them.
-    pub(crate) fn remove_item(
-        &mut self,
-        item: &Entity<EditorView>,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    pub(crate) fn remove_item(&mut self, item: &PaneItem, cx: &mut Context<Self>) -> bool {
         let Some(index) = self.items.iter().position(|i| i == item) else {
             return false;
         };
@@ -191,7 +296,7 @@ impl Pane {
         &mut self,
         index: usize,
         cx: &mut Context<Self>,
-    ) -> Option<(Entity<EditorView>, Vec<Subscription>)> {
+    ) -> Option<(PaneItem, Vec<Subscription>)> {
         if index >= self.items.len() {
             return None;
         }
@@ -212,7 +317,7 @@ impl Pane {
     pub(crate) fn insert_item_at(
         &mut self,
         index: usize,
-        item: Entity<EditorView>,
+        item: PaneItem,
         subscriptions: Vec<Subscription>,
         cx: &mut Context<Self>,
     ) {
@@ -267,7 +372,7 @@ impl Pane {
     /// Where keyboard focus belongs: the active tab, or the pane itself if it has none.
     pub(crate) fn focus_target(&self, cx: &App) -> FocusHandle {
         match self.active_item() {
-            Some(item) => item.read(cx).focus_handle(cx),
+            Some(item) => item.focus_handle(cx),
             None => self.focus_handle.clone(),
         }
     }
@@ -284,7 +389,7 @@ impl Pane {
         let ambiguous = self
             .items
             .iter()
-            .filter_map(|item| item.read(cx).buffer().read(cx).path().map(PathBuf::from))
+            .filter_map(|item| item.path(cx))
             .any(|other| other != path && other.file_name() == path.file_name());
         match path
             .parent()
@@ -302,12 +407,11 @@ impl Pane {
         let pane = cx.entity();
         let accent = theme.accent;
         let tabs = self.items.iter().enumerate().map(|(index, item)| {
-            let view = item.read(cx);
-            let model = view.buffer().read(cx);
-            let path = model.path().map(PathBuf::from);
-            let dirty = model.buffer().is_dirty();
-            let missing = model.disk_status() == DiskStatus::Deleted;
-            let conflicted = model.disk_status() == DiskStatus::Conflict;
+            let path = item.path(cx);
+            let dirty = item.is_dirty(cx);
+            let disk_status = item.disk_status(cx);
+            let missing = disk_status == DiskStatus::Deleted;
+            let conflicted = disk_status == DiskStatus::Conflict;
             let title = self.tab_title(path.as_deref(), cx);
             let active = index == self.active;
             let close_workspace = workspace.clone();
@@ -493,7 +597,7 @@ impl Render for Pane {
                         let end = this.items.len();
                         this.drop_tab(dragged, end, window, cx)
                     }))
-                    .children(self.active_item().cloned())
+                    .children(self.active_item().map(PaneItem::view))
                     .children(empty_hint.flatten()),
             )
     }

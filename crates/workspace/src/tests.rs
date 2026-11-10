@@ -155,7 +155,7 @@ fn splitting_shows_the_same_buffer_in_both_panes(cx: &mut TestAppContext) {
     cx.simulate_input("shared");
     let first = cx.update(|_, cx| {
         let pane = workspace.read(cx).panes()[0].clone();
-        let editor = pane.read(cx).active_item().unwrap().clone();
+        let editor = pane.read(cx).active_editor().unwrap().clone();
         editor.read(cx).buffer().read(cx).buffer().text()
     });
     assert_eq!(first, "shared");
@@ -329,7 +329,7 @@ fn tabs_with_the_same_name_show_their_folder(cx: &mut TestAppContext) {
         pane.items()
             .iter()
             .map(|item| {
-                let path = item.read(cx).buffer().read(cx).path().map(PathBuf::from);
+                let path = item.path(cx);
                 pane.tab_title(path.as_deref(), cx).to_string()
             })
             .collect::<Vec<_>>()
@@ -531,7 +531,7 @@ fn the_layout_comes_back_when_the_project_reopens(cx: &mut TestAppContext) {
     // The cursor is back where it was.
     let cursor = cx.update(|_, cx| {
         let pane = reopened.read(cx).panes()[0].clone();
-        let editor = pane.read(cx).active_item().unwrap().clone();
+        let editor = pane.read(cx).active_editor().unwrap().clone();
         editor.read(cx).selections().primary().head
     });
     assert_eq!(cursor, 3);
@@ -911,4 +911,165 @@ fn the_branch_menu_checks_out_creates_merges_and_deletes_with_git(cx: &mut TestA
     choose("Checkout", cx);
     run_until(cx, |cx| message(cx).contains("would be overwritten"));
     assert_eq!(branch(cx).as_deref(), Some("main"));
+}
+
+/// The smallest PNG there is: one transparent pixel.
+const PIXEL_PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+    0x42, 0x60, 0x82,
+];
+const SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="4"/>"#;
+
+/// Opens a file that should show as an image, which leaves no editor to resolve to.
+fn open_image(workspace: &Entity<Workspace>, path: PathBuf, cx: &mut VisualTestContext) {
+    let task = cx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| workspace.open_path(path, window, cx))
+    });
+    let error = resolve(cx, task).expect_err("an image has no editor");
+    assert!(error.downcast_ref::<ShownAsImage>().is_some(), "{error:#}");
+    cx.run_until_parked();
+}
+
+fn image_project() -> (tempfile::TempDir, PathBuf) {
+    let (dir, root) = project(&[("a.rs", "fn a() {}"), ("icon.svg", SVG)]);
+    fs::write(root.join("logo.png"), PIXEL_PNG).unwrap();
+    (dir, root)
+}
+
+#[gpui::test]
+fn an_image_opens_in_a_preview_and_opening_it_again_reuses_the_tab(cx: &mut TestAppContext) {
+    let (_dir, root) = image_project();
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    open(&workspace, root.join("a.rs"), cx);
+    open_image(&workspace, root.join("logo.png"), cx);
+    open(&workspace, root.join("a.rs"), cx);
+    open_image(&workspace, root.join("logo.png"), cx);
+    assert_eq!(tabs(&workspace, cx), [["a.rs", "logo.png"]]);
+    cx.update(|_, cx| {
+        let workspace = workspace.read(cx);
+        assert!(workspace.active_editor(cx).is_none());
+        assert_eq!(workspace.active_file(cx), Some(root.join("logo.png")));
+        let pane = workspace.active_pane().read(cx);
+        assert!(pane.active_item().and_then(PaneItem::image).is_some());
+    });
+}
+
+#[gpui::test]
+fn an_svg_shows_as_an_image_and_its_text_opens_from_there(cx: &mut TestAppContext) {
+    let (_dir, root) = image_project();
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    open_image(&workspace, root.join("icon.svg"), cx);
+    cx.dispatch_action(image_view::OpenAsText);
+    cx.run_until_parked();
+    run_until(cx, |cx| {
+        cx.update(|_, cx| workspace.read(cx).active_editor(cx).is_some())
+    });
+    assert_eq!(tabs(&workspace, cx), [["icon.svg", "icon.svg"]]);
+    assert_eq!(active_text(&workspace, cx), SVG);
+}
+
+#[gpui::test]
+fn an_image_tab_closes_without_asking_and_never_counts_as_unsaved(cx: &mut TestAppContext) {
+    let (_dir, root) = image_project();
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    open_image(&workspace, root.join("logo.png"), cx);
+    let closing = cx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| workspace.prepare_to_close(window, cx))
+    });
+    assert!(resolve(cx, closing));
+    cx.simulate_keystrokes(&keys("mod-w"));
+    cx.run_until_parked();
+    assert!(!cx.has_pending_prompt());
+    assert_eq!(tabs(&workspace, cx), [Vec::<String>::new()]);
+}
+
+#[gpui::test]
+fn image_tabs_come_back_with_the_layout(cx: &mut TestAppContext) {
+    let (_dir, root) = image_project();
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    open(&workspace, root.join("a.rs"), cx);
+    open_image(&workspace, root.join("logo.png"), cx);
+    cx.update(|_, cx| workspace.update(cx, |w, cx| w.save_now(cx)));
+
+    let store = cx.new(|_| BufferStore::new());
+    let reopened = cx.update(|window, cx| {
+        cx.new(|cx| {
+            let mut workspace = Workspace::new(store, Some(root.clone()), window, cx);
+            assert!(workspace.restore_layout(window, cx));
+            workspace
+        })
+    });
+    run_until(cx, |cx| {
+        !cx.update(|_, cx| reopened.read(cx).is_restoring())
+    });
+    assert_eq!(tabs(&reopened, cx), [["a.rs", "logo.png"]]);
+    assert_eq!(
+        cx.update(|_, cx| reopened.read(cx).active_file(cx)),
+        Some(root.join("logo.png"))
+    );
+}
+
+/// Where there's no system menu bar, the title bar shows the app's menus, and their items act
+/// where focus was before the menu opened.
+#[cfg(not(target_os = "macos"))]
+#[gpui::test]
+fn the_title_bar_shows_the_app_menus_and_they_act_where_focus_was(cx: &mut TestAppContext) {
+    let (_dir, root) = project(&[("a.rs", "a")]);
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    cx.update(|_, cx| {
+        cx.set_menus([
+            gpui::Menu {
+                name: "File".into(),
+                items: vec![
+                    gpui::MenuItem::action("New", NewFile),
+                    gpui::MenuItem::separator(),
+                    gpui::MenuItem::action("Split Right", SplitRight),
+                ],
+                disabled: false,
+            },
+            gpui::Menu {
+                name: "View".into(),
+                items: vec![gpui::MenuItem::action("Split Down", SplitDown)],
+                disabled: false,
+            },
+        ])
+    });
+    open(&workspace, root.join("a.rs"), cx);
+    let menu_labels = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            workspace
+                .read(cx)
+                .open_menu()
+                .map(|menu| menu.read(cx).labels())
+        })
+    };
+
+    let file = cx.debug_bounds("app-menu-0").expect("the File menu's name");
+    cx.simulate_click(file.center(), Modifiers::none());
+    assert_eq!(
+        menu_labels(cx),
+        Some(vec!["New".to_string(), "Split Right".to_string()])
+    );
+
+    // Moving to the next name opens its menu instead.
+    let view = cx.debug_bounds("app-menu-1").expect("the View menu's name");
+    cx.simulate_mouse_move(view.center(), None, Modifiers::none());
+    assert_eq!(menu_labels(cx), Some(vec!["Split Down".to_string()]));
+
+    // Pressing the open menu's name closes it.
+    cx.simulate_click(view.center(), Modifiers::none());
+    assert_eq!(menu_labels(cx), None);
+
+    // An item goes to the editor that had focus before the menu, even after moving between menus.
+    cx.simulate_click(file.center(), Modifiers::none());
+    cx.simulate_mouse_move(view.center(), None, Modifiers::none());
+    cx.simulate_mouse_move(file.center(), None, Modifiers::none());
+    let item = cx.debug_bounds("menu-item-1").expect("Split Right");
+    cx.simulate_click(item.center(), Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(tabs(&workspace, cx), [["a.rs"], ["a.rs"]]);
+    assert_eq!(menu_labels(cx), None);
 }

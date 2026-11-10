@@ -1,11 +1,13 @@
 //! The window's root view.
 
+mod decorations;
 mod title_bar;
 pub use title_bar::{TITLE_BAR_HEIGHT, TitleSide, current_branch, list_branches, title_button};
 
 use crate::actions_list::list_actions;
 use crate::dock::{Dock, DockPosition, MIN_CENTER_SIZE, MIN_DOCK_SIZE, Panel};
-use crate::pane::{Pane, PaneEvent};
+use crate::image_view::{self, ImageView};
+use crate::pane::{Pane, PaneEvent, PaneItem};
 use crate::pane_tree::{Axis, PaneTree};
 use crate::persistence::{
     self, SavedDock, SavedPane, SavedTab, SavedTree, SavedWorkspace, remember_last_project,
@@ -59,6 +61,7 @@ const MESSAGE_LIFETIME: Duration = Duration::from_secs(10);
 const SAVE_DELAY: Duration = Duration::from_millis(400);
 
 pub fn bind_keys(cx: &mut App) {
+    image_view::bind_keys(cx);
     #[cfg(target_os = "macos")]
     cx.bind_keys([
         KeyBinding::new("cmd-q", Quit, None),
@@ -195,7 +198,10 @@ pub struct Workspace {
     resize: Option<ResizeDrag>,
     /// The screen bounds of each split, by its path in the tree, for turning a drag into a ratio.
     split_bounds: Rc<RefCell<HashMap<Vec<usize>, Bounds<Pixels>>>>,
+    /// The size of the window's content, inside any frame the app draws around it.
     window_size: gpui::Size<Pixels>,
+    /// Where the content starts in the window: past the frame's shadow, when it has one.
+    content_origin: Point<Pixels>,
     message: Option<(SharedString, bool)>,
     message_task: Option<Task<()>>,
     extra_actions: Vec<ExtraAction>,
@@ -220,6 +226,12 @@ pub struct Workspace {
     title_items: Vec<(TitleSide, u8, StatusItem)>,
     /// A menu opened from the title bar.
     menu: Option<title_bar::OpenMenu>,
+    /// Which of the app's menus is open from the title bar, where it shows them, as on Linux.
+    open_app_menu: Option<usize>,
+    /// Which of them last closed, and when: a press on its name that closed it mustn't reopen it.
+    app_menu_closed: Option<(usize, std::time::Instant)>,
+    /// Where each of those menus' names is in the bar, to open each below its name.
+    app_menu_bounds: Rc<RefCell<Vec<Bounds<Pixels>>>>,
     branch: Option<String>,
     branch_task: Option<Task<()>>,
     nav_back: Vec<NavEntry>,
@@ -317,6 +329,7 @@ impl Workspace {
             resize: None,
             split_bounds: Rc::new(RefCell::new(HashMap::new())),
             window_size: window.viewport_size(),
+            content_origin: Point::default(),
             message: None,
             message_task: None,
             extra_actions: Vec::new(),
@@ -334,6 +347,9 @@ impl Workspace {
             status_items: Vec::new(),
             title_items: Vec::new(),
             menu: None,
+            open_app_menu: None,
+            app_menu_closed: None,
+            app_menu_bounds: Rc::default(),
             branch: None,
             branch_task: None,
             nav_back: Vec::new(),
@@ -693,12 +709,12 @@ impl Workspace {
     }
 
     pub fn active_editor(&self, cx: &App) -> Option<Entity<EditorView>> {
-        self.active_pane.read(cx).active_item().cloned()
+        self.active_pane.read(cx).active_editor().cloned()
     }
 
+    /// The active tab's file, whether it's in an editor or an image's preview.
     pub fn active_file(&self, cx: &App) -> Option<PathBuf> {
-        let editor = self.active_editor(cx)?;
-        editor.read(cx).buffer().read(cx).path().map(PathBuf::from)
+        self.active_pane.read(cx).active_item()?.path(cx)
     }
 
     pub fn editor_state(&self, cx: &App) -> Option<EditorState> {
@@ -960,8 +976,24 @@ impl Workspace {
         (editor, subscriptions)
     }
 
-    /// Opens a file in the active pane, or switches to it if it's already a tab there.
+    /// Opens a file in the active pane, or switches to it if it's already a tab there. An image
+    /// opens in a preview instead, and as there's no editor then, the task fails with
+    /// [`ShownAsImage`], which callers that only wanted the file shown can ignore.
     pub fn open_path(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Result<Entity<EditorView>>> {
+        if image_view::is_image(&path) {
+            self.show_image(path.clone(), window, cx);
+            return Task::ready(Err(ShownAsImage(path).into()));
+        }
+        self.open_as_text(path, window, cx)
+    }
+
+    /// Opens a file in an editor, even one that would otherwise be shown as an image, like an SVG.
+    pub fn open_as_text(
         &mut self,
         path: PathBuf,
         window: &mut Window,
@@ -981,6 +1013,53 @@ impl Workspace {
         })
     }
 
+    /// Shows an image in the active pane, reusing a tab already there.
+    pub fn show_image(
+        &mut self,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<ImageView> {
+        self.record_position(cx);
+        let pane = self.active_pane.clone();
+        let existing = pane
+            .read(cx)
+            .items()
+            .iter()
+            .position(|item| item.image().is_some_and(|i| i.read(cx).path() == path));
+        let image = match existing {
+            Some(index) => {
+                pane.update(cx, |pane, cx| pane.activate(index, cx));
+                pane.read(cx).items()[index]
+                    .image()
+                    .expect("found as an image")
+                    .clone()
+            }
+            None => {
+                let (image, subscriptions) = self.build_image(path, cx);
+                pane.update(cx, |pane, cx| {
+                    pane.add_item(image.clone(), subscriptions, cx)
+                });
+                image
+            }
+        };
+        focus_pane(&pane, window, cx);
+        self.active_item_changed(cx);
+        self.update_title(window, cx);
+        self.schedule_save(cx);
+        image
+    }
+
+    fn build_image(
+        &mut self,
+        path: PathBuf,
+        cx: &mut Context<Self>,
+    ) -> (Entity<ImageView>, Vec<Subscription>) {
+        let weak = self.weak_self.clone();
+        let image = cx.new(|cx| ImageView::new(path, weak, cx));
+        (image, Vec::new())
+    }
+
     /// Shows a buffer in the active pane, reusing a tab already there.
     pub fn show_buffer(
         &mut self,
@@ -993,11 +1072,14 @@ impl Workspace {
             .read(cx)
             .items()
             .iter()
-            .position(|item| item.read(cx).buffer() == &buffer);
+            .position(|item| item.buffer(cx) == Some(&buffer));
         let editor = match existing {
             Some(index) => {
                 pane.update(cx, |pane, cx| pane.activate(index, cx));
-                pane.read(cx).items()[index].clone()
+                pane.read(cx).items()[index]
+                    .editor()
+                    .expect("found by its buffer")
+                    .clone()
             }
             None => {
                 let (editor, subscriptions) = self.build_item(buffer, window, cx);
@@ -1028,9 +1110,8 @@ impl Workspace {
             this.update_in(cx, |this, window, cx| {
                 let shown = this.center.panes().iter().any(|pane| {
                     pane.read(cx)
-                        .items()
-                        .iter()
-                        .any(|item| item.read(cx).buffer() == &buffer)
+                        .editors()
+                        .any(|editor| editor.read(cx).buffer() == &buffer)
                 });
                 if !shown {
                     let (editor, subscriptions) = this.build_item(buffer.clone(), window, cx);
@@ -1054,7 +1135,16 @@ impl Workspace {
     pub fn split_active(&mut self, axis: Axis, window: &mut Window, cx: &mut Context<Self>) {
         let source = self.active_pane.clone();
         let new_pane = self.new_pane(window, cx);
-        if let Some(editor) = self.active_editor(cx) {
+        let active_image = source
+            .read(cx)
+            .active_item()
+            .and_then(PaneItem::image)
+            .cloned();
+        if let Some(image) = active_image {
+            let path = image.read(cx).path().to_path_buf();
+            let (copy, subscriptions) = self.build_image(path, cx);
+            new_pane.update(cx, |pane, cx| pane.add_item(copy, subscriptions, cx));
+        } else if let Some(editor) = self.active_editor(cx) {
             let buffer = editor.read(cx).buffer().clone();
             let (copy, subscriptions) = self.build_item(buffer, window, cx);
             let view_source = editor.clone();
@@ -1088,7 +1178,7 @@ impl Workspace {
         self.center
             .panes()
             .iter()
-            .flat_map(|pane| pane.read(cx).items().to_vec())
+            .flat_map(|pane| pane.read(cx).editors().cloned().collect::<Vec<_>>())
             .filter(|item| item.read(cx).buffer() == buffer)
             .count()
     }
@@ -1103,7 +1193,11 @@ impl Workspace {
         let Some(item) = pane.read(cx).items().get(index).cloned() else {
             return;
         };
-        let buffer = item.read(cx).buffer().clone();
+        let Some(editor) = item.editor().cloned() else {
+            self.remove_tab(&pane, &item, window, cx);
+            return;
+        };
+        let buffer = editor.read(cx).buffer().clone();
         let dirty = buffer.read(cx).buffer().is_dirty();
         if !dirty || self.view_count(&buffer, cx) > 1 {
             self.remove_tab(&pane, &item, window, cx);
@@ -1129,7 +1223,7 @@ impl Workspace {
             match answer.await {
                 Ok(0) => {
                     let save =
-                        this.update_in(cx, |this, window, cx| this.save_item(&item, window, cx));
+                        this.update_in(cx, |this, window, cx| this.save_item(&editor, window, cx));
                     let Ok(save) = save else { return };
                     // If the save failed or was cancelled, keep the tab rather than lose the work.
                     if save.await {
@@ -1198,7 +1292,7 @@ impl Workspace {
     fn remove_tab(
         &mut self,
         pane: &Entity<Pane>,
-        item: &Entity<EditorView>,
+        item: &PaneItem,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1255,12 +1349,11 @@ impl Workspace {
                 });
             }
         } else {
-            let buffer = item.read(cx).buffer().clone();
             let existing = to
                 .read(cx)
                 .items()
                 .iter()
-                .position(|i| i.read(cx).buffer() == &buffer);
+                .position(|i| i.same_content(&item, cx));
             match existing {
                 Some(existing) => {
                     to.update(cx, |pane, cx| pane.activate(existing, cx));
@@ -1362,13 +1455,12 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         for pane in self.center.panes() {
-            let doomed: Vec<Entity<EditorView>> = pane
+            let doomed: Vec<PaneItem> = pane
                 .read(cx)
                 .items()
                 .iter()
                 .filter(|item| {
-                    let model = item.read(cx).buffer().read(cx);
-                    !model.buffer().is_dirty() && model.path().is_some_and(|p| p.starts_with(path))
+                    !item.is_dirty(cx) && item.path(cx).is_some_and(|p| p.starts_with(path))
                 })
                 .cloned()
                 .collect();
@@ -1383,7 +1475,7 @@ impl Workspace {
         let mut seen = Vec::new();
         let mut items = Vec::new();
         for pane in self.center.panes() {
-            for item in pane.read(cx).items() {
+            for item in pane.read(cx).editors() {
                 let buffer = item.read(cx).buffer().clone();
                 if buffer.read(cx).buffer().is_dirty() && !seen.contains(&buffer) {
                     seen.push(buffer);
@@ -1552,16 +1644,26 @@ impl Workspace {
                     let mut tabs = Vec::new();
                     let mut active = 0;
                     for (index, item) in pane.items().iter().enumerate() {
-                        let view = item.read(cx);
-                        if let Some(path) = view.buffer().read(cx).path() {
+                        let saved = match item {
+                            PaneItem::Editor(editor) => {
+                                let view = editor.read(cx);
+                                view.buffer().read(cx).path().map(|path| SavedTab {
+                                    path: path.to_path_buf(),
+                                    cursor: view.selections().primary().head,
+                                    scroll_y: view.scroll_y(),
+                                })
+                            }
+                            PaneItem::Image(image) => Some(SavedTab {
+                                path: image.read(cx).path().to_path_buf(),
+                                cursor: 0,
+                                scroll_y: 0.,
+                            }),
+                        };
+                        if let Some(saved) = saved {
                             if index == pane.active_index() {
                                 active = tabs.len();
                             }
-                            tabs.push(SavedTab {
-                                path: path.to_path_buf(),
-                                cursor: view.selections().primary().head,
-                                scroll_y: view.scroll_y(),
-                            });
+                            tabs.push(saved);
                         }
                     }
                     SavedTree::Pane(SavedPane { tabs, active })
@@ -1704,10 +1806,24 @@ impl Workspace {
         for (pane, saved_pane) in built {
             let tabs_len = saved_pane.tabs.len();
             for (index, tab) in saved_pane.tabs.into_iter().enumerate() {
+                let active_index = saved_pane.active.min(tabs_len - 1);
+                if image_view::is_image(&tab.path) {
+                    let (image, subscriptions) = self.build_image(tab.path.clone(), cx);
+                    pane.update(cx, |pane, cx| {
+                        pane.insert_restored(index, image, subscriptions, active_index, cx);
+                    });
+                    finished.set(finished.get() + 1);
+                    if finished.get() == total {
+                        self.restoring = false;
+                        focus_pane(&active_pane, window, cx);
+                        self.active_item_changed(cx);
+                        self.update_title(window, cx);
+                    }
+                    continue;
+                }
                 let open = self.store.update(cx, |store, cx| store.open(&tab.path, cx));
                 let pane = pane.clone();
                 let active_pane = active_pane.clone();
-                let active_index = saved_pane.active.min(tabs_len - 1);
                 let finished = finished.clone();
                 cx.spawn_in(window, async move |this, cx| {
                     let buffer = open.await;
@@ -1763,10 +1879,8 @@ impl Workspace {
                             .items()
                             .iter()
                             .map(|item| {
-                                item.read(cx)
-                                    .buffer()
-                                    .read(cx)
-                                    .path()
+                                item.path(cx)
+                                    .as_deref()
                                     .and_then(Path::file_name)
                                     .map_or_else(
                                         || "untitled".to_string(),
@@ -1877,6 +1991,11 @@ impl Workspace {
             return;
         }
         let window_size = self.window_size;
+        // In the content's coordinates, as the sizes are.
+        let event = &MouseMoveEvent {
+            position: event.position - self.content_origin,
+            ..event.clone()
+        };
         match resize {
             ResizeDrag::Dock(position) => {
                 let rail = px(RAIL_WIDTH);
@@ -1941,19 +2060,7 @@ impl Workspace {
     /// What an empty pane shows: the first things someone might want to do.
     pub(crate) fn render_empty_hint(&self, window: &Window, cx: &App) -> AnyElement {
         let theme = cx.global::<Theme>().clone();
-        let shortcut = |action: &dyn gpui::Action| -> String {
-            window
-                .highest_precedence_binding_for_action(action)
-                .map(|binding| {
-                    binding
-                        .keystrokes()
-                        .iter()
-                        .map(|k| k.unparse(cx.platform_info().os))
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                })
-                .unwrap_or_default()
-        };
+        let shortcut = |action: &dyn gpui::Action| shortcut_label(action, window, cx);
         let hint = |label: &'static str, keys: String| {
             div()
                 .flex()
@@ -2421,7 +2528,13 @@ impl Focusable for Workspace {
 impl Render for Workspace {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>().clone();
-        self.window_size = window.viewport_size();
+        let insets = decorations::content_insets(window);
+        let viewport = window.viewport_size();
+        self.window_size = size(
+            viewport.width - insets.left - insets.right,
+            viewport.height - insets.top - insets.bottom,
+        );
+        self.content_origin = Point::new(insets.left, insets.top);
         self.update_title(window, cx);
         // With nothing focused, key bindings still need a path to reach the window's actions.
         if window.focused(cx).is_none() {
@@ -2544,7 +2657,8 @@ impl Render for Workspace {
                 .child(modal.view.clone()),
         });
 
-        root.child(title_bar)
+        let root = root
+            .child(title_bar)
             .child(
                 div()
                     .flex()
@@ -2575,9 +2689,42 @@ impl Render for Workspace {
             )
             .child(status)
             .children(modal)
-            .children(menu)
+            .children(menu);
+        decorations::frame(root, &theme, window)
     }
 }
+
+/// The keys that do an action where focus is now, as menus show them, or nothing if there are none.
+pub(crate) fn shortcut_label(action: &dyn gpui::Action, window: &Window, cx: &App) -> String {
+    window
+        .highest_precedence_binding_for_action(action)
+        .map(|binding| {
+            binding
+                .keystrokes()
+                .iter()
+                .map(|k| k.unparse(cx.platform_info().os))
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .unwrap_or_default()
+}
+
+/// What [`Workspace::open_path`] fails with when the file was shown as an image, so there's no
+/// editor to give back.
+#[derive(Debug)]
+pub struct ShownAsImage(pub PathBuf);
+
+impl std::fmt::Display for ShownAsImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} is shown as an image, not in an editor",
+            self.0.display()
+        )
+    }
+}
+
+impl std::error::Error for ShownAsImage {}
 
 /// Opens a window on a project. With no root, it comes up empty. Restores the project's saved layout
 /// unless `fresh` is set.
@@ -2602,6 +2749,8 @@ pub fn open_project_window(
                 traffic_light_position: Some(title_bar::window_buttons_position()),
             }),
             app_owns_titlebar_drag: true,
+            // On Linux the window's buttons are drawn in the title bar too, as on macOS.
+            window_decorations: decorations::requested(),
             // A scripted run shouldn't take focus from whatever else is going on.
             focus: !scripted,
             show: true,

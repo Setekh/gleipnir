@@ -94,6 +94,10 @@ BufferStore  --(one per path)-->  Buffer  <--(many)--  EditorView
 
 - **One `Buffer` per file, many `EditorView`s.** Two splits on one file share text, undo, syntax
   tree and LSP state. Only selections and scroll position belong to the view.
+- **A tab is an editor or an image.** A pane's items are `PaneItem`s: an `EditorView`, or an
+  `ImageView` for files GPUI can draw, SVG included, which has no buffer, so it's never unsaved.
+  `open_path` routes images to the preview and then fails with `ShownAsImage`, as there's no
+  editor to give back; `open_as_text` opens any file in an editor, as an SVG's "Edit as Text" does.
 - **Selections are a sorted, non-overlapping set**, always at least one. A single cursor is just a
   set of one, so there is only one code path.
 - **Multi-cursor edits are atomic.** `Buffer::edit_batch(Vec<(Range, String)>)` applies all edits
@@ -379,7 +383,16 @@ The OS title bar is replaced by IntelliJ's main toolbar, drawn by the workspace:
 menu lists recent projects; the Git branch, read from `.git/HEAD` and polled; and items features
 add, ordered by a number: the run configuration with Run, Debug and Stop, Search Everywhere and
 Settings. On macOS the window's buttons sit over its left end, gpui is told the app owns dragging
-the title bar, and empty parts of the bar move or zoom the window. The branch's menu lists local
+the title bar, and empty parts of the bar move or zoom the window. On Linux the window asks for
+client-side decorations and the bar draws minimise, maximise and close itself, at the ends and in
+the order the desktop's `button-layout` gives, leaving out what the compositor can't do; right
+clicking it opens the compositor's window menu. It draws them whatever the compositor answers, as
+Hyprland answers that it will decorate the window and then draws no title bar. With no system menu
+bar there, the bar also shows the app's menus, read back from `cx.get_menus()` so they're defined
+once in `main.rs`, where macOS's app menu folds into File; an item dispatches its action to
+whatever had focus before the menu opened. A window that isn't tiled gets a border, a shadow
+and edges that resize it (`workspace/decorations.rs`). `GLEIPNIR_WINDOW_DECORATIONS=server` asks
+for the compositor's title bar instead. The branch's menu lists local
 branches, then remote ones, most recently committed to first, and switches with `git switch`,
 which refuses rather than lose uncommitted work; its message is shown as it is.
 

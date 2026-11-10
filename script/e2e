@@ -32,6 +32,7 @@ make_fixtures() {
     printf 'interface User {\n  id: number;\n  name: string;\n}\n\nexport function greet(user: User): string {\n  return `hi ${user.name}`;\n}\n' > "$dir/app.ts"
     printf 'export const View = (p: { name: string }) => <div className="a">{p.name}</div>;\n' > "$dir/view.tsx"
     printf 'export function add(a, b) {\n  return a + b; // sum\n}\n' > "$dir/app.js"
+    printf '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"><circle cx="8" cy="8" r="6" fill="#e5a50a"/></svg>\n' > "$dir/icon.svg"
     printf 'package main\n\nimport "fmt"\n\ntype Point struct {\n\tX, Y int\n}\n\nfunc main() {\n\tp := Point{1, 2}\n\tfmt.Println("hi", p.X)\n}\n' > "$dir/app.go"
     mkdir -p "$dir/src" "$dir/target/debug"
     printf 'pub fn lib() {}\n' > "$dir/src/lib.rs"

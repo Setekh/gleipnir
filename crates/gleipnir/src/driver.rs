@@ -345,7 +345,15 @@ async fn run_command(line: &str, window: WindowHandle<Workspace>, cx: &mut Async
             let open = with_workspace(window, cx, |workspace, window, cx| {
                 workspace.open_path(path, window, cx)
             })?;
-            open.await?;
+            match open.await {
+                Err(e)
+                    if e.downcast_ref::<gleipnir_workspace::ShownAsImage>()
+                        .is_none() =>
+                {
+                    return Err(e);
+                }
+                _ => {}
+            }
         }
         "console" => {
             // `console run|debug <text>`: types a line into that panel's console and presses Enter.

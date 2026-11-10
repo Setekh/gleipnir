@@ -209,7 +209,7 @@ fn main() {
 }
 
 fn set_menus(cx: &mut App) {
-    cx.set_menus([
+    let mut menus = vec![
         Menu {
             name: "Gleipnir".into(),
             items: vec![
@@ -354,5 +354,19 @@ fn set_menus(cx: &mut App) {
             ],
             disabled: false,
         },
-    ]);
+    ];
+    // Elsewhere there's no menu bar with the app's own menu, and the title bar shows these, so
+    // its items go to the end of File, as IntelliJ has them there.
+    if !cfg!(target_os = "macos") {
+        menus.remove(0);
+        if let Some(file) = menus.iter_mut().find(|m| m.name == "File") {
+            file.items.extend([
+                MenuItem::separator(),
+                MenuItem::action("Settings…", gleipnir_settings_ui::OpenSettings),
+                MenuItem::separator(),
+                MenuItem::action("Exit", Quit),
+            ]);
+        }
+    }
+    cx.set_menus(menus);
 }

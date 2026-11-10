@@ -2,14 +2,14 @@
 
 An IDE written in Rust on [GPUI](https://gpui.rs), for TypeScript, JavaScript, Odin, Rust and Go.
 
-Status: a project-based editor with a file tree, tabs, split panes, multi-cursor editing,
-IntelliJ-style Search Everywhere, per-project SDKs with managed tool installs, and code intelligence
-from language servers: completion, documentation, go to declaration and implementations, usages,
-problems, rename, quick fixes and reformatting. Programs run and debug from the IDE in all five
-languages, IntelliJ style: breakpoints in the gutter (conditions, hit counts, logpoints), stepping,
-frames, a variables tree with watches, values shown beside the code, and a console. Git works as
-in IntelliJ too: changes in the gutter, the Commit window, a log with its branch graph, blame,
-merges and interactive rebase. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+Status: a project-based editor with a file tree, tabs, split panes, image and SVG previews,
+multi-cursor editing, IntelliJ-style Search Everywhere, per-project SDKs with managed tool installs,
+and code intelligence from language servers: completion, documentation, go to declaration and
+implementations, usages, problems, rename, quick fixes and reformatting. Programs run and debug from
+the IDE in all five languages, IntelliJ style: breakpoints in the gutter (conditions, hit counts,
+logpoints), stepping, frames, a variables tree with watches, values shown beside the code, and a
+console. Git works as in IntelliJ too: changes in the gutter, the Commit window, a log with its
+branch graph, blame, merges and interactive rebase. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 for the design and [docs/ROADMAP.md](docs/ROADMAP.md) for the plan.
 
 ## Building

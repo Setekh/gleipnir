@@ -179,7 +179,7 @@ fn open_files(workspace: &Workspace, root: &Path, cx: &App) -> Value {
     let mut seen = std::collections::HashSet::new();
     let mut files = Vec::new();
     for pane in workspace.panes() {
-        for item in pane.read(cx).items() {
+        for item in pane.read(cx).editors() {
             let buffer = item.read(cx).buffer();
             if !seen.insert(buffer.entity_id()) {
                 continue;
@@ -785,9 +785,24 @@ async fn open_file(
         w.record_position(cx);
         (w.open_path(path.absolute.clone(), window, cx), focus)
     })?;
-    let editor = open
-        .await
-        .map_err(|e| format!("Can't open {}: {e:#}", path.relative))?;
+    let editor = match open.await {
+        Ok(editor) => editor,
+        // Shown, but in a preview, so there's no text to place the cursor in.
+        Err(e)
+            if e.downcast_ref::<gleipnir_workspace::ShownAsImage>()
+                .is_some() =>
+        {
+            update(workspace, cx, |_, window, cx| {
+                if let Some(focus) = focus {
+                    window.focus(&focus, cx);
+                }
+            })?;
+            return Ok(ToolOutput::Json(
+                json!({ "path": path.relative, "shown_as": "image" }),
+            ));
+        }
+        Err(e) => return Err(format!("Can't open {}: {e:#}", path.relative)),
+    };
     update(workspace, cx, |_, window, cx| {
         let placed = editor.update(cx, |editor, cx| -> Result<Value, String> {
             let Some(at) = at else {

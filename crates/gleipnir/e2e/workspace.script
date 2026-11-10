@@ -48,3 +48,11 @@ expect-state /docks/0/visible false
 action project_panel::Toggle
 expect-state /docks/0/visible true
 screenshot {shots}/12-final.png
+
+# An image opens in a preview, not as text, and its tab closes without asking.
+open {dir}/icon.svg
+wait-state /panes/0/tabs/1 icon.svg
+expect-state /message null
+screenshot {shots}/13-image.png
+action workspace::CloseTab
+wait-state /panes/0/tabs/1 null
