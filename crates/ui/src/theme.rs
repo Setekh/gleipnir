@@ -36,6 +36,9 @@ pub struct Theme {
     pub breakpoint: Hsla,
     /// Behind the other uses of the name under the cursor.
     pub usage_highlight: Hsla,
+    /// Behind what Find matches in the editor, and behind the match it's on.
+    pub search_match: Hsla,
+    pub search_match_current: Hsla,
     /// The line execution is stopped on.
     pub execution_line: Hsla,
     /// The values the debugger shows beside the code.
@@ -173,6 +176,8 @@ color_keys!(
     editor_cursor,
     breakpoint,
     usage_highlight,
+    search_match,
+    search_match_current,
     execution_line,
     inline_value,
 );

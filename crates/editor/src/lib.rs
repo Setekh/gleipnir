@@ -5,6 +5,7 @@ mod annotations;
 mod caret_gesture;
 mod decorations;
 mod element;
+mod find;
 mod gutter_text;
 mod semantics;
 mod suggestion;
@@ -17,6 +18,10 @@ pub use actions::{
 pub use annotations::InlayHint;
 pub use decorations::{BreakpointKind, BreakpointMark, DecorationProvider};
 pub use element::{editor_font, editor_font_family};
+pub use find::{
+    CloseFind, Find, FindNext, FindPrevious, Replace, ReplaceAll, ReplaceMatch, SelectAllMatches,
+    ToggleMatchCase, ToggleRegex, ToggleWholeWords,
+};
 pub use gutter_text::{GutterLabel, GutterText};
 pub use semantics::{
     CompletionItem, CompletionKind, Completions, HoverInfo, SemanticTokens, SemanticsProvider,

@@ -31,6 +31,16 @@ wait 100
 expect-dirty false
 expect-file {dir}/main.rs fn main() {\n    println!("hello");\n}\nstruct Point {\n    x: i32,\n}
 
+# Find: the bar finds as you type and selects the match; Escape leaves it selected to type over.
+key cmd-f|ctrl-f
+type x
+screenshot {shots}/04-find.png
+key escape
+type y
+expect-contains y: i32,
+do Undo
+expect-dirty false
+
 # Multiple cursors: add two below and type on all three lines at once.
 do MoveDocStart
 do AddCursorBelow

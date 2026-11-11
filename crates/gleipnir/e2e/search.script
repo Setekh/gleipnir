@@ -62,3 +62,17 @@ key enter
 wait-state /modal null
 wait-match /editor/path app.odin
 expect-state /editor/cursor/0 9
+
+# Replace in Files: Tab to what to replace with; Replace All asks, then changes and saves the file.
+action code_nav::ReplaceInPath
+wait-state /modal FindInFiles
+type notCount
+key tab
+type otherCount
+wait 400
+screenshot {shots}/25-replace-in-files.png
+key alt-a
+key alt-a
+wait 500
+expect-file {dir}/rename.go count := 1\notherCount := count\nprint(count)\n
+key escape

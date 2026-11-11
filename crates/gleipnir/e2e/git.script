@@ -13,7 +13,9 @@ do Save
 action git::ShowDiff
 wait-state /modal DiffView
 screenshot {shots}/git-diff.png
-key escape
+# F4 jumps to the change in the file, closing the diff.
+key f4
+wait-state /modal null
 
 # The Commit window lists it, ticked; a message and Cmd+Enter commit it.
 action git::Commit

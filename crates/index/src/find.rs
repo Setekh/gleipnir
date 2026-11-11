@@ -3,7 +3,7 @@
 
 use crate::search::Cancel;
 use anyhow::{Result, anyhow};
-use regex::{Regex, RegexBuilder};
+use regex::RegexBuilder;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
@@ -24,6 +24,9 @@ pub struct FindOptions {
     pub regex: bool,
     /// File name patterns to search, like `*.rs`, comma separated. Empty means every file.
     pub file_mask: String,
+    /// Replacing keeps the case of what's replaced: all capitals, or a capital first letter or
+    /// not.
+    pub preserve_case: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -48,24 +51,82 @@ pub struct Matcher {
     masks: Vec<globset::GlobMatcher>,
 }
 
+pub use regex::Regex;
+
+/// A query as a regular expression, as the options say: the text itself unless it's a pattern,
+/// matching any case unless that matters, and with `^` and `$` at line ends.
+pub fn compile(query: &str, options: &FindOptions) -> Result<Regex> {
+    if query.is_empty() {
+        return Err(anyhow!("nothing to find"));
+    }
+    let mut pattern = if options.regex {
+        query.to_string()
+    } else {
+        regex::escape(query)
+    };
+    if options.whole_words {
+        pattern = format!(r"\b(?:{pattern})\b");
+    }
+    RegexBuilder::new(&pattern)
+        .case_insensitive(!options.case_sensitive)
+        .multi_line(true)
+        .build()
+        .map_err(|e| anyhow!("not a valid pattern: {e}"))
+}
+
+/// What the match at `range` in `text` is replaced with: `template`, with `$1`, `${name}` and the
+/// like filled in from what a pattern caught, and the match's case kept if the options say.
+pub fn replacement(
+    regex: &Regex,
+    text: &str,
+    range: Range<usize>,
+    template: &str,
+    options: &FindOptions,
+) -> String {
+    let mut out = String::new();
+    match regex
+        .captures_at(text, range.start)
+        .filter(|c| c.get(0).is_some_and(|m| m.range() == range))
+    {
+        Some(captures) if options.regex => captures.expand(template, &mut out),
+        _ => out.push_str(template),
+    }
+    if options.preserve_case {
+        out = keep_case(&text[range], &out);
+    }
+    out
+}
+
+/// `replacement` in the case of `original`: all capitals if it was, otherwise its first letter
+/// capital or not as the original's was.
+fn keep_case(original: &str, replacement: &str) -> String {
+    let letters: Vec<char> = original.chars().filter(|c| c.is_alphabetic()).collect();
+    let Some(first) = letters.first() else {
+        return replacement.to_string();
+    };
+    if letters.len() > 1 && letters.iter().all(|c| !c.is_lowercase()) {
+        return replacement.to_uppercase();
+    }
+    let mut chars = replacement.chars();
+    let Some(head) = chars.next() else {
+        return String::new();
+    };
+    let head: String = if first.is_uppercase() {
+        head.to_uppercase().collect()
+    } else {
+        head.to_lowercase().collect()
+    };
+    head + chars.as_str()
+}
+
 impl Matcher {
+    /// The compiled query, for working out replacements.
+    pub fn regex(&self) -> &Regex {
+        &self.regex
+    }
+
     pub fn new(query: &str, options: &FindOptions) -> Result<Self> {
-        if query.is_empty() {
-            return Err(anyhow!("nothing to find"));
-        }
-        let mut pattern = if options.regex {
-            query.to_string()
-        } else {
-            regex::escape(query)
-        };
-        if options.whole_words {
-            pattern = format!(r"\b(?:{pattern})\b");
-        }
-        let regex = RegexBuilder::new(&pattern)
-            .case_insensitive(!options.case_sensitive)
-            .multi_line(true)
-            .build()
-            .map_err(|e| anyhow!("not a valid pattern: {e}"))?;
+        let regex = compile(query, options)?;
         let masks = options
             .file_mask
             .split(',')
@@ -303,6 +364,52 @@ mod tests {
                 }
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn replacements_fill_in_groups_and_can_keep_case() {
+        let options = |regex, preserve_case| FindOptions {
+            regex,
+            preserve_case,
+            ..Default::default()
+        };
+        let text = "ann@home Count COUNT count";
+        let at = |needle: &str| {
+            let start = text.find(needle).unwrap();
+            start..start + needle.len()
+        };
+        let pattern = compile(r"(\w+)@(\w+)", &options(true, false)).unwrap();
+        assert_eq!(
+            replacement(
+                &pattern,
+                text,
+                at("ann@home"),
+                "$2:$1",
+                &options(true, false)
+            ),
+            "home:ann"
+        );
+        // Not a pattern: `$1` is just text.
+        let plain = compile("ann@home", &options(false, false)).unwrap();
+        assert_eq!(
+            replacement(&plain, text, at("ann@home"), "$1", &options(false, false)),
+            "$1"
+        );
+        let word = compile("count", &options(false, true)).unwrap();
+        let keep = options(false, true);
+        assert_eq!(
+            replacement(&word, text, at("Count"), "total", &keep),
+            "Total"
+        );
+        assert_eq!(
+            replacement(&word, text, at("COUNT"), "total", &keep),
+            "TOTAL"
+        );
+        assert_eq!(replacement(&word, text, 21..26, "Total", &keep), "total");
+        assert_eq!(
+            replacement(&word, text, at("Count"), "total", &options(false, false)),
+            "total"
         );
     }
 

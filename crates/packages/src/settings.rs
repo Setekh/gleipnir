@@ -16,6 +16,59 @@ pub struct Settings {
     pub code_style: BTreeMap<String, CodeStyle>,
     pub tools: ToolSettings,
     pub tests: TestSettings,
+    pub diff: DiffSettings,
+}
+
+/// How the diff window shows changes, as chosen in its toolbar.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DiffSettings {
+    pub viewer: DiffViewer,
+    pub whitespace: DiffWhitespace,
+    pub highlight: DiffHighlight,
+    /// Long runs of unchanged lines folded away, a few kept beside each change.
+    pub collapse_unchanged: bool,
+    /// Side by side, the two sides scroll together; otherwise each on its own.
+    pub sync_scroll: bool,
+}
+
+impl Default for DiffSettings {
+    fn default() -> Self {
+        Self {
+            viewer: DiffViewer::SideBySide,
+            whitespace: DiffWhitespace::Compare,
+            highlight: DiffHighlight::Words,
+            collapse_unchanged: true,
+            sync_scroll: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffViewer {
+    /// The two versions in columns.
+    SideBySide,
+    /// One column, the old lines of each change above the new.
+    Unified,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffWhitespace {
+    Compare,
+    Trim,
+    Ignore,
+    IgnoreWithBlankLines,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffHighlight {
+    /// The changed lines, and within them the words that changed.
+    Words,
+    Lines,
+    None,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

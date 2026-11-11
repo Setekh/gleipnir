@@ -157,6 +157,8 @@ pub struct EditorView {
     /// The widest label, in characters.
     pub(crate) gutter_text_chars: usize,
     pub(crate) caret_gesture: crate::caret_gesture::CaretGesture,
+    /// Find and Replace, once it's been opened.
+    pub(crate) find: Option<crate::find::FindState>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -198,6 +200,7 @@ impl EditorView {
             gutter_hover: None,
             gutter_text_chars: 0,
             caret_gesture: Default::default(),
+            find: None,
             _subscriptions: subscriptions,
         }
     }
@@ -402,6 +405,10 @@ impl EditorView {
             }
             self.annotations_edited(edits, cx);
             self.gutter_text_edited(edits);
+            if let Some(scope) = self.find.as_mut().and_then(|f| f.scope.as_mut()) {
+                scope.transform(edits);
+            }
+            self.refresh_matches(cx);
             cx.notify();
         }
     }
@@ -1169,13 +1176,27 @@ impl Render for EditorView {
             MoveLinesDown => move_lines(false),
             ToggleComment => toggle_line_comment,
         );
+        let root = self.on_find_actions(root, cx);
         // Released outside the window, a drag still has to end.
-        root.on_mouse_up_out(
-            MouseButton::Left,
-            cx.listener(|this, _, _, _| this.mouse_up()),
-        )
-        .child(EditorElement::new(cx.entity()))
-        .children(popups)
-        .children(tooltip)
+        let editor = root
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.mouse_up()),
+            )
+            .child(EditorElement::new(cx.entity()))
+            .children(popups)
+            .children(tooltip);
+        // The find bar sits above the text, outside the editor's keys, so typing in it doesn't
+        // edit the file.
+        match self.render_find_bar(cx) {
+            Some(bar) => div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(bar)
+                .child(div().flex_1().min_h_0().child(editor))
+                .into_any_element(),
+            None => editor.into_any_element(),
+        }
     }
 }

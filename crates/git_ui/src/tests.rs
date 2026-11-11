@@ -1,5 +1,6 @@
 use super::*;
 use gleipnir_core::BufferStore;
+use gleipnir_packages::settings::{DiffViewer, DiffWhitespace};
 use gleipnir_test_support::{isolate_state, run_until};
 use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext, px, size};
 use std::path::PathBuf;
@@ -742,4 +743,184 @@ fn abort_puts_a_stopped_rebase_back(cx: &mut TestAppContext) {
     run_until(cx, |cx| {
         cx.update(|_, cx| panel.read(cx).debug_state(cx))["operation"].is_null()
     });
+}
+
+/// A Rust file committed, then changed: a space after line 3, and a word in line 15 of 30.
+fn changed_file(root: &Path) -> PathBuf {
+    let lines = |changed: bool| {
+        (0..30)
+            .map(|i| match i {
+                3 if changed => "let x3 = 3;  ".to_string(),
+                15 if changed => "let sum = price * count;".to_string(),
+                15 => "let total = price * count;".to_string(),
+                i => format!("let x{i} = {i};"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n"
+    };
+    let path = root.join("lib.rs");
+    std::fs::write(&path, lines(false)).unwrap();
+    git(root, &["add", "."]);
+    git(root, &["commit", "-q", "-m", "lib"]);
+    std::fs::write(&path, lines(true)).unwrap();
+    path
+}
+
+#[gpui::test]
+fn the_diff_toolbar_changes_how_changes_show(cx: &mut TestAppContext) {
+    let (_dir, root, workspace, cx) = setup(cx);
+    let path = changed_file(&root);
+    cx.update(|window, cx| workspace.update(cx, |w, cx| show_file_diff(w, &path, window, cx)));
+    let view = cx
+        .update(|_, cx| workspace.read(cx).active_modal::<DiffView>())
+        .expect("the diff");
+    let shown = |cx: &mut VisualTestContext| cx.update(|_, cx| view.read(cx).debug_display());
+
+    // At first: both changes, the changed words marked, and long unchanged runs folded.
+    assert_eq!(cx.update(|_, cx| view.read(cx).change_rows()), [3, 15]);
+    assert_eq!(
+        cx.update(|_, cx| view.read(cx).debug_words()),
+        (
+            vec!["total".to_string()],
+            vec!["  ".to_string(), "sum".to_string()]
+        )
+    );
+    let display = shown(cx);
+    assert!(display.contains(&"⋯ 3".to_string()), "{display:?}");
+    assert!(display.contains(&"⋯ 10".to_string()), "{display:?}");
+
+    // Trimmed whitespace leaves only the real change.
+    view.update(cx, |v, cx| {
+        v.set_options(|o| o.whitespace = DiffWhitespace::Trim, cx)
+    });
+    assert_eq!(cx.update(|_, cx| view.read(cx).change_rows()), [15]);
+
+    // The unified viewer, from the toolbar's menu: the old line above the new.
+    cx.run_until_parked();
+    let viewer = cx.debug_bounds("diff-viewer").expect("the viewer menu");
+    cx.simulate_click(viewer.center(), Modifiers::none());
+    cx.run_until_parked();
+    let unified = cx.debug_bounds("menu-item-1").expect("Unified viewer");
+    cx.simulate_click(unified.center(), Modifiers::none());
+    cx.run_until_parked();
+    let display = shown(cx);
+    let at = display
+        .iter()
+        .position(|l| l == "- let total = price * count;")
+        .expect("the old line");
+    assert_eq!(display[at + 1], "+ let sum = price * count;");
+    assert_eq!(
+        cx.update(|_, cx| gleipnir_core::settings(cx).diff.viewer),
+        DiffViewer::Unified,
+        "kept for next time"
+    );
+
+    // A fold opens when clicked.
+    let fold = cx
+        .debug_bounds("diff-fold-20")
+        .expect("the fold after the change");
+    cx.simulate_click(fold.center(), Modifiers::none());
+    let display = shown(cx);
+    assert!(!display.contains(&"⋯ 10".to_string()), "{display:?}");
+    assert!(display.contains(&"  let x29 = 29;".to_string()));
+
+    cx.update(|_, cx| gleipnir_core::update_settings(cx, |s| s.diff = Default::default()))
+        .unwrap();
+}
+
+#[gpui::test]
+fn a_diff_scrolls_sideways_and_jumps_to_the_code(cx: &mut TestAppContext) {
+    let (_dir, root, workspace, cx) = setup(cx);
+    let path = root.join("long.txt");
+    let long = "word ".repeat(200);
+    std::fs::write(&path, format!("a\nb\n{long}\nc\nd\n")).unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "long"]);
+    std::fs::write(&path, format!("a\nb\n{long}\nC\nd\n")).unwrap();
+    cx.update(|window, cx| workspace.update(cx, |w, cx| show_file_diff(w, &path, window, cx)));
+    let view = cx
+        .update(|_, cx| workspace.read(cx).active_modal::<DiffView>())
+        .expect("the diff");
+    cx.run_until_parked();
+
+    // A sideways swipe over the code.
+    let middle = cx.debug_bounds("diff-revert-3").expect("the change's row");
+    cx.simulate_event(gpui::ScrollEvent {
+        position: middle.center() - gpui::point(px(200.), px(0.)),
+        delta: gpui::ScrollDelta::Pixels(gpui::point(px(-120.), px(0.))),
+        ..Default::default()
+    });
+    assert_eq!(cx.update(|_, cx| view.read(cx).scroll_x()), px(120.));
+
+    // F4 opens the file at the change.
+    cx.simulate_keystrokes("f4");
+    run_until(cx, |cx| {
+        cx.update(|_, cx| {
+            workspace.read(cx).active_modal::<DiffView>().is_none()
+                && workspace.read(cx).active_editor(cx).is_some_and(|editor| {
+                    let editor = editor.read(cx);
+                    let text = editor.buffer().read(cx).buffer();
+                    text.offset_to_point(editor.selections().primary().head)
+                        .line
+                        == 3
+                })
+        })
+    });
+}
+
+#[gpui::test]
+fn with_sync_scrolling_off_each_side_scrolls_on_its_own(cx: &mut TestAppContext) {
+    let (_dir, root, workspace, cx) = setup(cx);
+    let path = root.join("long.txt");
+    let lines = |changed: &str| {
+        (0..200)
+            .map(|i| match i {
+                3 => format!("{changed} {}", "word ".repeat(80)),
+                i => format!("line {i}"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    std::fs::write(&path, lines("old")).unwrap();
+    git(&root, &["add", "."]);
+    git(&root, &["commit", "-q", "-m", "long"]);
+    std::fs::write(&path, lines("new")).unwrap();
+    cx.update(|window, cx| workspace.update(cx, |w, cx| show_file_diff(w, &path, window, cx)));
+    let view = cx
+        .update(|_, cx| workspace.read(cx).active_modal::<DiffView>())
+        .expect("the diff");
+    view.update(cx, |v, cx| {
+        v.set_options(|o| o.collapse_unchanged = false, cx)
+    });
+    cx.run_until_parked();
+    let sync = cx.debug_bounds("diff-sync").expect("Sync scrolling");
+    cx.simulate_click(sync.center(), Modifiers::none());
+    cx.run_until_parked();
+
+    // Down and sideways over the left side only.
+    let left = cx.debug_bounds("diff-rows-left").expect("the left side");
+    for delta in [
+        gpui::point(px(0.), px(-300.)),
+        gpui::point(px(-90.), px(0.)),
+    ] {
+        cx.simulate_event(gpui::ScrollEvent {
+            position: left.center(),
+            delta: gpui::ScrollDelta::Pixels(delta),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+    }
+    let [(left_down, left_x), (right_down, right_x)] =
+        cx.update(|_, cx| view.read(cx).scroll_offsets());
+    assert!(left_down > px(0.), "the left side scrolled down");
+    assert_eq!(left_x, px(90.));
+    assert_eq!(
+        (right_down, right_x),
+        (px(0.), px(0.)),
+        "the right side stayed"
+    );
+
+    cx.update(|_, cx| gleipnir_core::update_settings(cx, |s| s.diff = Default::default()))
+        .unwrap();
 }

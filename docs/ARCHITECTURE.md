@@ -447,6 +447,13 @@ found this). A conflicted file's three versions come from git's index (`:1:`, `:
 `merge3` merges them line by line as git does: what one side changed is taken, what both changed
 the same is taken once, and changes with nothing unchanged between them are a conflict.
 
+The diff view passes over whitespace by comparing lines through a key (trimmed, or with no
+whitespace at all) while showing the real lines; with blank lines ignored too, a change whose
+non-blank keys match on both sides is shown as unchanged. Changed words come from the same run
+diff over tokens (words, runs of space, single symbols) of a change's whole old and new text, cut
+back into lines. The view lays out display rows over the diff's rows, which is where the unified
+viewer and folding live, so changes, reverting and reviewing keep working in the diff's terms.
+
 A commit is of the ticked files exactly, as IntelliJ's is: new ones are added, then `git commit --
 <files>`, which leaves anything else staged out of it. Push sets the upstream on a branch's first
 push; Update Project is `git pull`, as the person's git config has it.

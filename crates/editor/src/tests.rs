@@ -103,6 +103,7 @@ impl Render for Host {
 fn init(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gleipnir_ui::init_theme(cx);
+        gleipnir_ui::bind_text_input_keys(cx);
         bind_keys(cx);
     });
 }
@@ -671,5 +672,6 @@ fn jumping_to_a_line_far_away_centres_it(cx: &mut TestAppContext) {
 
 mod annotations;
 mod decorations;
+mod find;
 mod semantics;
 mod suggestion;

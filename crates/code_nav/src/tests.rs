@@ -6,7 +6,7 @@ use gleipnir_core::{BufferStore, Launcher};
 use gleipnir_lsp::{LanguageServer, path_to_uri, read_message, write_message};
 use gleipnir_test_support::{isolate_state, project, run_until};
 use gpui::Focusable as _;
-use gpui::{TestAppContext, VisualTestContext, size};
+use gpui::{Modifiers, TestAppContext, VisualTestContext, size};
 use serde_json::{Value, json};
 use std::io::BufReader;
 use std::path::Path;
@@ -670,4 +670,81 @@ fn find_in_files_searches_the_project_and_fills_the_find_panel(cx: &mut TestAppC
     let state = s.panel_state(USAGES_PANEL);
     assert_eq!(state["title"], "Occurrences of 'shapes::'");
     assert_eq!(state["usages"].as_array().unwrap().len(), 2);
+}
+
+/// Waits for Find in Files to finish searching.
+fn finish_search(modal: &Entity<FindInFiles>, cx: &mut VisualTestContext) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        cx.executor()
+            .advance_clock(std::time::Duration::from_millis(200));
+        run_until(cx, |_| true);
+        if cx.update(|_, cx| !modal.read(cx).is_searching()) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the search never finished"
+        );
+    }
+}
+
+#[gpui::test]
+fn replace_in_files_does_one_match_then_all_open_or_not(cx: &mut TestAppContext) {
+    let (_dir, mut s) = setup(cx);
+    let main = s.open("src/main.rs", 0, 0);
+    let workspace = s.workspace.clone();
+    let project =
+        s.cx.update(|_, cx| workspace.read(cx).project().cloned().unwrap());
+    run_until(s.cx, |cx| {
+        cx.update(|_, cx| project.update(cx, |p, _| p.files().len() >= 3))
+    });
+    s.cx.simulate_keystrokes(if cfg!(target_os = "macos") {
+        "cmd-shift-r"
+    } else {
+        "ctrl-shift-r"
+    });
+    let modal =
+        s.cx.update(|_, cx| workspace.read(cx).active_modal::<FindInFiles>())
+            .expect("the Replace in Files popup");
+    s.cx.update(|_, cx| {
+        modal.update(cx, |m, cx| {
+            m.set_query("area", cx);
+            m.set_replacement("surface", cx);
+        })
+    });
+    finish_search(&modal, s.cx);
+    let main_text = |cx: &mut VisualTestContext| {
+        cx.update(|_, cx| main.read(cx).buffer().read(cx).buffer().text())
+    };
+
+    // Replace: the selected match only, in the open file, left unsaved.
+    let click = |selector: &'static str, cx: &mut VisualTestContext| {
+        cx.run_until_parked();
+        let bounds = cx.debug_bounds(selector).expect(selector);
+        cx.simulate_click(bounds.center(), Modifiers::none());
+        run_until(cx, |_| true);
+    };
+    click("replace-selected", s.cx);
+    run_until(s.cx, |cx| main_text(cx).contains("shapes::surface(2.0)"));
+    assert!(main_text(s.cx).contains("shapes::area(3.0)"));
+    finish_search(&modal, s.cx);
+    assert_eq!(s.cx.update(|_, cx| modal.read(cx).labels()).len(), 2);
+
+    // Replace All asks first, then changes the rest, saving the file that wasn't open.
+    click("replace-all", s.cx);
+    assert!(
+        main_text(s.cx).contains("shapes::area(3.0)"),
+        "only asked so far"
+    );
+    click("replace-all", s.cx);
+    let shapes = s.root.join("src/shapes.rs");
+    run_until(s.cx, |cx| {
+        main_text(cx).contains("shapes::surface(3.0)")
+            && std::fs::read_to_string(&shapes)
+                .unwrap()
+                .contains("pub fn surface(")
+    });
+    let saved = std::fs::read_to_string(s.root.join("src/main.rs")).unwrap();
+    assert!(saved.contains("area"), "the open file is left unsaved");
 }

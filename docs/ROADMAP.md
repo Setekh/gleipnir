@@ -204,6 +204,21 @@ Done in the second batch:
 - **Find in Files** (Cmd+Shift+F) searches as you type, with case, whole-word and regex toggles, a
   file mask, unsaved edits searched as they stand, and a preview of the selected match. Enter opens
   it; Cmd+Enter moves the results to the Find panel.
+- **Find and Replace in a file** (Cmd+F, Cmd+R; Ctrl on Linux): a bar over the editor finds as
+  you type from the cursor, marks every match, and shows which of how many it's on. Enter and
+  Shift+Enter, Cmd+G and Cmd+Shift+G, or F3 and Shift+F3 step through them, around the ends; Alt+C,
+  Alt+W and Alt+X toggle Match Case, Words and Regex. Replace does the match it's on and moves on
+  (Enter in the replacement); Replace All (Alt+A) is one undo step, and a pattern's `$1` fills in
+  what it caught. Select All (Ctrl+Cmd+G) puts a cursor on every match. Escape leaves the match
+  selected, and F3 searches again with the bar closed; the last search carries over to other files.
+  A selection over several lines opens it In Selection, which follows edits and toggles off;
+  Preserve Case keeps each match's capitals; Up and Down in either field bring back earlier
+  searches and replacements.
+- **Replace in Files** (Cmd+Shift+R, Ctrl+Shift+R on Linux): Find in Files with what to replace
+  with (Tab moves between the fields) and Preserve Case. Replace does the selected match; Replace
+  All (Alt+A) asks once with how many in how many files, then replaces. Open files change as one
+  undo step and stay unsaved; others change and are saved, as a rename does. It covers the files
+  found, so past 5,000 matches some may be left.
 
 Done in the third batch:
 
@@ -348,6 +363,14 @@ Done after that, closing what M10 left open:
 | 10.7 | The log's graph: a coloured lane per branch, dots for commits, lines to their parents, merges joining in; only the rows on screen are drawn | A branch merged back shows in its own lane, meeting the first one at the fork and the merge |
 | 10.8 | Annotate with Git Blame, from the gutter's right-click menu, the Git menu or Find Action: the day and author beside each line, tinted newer to older; resting on one shows the commit, clicking chooses it in the log | Labels follow edits at once, and are blamed again against the unsaved text when typing stops |
 | 10.9 | Interactively Rebase from Here, from a commit's menu in the log: pick, reword, squash, fixup or drop each commit, reorder them, edit messages; a conflict stops it in the Commit window, with Continue and Abort | Real rebases on temporary repositories reword, squash, drop and reorder, and continue through conflicts |
+
+The diff window has IntelliJ's toolbar: previous and next difference, Jump to Source (F4 or
+Cmd+Down) opening the file at the change, a side-by-side or unified viewer, whitespace compared,
+trimmed, ignored, or ignored with blank lines, changed words highlighted within changed lines (or
+just the lines, or nothing), and unchanged runs folded to four lines either side of each change,
+opened by a click. The choices are kept in `settings.json` under `diff`. The code scrolls sideways
+with a sideways swipe, or on macOS Shift and the wheel. With Sync scrolling off, each side scrolls
+on its own, down and sideways; F7 still brings both to the change.
 
 How each works is under Git in [ARCHITECTURE.md](ARCHITECTURE.md). `script/e2e git` now also checks
 the graph and turns blame on and off. In the rebase window, P, R, S, F and D set a commit's action,

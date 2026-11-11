@@ -13,7 +13,7 @@ pub mod watch;
 
 pub use git::{
     DiffRow, DiffRowKind, GitState, GitStatus, LineChange, LineChangeKind, MergeChunk, MergeKind,
-    merge3, side_by_side,
+    Whitespace, merge3, side_by_side, side_by_side_with, word_changes,
 };
 pub use scan::{FileChanges, FileList, scan_files};
 pub use search::{

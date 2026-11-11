@@ -44,6 +44,7 @@ actions!(
         ShowProblems,
         RestartLanguageServer,
         FindInPath,
+        ReplaceInPath,
     ]
 );
 
@@ -63,6 +64,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-f12", FileStructure, None),
         KeyBinding::new("cmd-6", ShowProblems, None),
         KeyBinding::new("cmd-shift-f", FindInPath, None),
+        KeyBinding::new("cmd-shift-r", ReplaceInPath, None),
         KeyBinding::new("shift-f6", Rename, editor),
         KeyBinding::new("alt-enter", ShowIntentions, editor),
         KeyBinding::new("cmd-alt-l", Reformat, editor),
@@ -77,6 +79,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("ctrl-f12", FileStructure, None),
         KeyBinding::new("alt-6", ShowProblems, None),
         KeyBinding::new("ctrl-shift-f", FindInPath, None),
+        KeyBinding::new("ctrl-shift-r", ReplaceInPath, None),
         KeyBinding::new("shift-f6", Rename, editor),
         KeyBinding::new("alt-enter", ShowIntentions, editor),
         KeyBinding::new("ctrl-alt-l", Reformat, editor),
@@ -113,7 +116,11 @@ pub fn add_to_workspace(
     workspace.register_action(|w, _: &Rename, window, cx| rename::start(w, window, cx));
     workspace.register_action(|w, _: &ShowIntentions, window, cx| show_intentions(w, window, cx));
     workspace.register_action(|w, _: &Reformat, window, cx| reformat(w, window, cx));
-    workspace.register_action(|w, _: &FindInPath, window, cx| find_in_files::open(w, window, cx));
+    workspace
+        .register_action(|w, _: &FindInPath, window, cx| find_in_files::open(w, false, window, cx));
+    workspace.register_action(|w, _: &ReplaceInPath, window, cx| {
+        find_in_files::open(w, true, window, cx)
+    });
     workspace.register_action(|w, _: &ShowProblems, window, cx| {
         w.toggle_panel(PROBLEMS_PANEL, window, cx)
     });

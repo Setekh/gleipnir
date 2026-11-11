@@ -276,6 +276,9 @@ impl LogPanel {
         };
         let before = git_ops::text_at(&root, &commit.hash, &file.relative, true);
         let after = git_ops::text_at(&root, &commit.hash, &file.relative, false);
+        let handle = self.workspace.clone();
+        // Jumps to the file as it is now, near where the commit changed it.
+        let path = root.join(&file.relative);
         self.workspace
             .update(cx, |workspace, cx| {
                 workspace.toggle_modal(window, cx, move |_, cx| {
@@ -285,6 +288,7 @@ impl LogPanel {
                         (commit.short.clone(), &after),
                         cx,
                     )
+                    .jumps_to(handle, path, true)
                 });
             })
             .ok();

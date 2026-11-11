@@ -58,6 +58,9 @@ editor_cursor = "#1f2329"
 breakpoint = "#d8404b"
 # Behind other uses of the name under the caret. Usually translucent.
 usage_highlight = "#2f6dc42a"
+# Behind what Find matches, and behind the match it's on. Usually translucent.
+search_match = "#f2c94c66"
+search_match_current = "#eaa800b0"
 # Behind the line the debugger is stopped on. Usually translucent.
 execution_line = "#3d7bd933"
 # Values the debugger shows beside the code.

@@ -370,8 +370,11 @@ pub fn show_file_diff(
         Some(buffer) => Revertible::Buffer(buffer),
         None => Revertible::File(path.to_path_buf()),
     };
+    let (handle, path) = (cx.weak_entity(), path.to_path_buf());
     workspace.toggle_modal(window, cx, move |_, cx| {
-        DiffView::new(shown, ("Last commit", &committed), ("Now", &now), cx).revertible(target)
+        DiffView::new(shown, ("Last commit", &committed), ("Now", &now), cx)
+            .revertible(target)
+            .jumps_to(handle, path, true)
     });
 }
 

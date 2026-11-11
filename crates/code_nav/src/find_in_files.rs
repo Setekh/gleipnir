@@ -1,9 +1,16 @@
 //! Find in Files (Cmd+Shift+F): text or a pattern across the project, as you type, with a preview
 //! of each match. Enter opens one; Cmd+Enter moves the results to the Find panel.
+//!
+//! Replace in Files (Cmd+Shift+R) adds what to replace with: Replace does the selected match,
+//! Replace All every one, after asking. Open files are changed as one step undo takes back, left
+//! unsaved; others are changed and saved, as a rename does.
 
 use crate::panels::{USAGES_PANEL, Usage, UsagesPanel};
-use gleipnir_index::find::{FileMatch, FindOptions, MATCH_LIMIT, Matcher, find_in_files};
+use gleipnir_index::find::{
+    FileMatch, FindOptions, MATCH_LIMIT, Matcher, compile, find_in_files, replacement,
+};
 use gleipnir_index::search::Cancel;
+use gleipnir_lsp::lsp_types as lsp;
 use gleipnir_text::Utf16Point;
 use gleipnir_ui::Theme;
 use gleipnir_ui::list::ListNav;
@@ -30,7 +37,11 @@ actions!(
         Dismiss,
         ToggleCase,
         ToggleWords,
-        ToggleRegex
+        ToggleRegex,
+        /// Tab: the next field.
+        NextField,
+        ReplaceSelected,
+        ReplaceAll
     ]
 );
 
@@ -46,6 +57,8 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("down", SelectNext, context),
         KeyBinding::new("enter", Open, context),
         KeyBinding::new("escape", Dismiss, context),
+        KeyBinding::new("tab", NextField, context),
+        KeyBinding::new("alt-a", ReplaceAll, context),
     ]);
     #[cfg(target_os = "macos")]
     cx.bind_keys([
@@ -68,6 +81,10 @@ pub struct FindInFiles {
     root: PathBuf,
     query: Entity<TextInput>,
     mask: Entity<TextInput>,
+    /// What to replace with, in Replace in Files.
+    replacement: Option<Entity<TextInput>>,
+    /// Replace All was pressed once, and waits to be pressed again.
+    confirming: bool,
     options: FindOptions,
     matches: Vec<FileMatch>,
     files: usize,
@@ -88,8 +105,14 @@ impl Focusable for FindInFiles {
     }
 }
 
-/// Opens Find in Files, starting from the selection, if there's one on a single line.
-pub fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Workspace>) {
+/// Opens Find in Files, or Replace in Files, starting from the selection, if there's one on a
+/// single line.
+pub fn open(
+    workspace: &mut Workspace,
+    replace: bool,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
     let Some(root) = workspace.root().map(PathBuf::from) else {
         workspace.show_message("Find in Files searches a project; open a folder first", cx);
         return;
@@ -105,7 +128,8 @@ pub fn open(workspace: &mut Workspace, window: &mut Window, cx: &mut Context<Wor
         .unwrap_or_default();
     let weak = cx.weak_entity();
     workspace.toggle_modal(window, cx, move |_, cx| {
-        FindInFiles::new(weak, root, &initial, cx)
+        let find = FindInFiles::new(weak, root, &initial, cx);
+        if replace { find.replacing(cx) } else { find }
     });
 }
 
@@ -131,6 +155,8 @@ impl FindInFiles {
             root,
             query,
             mask,
+            replacement: None,
+            confirming: false,
             options: FindOptions::default(),
             matches: Vec::new(),
             files: 0,
@@ -143,6 +169,165 @@ impl FindInFiles {
         };
         this.search(cx);
         this
+    }
+
+    /// Adds what to replace with.
+    pub fn replacing(mut self, cx: &mut Context<Self>) -> Self {
+        let input = cx.new(|cx| TextInput::new("Replace with", cx));
+        self._subscriptions
+            .push(cx.subscribe(&input, |this, _, _: &TextInputEvent, cx| {
+                this.confirming = false;
+                cx.notify();
+            }));
+        self.replacement = Some(input);
+        self
+    }
+
+    pub fn set_replacement(&mut self, text: &str, cx: &mut Context<Self>) {
+        if let Some(input) = &self.replacement {
+            input.update(cx, |input, cx| input.set_text(text, cx));
+        }
+    }
+
+    /// Tab: from what to find to what to replace with, to the file mask, and around.
+    fn next_field(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut fields = vec![self.query.clone()];
+        fields.extend(self.replacement.clone());
+        fields.push(self.mask.clone());
+        let at = fields
+            .iter()
+            .position(|f| f.read(cx).focus_handle(cx).is_focused(window))
+            .unwrap_or(0);
+        let next = fields[(at + 1) % fields.len()].read(cx).focus_handle(cx);
+        window.focus(&next, cx);
+    }
+
+    /// Replaces the selected match, or with `all` every one found, after asking once.
+    fn replace(&mut self, all: bool, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(template) = self.replacement.as_ref().map(|r| r.read(cx).text()) else {
+            return;
+        };
+        if self.matches.is_empty() || self.searching {
+            return;
+        }
+        if all && !self.confirming {
+            self.confirming = true;
+            cx.notify();
+            return;
+        }
+        self.confirming = false;
+        let query = self.query.read(cx).text();
+        let Ok(regex) = compile(&query, &self.options) else {
+            return;
+        };
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let selected = self
+            .nav
+            .selected()
+            .and_then(|i| self.matches.get(i))
+            .cloned();
+        let targets: Vec<FileMatch> = if all {
+            self.matches.clone()
+        } else {
+            selected.into_iter().collect()
+        };
+        let store = workspace.read(cx).store().clone();
+        let mut changes: Vec<lsp::TextDocumentEdit> = Vec::new();
+        let mut count = 0;
+        let mut paths: Vec<&Arc<str>> = targets.iter().map(|m| &m.path).collect();
+        paths.dedup();
+        for path in paths {
+            let absolute = self.root.join(&**path);
+            // The text as the editor has it, or else as saved, as the search saw it.
+            let text = match store.read(cx).get(&absolute) {
+                Some(buffer) => buffer.read(cx).buffer().text(),
+                None => match std::fs::read_to_string(&absolute) {
+                    Ok(text) => text.replace("\r\n", "\n"),
+                    Err(_) => continue,
+                },
+            };
+            let ranges: Vec<Range<usize>> = if all {
+                regex
+                    .find_iter(&text)
+                    .map(|m| m.range())
+                    .filter(|r| !r.is_empty())
+                    .collect()
+            } else {
+                // The selected match, if it's still there.
+                targets
+                    .iter()
+                    .filter_map(|m| {
+                        let line_start = line_offset(&text, m.line)?;
+                        let range = line_start + m.columns.start..line_start + m.columns.end;
+                        regex
+                            .find_at(&text, range.start)
+                            .filter(|found| found.range() == range)
+                            .map(|found| found.range())
+                    })
+                    .collect()
+            };
+            let edits: Vec<lsp::TextEdit> = ranges
+                .into_iter()
+                .map(|range| lsp::TextEdit {
+                    range: lsp::Range {
+                        start: position(&text, range.start),
+                        end: position(&text, range.end),
+                    },
+                    new_text: replacement(&regex, &text, range, &template, &self.options),
+                })
+                .collect();
+            if !edits.is_empty() {
+                count += edits.len();
+                changes.push(lsp::TextDocumentEdit {
+                    text_document: lsp::OptionalVersionedTextDocumentIdentifier {
+                        uri: gleipnir_lsp::path_to_uri(&absolute),
+                        version: None,
+                    },
+                    edits: edits.into_iter().map(lsp::OneOf::Left).collect(),
+                });
+            }
+        }
+        if changes.is_empty() {
+            if let Some(workspace) = self.workspace.upgrade() {
+                workspace.update(cx, |w, cx| {
+                    w.show_message(
+                        "The file changed since the search; nothing was replaced",
+                        cx,
+                    )
+                });
+            }
+            self.search(cx);
+            return;
+        }
+        let files = changes.len();
+        let edit = lsp::WorkspaceEdit {
+            document_changes: Some(lsp::DocumentChanges::Edits(changes)),
+            ..Default::default()
+        };
+        let task = workspace.update(cx, |w, cx| crate::apply_workspace_edit(w, edit, cx));
+        cx.spawn_in(window, async move |this, cx| {
+            let result = task.await;
+            this.update(cx, |this, cx| {
+                let message = match result {
+                    Ok(_) if all => format!(
+                        "Replaced {count} match{} in {files} file{}",
+                        if count == 1 { "" } else { "es" },
+                        if files == 1 { "" } else { "s" }
+                    ),
+                    Ok(_) => return,
+                    Err(error) => format!("Couldn't replace: {error:#}"),
+                };
+                if let Some(workspace) = this.workspace.upgrade() {
+                    workspace.update(cx, |w, cx| w.show_message(message, cx));
+                }
+            })
+            .ok();
+            // The results again; the selection stays at the same place in the list.
+            this.update(cx, |this, cx| this.search(cx)).ok();
+        })
+        .detach();
     }
 
     pub fn set_query(&mut self, text: &str, cx: &mut Context<Self>) {
@@ -393,6 +578,24 @@ impl FindInFiles {
     }
 }
 
+/// Where a zero-based line starts in the text.
+fn line_offset(text: &str, line: usize) -> Option<usize> {
+    if line == 0 {
+        return Some(0);
+    }
+    text.match_indices('\n').nth(line - 1).map(|(i, _)| i + 1)
+}
+
+/// A byte offset as a language server's position: the line, and UTF-16 units into it.
+fn position(text: &str, offset: usize) -> lsp::Position {
+    let before = &text[..offset];
+    let line_start = before.rfind('\n').map_or(0, |i| i + 1);
+    lsp::Position {
+        line: before.matches('\n').count() as u32,
+        character: before[line_start..].encode_utf16().count() as u32,
+    }
+}
+
 impl Render for FindInFiles {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = cx.global::<Theme>().clone();
@@ -483,6 +686,15 @@ impl Render for FindInFiles {
             .on_action(
                 cx.listener(|this, _: &ToggleRegex, _, cx| this.toggle(|o| o.regex = !o.regex, cx)),
             )
+            .on_action(cx.listener(|this, _: &NextField, window, cx| this.next_field(window, cx)))
+            .on_action(
+                cx.listener(|this, _: &ReplaceSelected, window, cx| {
+                    this.replace(false, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &ReplaceAll, window, cx| this.replace(true, window, cx)),
+            )
             .on_mouse_down_out(cx.listener(|_, _, _, cx| cx.emit(DismissEvent)))
             .child(
                 div()
@@ -499,7 +711,11 @@ impl Render for FindInFiles {
                             .flex_none()
                             .font_weight(FontWeight::SEMIBOLD)
                             .text_color(theme.text_muted)
-                            .child("Find in Files"),
+                            .child(if self.replacement.is_some() {
+                                "Replace in Files"
+                            } else {
+                                "Find in Files"
+                            }),
                     )
                     .child(
                         div()
@@ -542,6 +758,78 @@ impl Render for FindInFiles {
                             .child(self.mask.clone()),
                     ),
             )
+            .children(self.replacement.clone().map(|input| {
+                let ready = count > 0 && !self.searching;
+                let files = self.files;
+                let button = |id: &'static str, label: SharedString, enabled: bool| {
+                    div()
+                        .id(id)
+                        .debug_selector(move || id.into())
+                        .flex_none()
+                        .px(px(8.))
+                        .py(px(1.))
+                        .rounded(px(4.))
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_color(if enabled {
+                            theme.text
+                        } else {
+                            theme.text_faint
+                        })
+                        .when(enabled, |d| d.cursor_pointer().hover(|d| d.bg(theme.hover)))
+                        .child(label)
+                };
+                let all_label: SharedString = if self.confirming {
+                    format!(
+                        "Replace {count} in {files} file{}?",
+                        if files == 1 { "" } else { "s" }
+                    )
+                    .into()
+                } else {
+                    "Replace All".into()
+                };
+                div()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.))
+                    .border_b_1()
+                    .border_color(theme.border)
+                    .child(
+                        div()
+                            .id("replace-with")
+                            .debug_selector(|| "replace-with".into())
+                            .flex_1()
+                            .child(input),
+                    )
+                    .child(
+                        toggle(
+                            "find-preserve-case",
+                            "Preserve Case",
+                            self.options.preserve_case,
+                        )
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.options.preserve_case = !this.options.preserve_case;
+                            cx.notify();
+                        })),
+                    )
+                    .child(
+                        button("replace-selected", "Replace".into(), ready).on_click(
+                            cx.listener(|this, _, window, cx| this.replace(false, window, cx)),
+                        ),
+                    )
+                    .child(
+                        button("replace-all", all_label, ready)
+                            .when(self.confirming, |d| {
+                                d.border_color(theme.warning).text_color(theme.warning)
+                            })
+                            .on_click(
+                                cx.listener(|this, _, window, cx| this.replace(true, window, cx)),
+                            ),
+                    )
+            }))
             .child(if count == 0 {
                 div()
                     .h(px(ROW_HEIGHT))

@@ -210,6 +210,8 @@ struct Decorations {
 pub(crate) struct Prepainted {
     geometry: Rc<FrameGeometry>,
     usage_rects: Vec<Bounds<Pixels>>,
+    /// What Find matches on screen, and whether each is the one it's on.
+    match_rects: Vec<(Bounds<Pixels>, bool)>,
     decorations: Option<Decorations>,
     gutter_numbers: Vec<(Pixels, ShapedLine, Pixels)>,
     /// The text beside each line on screen: its top, the text, and how strongly to tint it.
@@ -704,6 +706,38 @@ impl Element for EditorElement {
                     size((right - left).max(px(0.)), line_height),
                 ));
             }
+            // Find's matches, on the lines shown, cut at line ends.
+            let mut match_rects = Vec::new();
+            if let Some(find) = view.find.as_ref().filter(|f| f.open) {
+                let visible_start =
+                    buffer.point_to_offset(gleipnir_text::Point::new(first_line, 0));
+                let from = find.matches.partition_point(|m| m.end <= visible_start);
+                for (index, range) in find.matches.iter().enumerate().skip(from) {
+                    let start = buffer.offset_to_point(range.start);
+                    if start.line >= last_line {
+                        break;
+                    }
+                    let end = buffer.offset_to_point(range.end);
+                    for line in start.line.max(first_line)..=end.line.min(last_line - 1) {
+                        let left = x_of(line, if line == start.line { start.col } else { 0 });
+                        let right = x_of(
+                            line,
+                            if line == end.line {
+                                end.col
+                            } else {
+                                usize::MAX
+                            },
+                        );
+                        match_rects.push((
+                            Bounds::new(
+                                point(left, top_of(line)),
+                                size((right - left).max(px(2.)), line_height),
+                            ),
+                            find.current == Some(index),
+                        ));
+                    }
+                }
+            }
             for selection in view.selections.iter() {
                 let range = selection.range();
                 let start = buffer.offset_to_point(range.start);
@@ -757,6 +791,7 @@ impl Element for EditorElement {
                 geometry,
                 decorations,
                 usage_rects,
+                match_rects,
                 gutter_numbers,
                 gutter_labels,
                 active_lines,
@@ -837,6 +872,14 @@ impl Element for EditorElement {
             |window| {
                 for rect in &prepainted.usage_rects {
                     window.paint_quad(fill(*rect, theme.usage_highlight).corner_radii(px(2.)));
+                }
+                for (rect, current) in &prepainted.match_rects {
+                    let color = if *current {
+                        theme.search_match_current
+                    } else {
+                        theme.search_match
+                    };
+                    window.paint_quad(fill(*rect, color).corner_radii(px(2.)));
                 }
                 for rect in &prepainted.selection_rects {
                     window.paint_quad(fill(*rect, theme.editor_selection));

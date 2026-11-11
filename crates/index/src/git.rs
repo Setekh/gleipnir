@@ -247,17 +247,75 @@ pub enum DiffRowKind {
     Changed,
 }
 
+/// What differences in whitespace a diff passes over, as IntelliJ's diff offers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Whitespace {
+    #[default]
+    Compare,
+    /// Space at the start and end of lines doesn't count.
+    Trim,
+    /// No whitespace counts.
+    Ignore,
+    /// Nor do blank lines added or taken out.
+    IgnoreWithBlankLines,
+}
+
+impl Whitespace {
+    /// A line as it's compared.
+    fn key(self, line: &str) -> String {
+        match self {
+            Self::Compare => line.to_string(),
+            Self::Trim => line.trim().to_string(),
+            Self::Ignore | Self::IgnoreWithBlankLines => {
+                line.chars().filter(|c| !c.is_whitespace()).collect()
+            }
+        }
+    }
+}
+
 /// Two texts lined up for showing side by side: unchanged lines together, a changed run's old
 /// and new lines paired, with blanks where one side has more.
 pub fn side_by_side(old: &str, new: &str) -> Vec<DiffRow> {
+    side_by_side_with(old, new, Whitespace::Compare)
+}
+
+/// As `side_by_side`, passing over the differences in whitespace that `whitespace` says to. Lines
+/// that differ only in those are shown as the same.
+pub fn side_by_side_with(old: &str, new: &str, whitespace: Whitespace) -> Vec<DiffRow> {
     let old = old.replace("\r\n", "\n");
     let new = new.replace("\r\n", "\n");
     let old_lines: Vec<&str> = old.lines().collect();
     let new_lines: Vec<&str> = new.lines().collect();
+    let old_keys: Vec<String> = old_lines.iter().map(|l| whitespace.key(l)).collect();
+    let new_keys: Vec<String> = new_lines.iter().map(|l| whitespace.key(l)).collect();
     let line =
         |lines: &[&str], i: usize| Some((i, lines.get(i).copied().unwrap_or("").to_string()));
     let mut rows = Vec::new();
-    for run in runs(&old_lines, &new_lines) {
+    for run in runs(&old_keys, &new_keys) {
+        // A change of nothing but blank lines, when those don't count.
+        let run = match run {
+            Run::Changed {
+                old,
+                old_len,
+                new,
+                new_len,
+            } if whitespace == Whitespace::IgnoreWithBlankLines
+                && old_keys[old..old + old_len]
+                    .iter()
+                    .filter(|k| !k.is_empty())
+                    .eq(new_keys[new..new + new_len]
+                        .iter()
+                        .filter(|k| !k.is_empty())) =>
+            {
+                rows.extend((0..old_len.max(new_len)).map(|i| DiffRow {
+                    left: (i < old_len).then(|| line(&old_lines, old + i)).flatten(),
+                    right: (i < new_len).then(|| line(&new_lines, new + i)).flatten(),
+                    kind: DiffRowKind::Same,
+                }));
+                continue;
+            }
+            run => run,
+        };
         match run {
             Run::Equal { old, new, len } => rows.extend((0..len).map(|i| DiffRow {
                 left: line(&old_lines, old + i),
@@ -284,6 +342,76 @@ pub fn side_by_side(old: &str, new: &str) -> Vec<DiffRow> {
         }
     }
     rows
+}
+
+/// Where two versions of a changed run of lines differ within the lines, as byte ranges in each,
+/// by words: runs of letters, digits and `_`, runs of spaces, and single other characters. With
+/// `ignore_space`, differences in spacing alone aren't marked.
+pub fn word_changes(
+    old: &str,
+    new: &str,
+    ignore_space: bool,
+) -> (Vec<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) {
+    fn tokens(text: &str, ignore_space: bool) -> Vec<(std::ops::Range<usize>, &str)> {
+        let mut out = Vec::new();
+        let mut chars = text.char_indices().peekable();
+        while let Some((start, c)) = chars.next() {
+            let class = |c: char| {
+                if c.is_alphanumeric() || c == '_' {
+                    1
+                } else if c.is_whitespace() {
+                    2
+                } else {
+                    0
+                }
+            };
+            let kind = class(c);
+            let mut end = start + c.len_utf8();
+            if kind != 0 {
+                while let Some(&(i, next)) = chars.peek() {
+                    if class(next) != kind {
+                        break;
+                    }
+                    end = i + next.len_utf8();
+                    chars.next();
+                }
+            }
+            if !(ignore_space && kind == 2) {
+                out.push((start..end, &text[start..end]));
+            }
+        }
+        out
+    }
+    let old_tokens = tokens(old, ignore_space);
+    let new_tokens = tokens(new, ignore_space);
+    let old_words: Vec<&str> = old_tokens.iter().map(|t| t.1).collect();
+    let new_words: Vec<&str> = new_tokens.iter().map(|t| t.1).collect();
+    let (mut old_out, mut new_out): (Vec<std::ops::Range<usize>>, Vec<std::ops::Range<usize>>) =
+        (Vec::new(), Vec::new());
+    // Adjacent changed words are marked as one, with what's between them.
+    let push = |out: &mut Vec<std::ops::Range<usize>>, range: std::ops::Range<usize>| match out
+        .last_mut()
+    {
+        Some(last) if last.end == range.start => last.end = range.end,
+        _ => out.push(range),
+    };
+    for run in runs(&old_words, &new_words) {
+        if let Run::Changed {
+            old,
+            old_len,
+            new,
+            new_len,
+        } = run
+        {
+            for token in &old_tokens[old..old + old_len] {
+                push(&mut old_out, token.0.clone());
+            }
+            for token in &new_tokens[new..new + new_len] {
+                push(&mut new_out, token.0.clone());
+            }
+        }
+    }
+    (old_out, new_out)
 }
 
 /// How a region of a three-way merge came out.
@@ -566,6 +694,66 @@ mod tests {
             ]
         );
         assert_eq!(rows[1].right.as_ref().unwrap().1, "B");
+    }
+
+    #[test]
+    fn whitespace_can_be_passed_over() {
+        let kinds = |rows: Vec<DiffRow>| rows.iter().map(|r| r.kind).collect::<Vec<_>>();
+        let (old, new) = ("a\n  b\nc d\n", "a\nb  \ncd\n");
+        use DiffRowKind::*;
+        assert_eq!(kinds(side_by_side(old, new)), [Same, Changed, Changed]);
+        assert_eq!(
+            kinds(side_by_side_with(old, new, Whitespace::Trim)),
+            [Same, Same, Changed]
+        );
+        assert_eq!(
+            kinds(side_by_side_with(old, new, Whitespace::Ignore)),
+            [Same, Same, Same]
+        );
+        // The lines shown are still the real ones.
+        let rows = side_by_side_with(old, new, Whitespace::Ignore);
+        assert_eq!(rows[1].left.as_ref().unwrap().1, "  b");
+        assert_eq!(rows[1].right.as_ref().unwrap().1, "b  ");
+
+        let (old, new) = ("a\nb\n", "a\n\n\nb\nc\n");
+        assert_eq!(
+            kinds(side_by_side_with(old, new, Whitespace::Ignore)),
+            [Same, Added, Added, Same, Added]
+        );
+        assert_eq!(
+            kinds(side_by_side_with(
+                old,
+                new,
+                Whitespace::IgnoreWithBlankLines
+            )),
+            [Same, Same, Same, Same, Added]
+        );
+    }
+
+    #[test]
+    fn word_changes_mark_only_the_words_that_differ() {
+        let old = "let total = price * count;";
+        let new = "let sum = price * amount;";
+        let (o, n) = word_changes(old, new, false);
+        let words = |text: &str, ranges: &[std::ops::Range<usize>]| {
+            ranges
+                .iter()
+                .map(|r| text[r.clone()].to_string())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(words(old, &o), ["total", "count"]);
+        assert_eq!(words(new, &n), ["sum", "amount"]);
+
+        // Spacing alone is a change unless it's ignored.
+        let (o, n) = word_changes("f(a, b)", "f(a,b)", false);
+        assert_eq!((o.len(), n.len()), (1, 0));
+        let (o, n) = word_changes("f(a, b)", "f(a,b)", true);
+        assert!(o.is_empty() && n.is_empty());
+
+        // Neighbouring changed words are one mark, and multi-byte text is cut on characters.
+        let (o, n) = word_changes("un café noir", "un thé chaud noir", false);
+        assert_eq!(words("un café noir", &o), ["café"]);
+        assert_eq!(words("un thé chaud noir", &n), ["thé chaud"]);
     }
 
     #[test]

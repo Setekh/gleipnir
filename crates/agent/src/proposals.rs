@@ -284,8 +284,11 @@ fn show_next(
     };
     let title = format!("{} (proposed by an agent)", edit.path.relative);
     let review_buffer = buffer.clone();
+    let (handle, path) = (cx.weak_entity(), edit.path.absolute.clone());
     let view = workspace.toggle_modal(window, cx, move |_, cx| {
-        DiffView::new(title, ("Now", &now), ("Proposed", &proposed), cx).reviewing(review_buffer)
+        DiffView::new(title, ("Now", &now), ("Proposed", &proposed), cx)
+            .reviewing(review_buffer)
+            .jumps_to(handle, path, false)
     });
     let Some(view) = view else {
         // Can't happen with no popup open; tried again next time if it does.
