@@ -124,6 +124,15 @@ fn rows() -> Vec<Row> {
             },
         },
         Row {
+            page: Page::Appearance,
+            label: "Update automatically",
+            description: "Gleipnir looks for new versions on GitHub and installs them, ready for the next restart, which is yours to choose. Off, it looks only on Check for Updates.",
+            control: Control::Toggle {
+                get: |s| s.updates.automatic,
+                set: |s, v| s.updates.automatic = v,
+            },
+        },
+        Row {
             page: Page::Editor,
             label: "Font",
             description: "The editor's font. Automatic picks the first good monospace font installed.",

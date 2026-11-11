@@ -204,6 +204,10 @@ fn main() {
             set_menus(cx);
             // Agents started in the terminal get the window's tools.
             gleipnir_agent::launch::init(cx);
+            // Scripted runs, which test the app, stay off the network.
+            if script.is_none() {
+                gleipnir_updater::init(cx);
+            }
 
             cx.on_action(|_: &Quit, cx| cx.quit());
             // The local model's server goes with the app.
@@ -250,6 +254,7 @@ fn main() {
                 gleipnir_suggest::add_to_workspace(workspace, window, cx);
                 gleipnir_agent::add_to_workspace(workspace, window, cx);
                 gleipnir_terminal::add_to_workspace(workspace, window, cx);
+                gleipnir_updater::add_to_workspace(workspace, window, cx);
             })));
 
             let window = open_project_window(target.root.clone(), false, cx);
@@ -288,6 +293,7 @@ fn set_menus(cx: &mut App) {
             name: "Gleipnir".into(),
             items: vec![
                 MenuItem::action("Settings…", gleipnir_settings_ui::OpenSettings),
+                MenuItem::action("Check for Updates…", gleipnir_updater::CheckForUpdates),
                 MenuItem::separator(),
                 MenuItem::action("Quit", Quit),
             ],

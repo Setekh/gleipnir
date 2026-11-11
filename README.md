@@ -38,13 +38,21 @@ Releases on GitHub have a disk image for macOS (Apple silicon) and an archive fo
   `./install.sh --uninstall` takes them out). It's built on Arch, so it needs as new a glibc, and
   it uses the desktop's libxcb, libxkbcommon and Vulkan driver, which Omarchy has.
 
+An installed Gleipnir keeps itself current: it looks for a newer release now and then, downloads
+it, checks it against the release's checksum and puts it in place, and the status bar offers
+"Restart to update". It never restarts by itself. Gleipnir → Check for Updates looks at once, and
+Settings → Appearance turns the automatic check off. One built from source isn't updated.
+
 `script/bundle` builds the installer for the machine it runs on into `target/dist`;
 `script/linux-check bundle` builds the Linux one in Docker from any machine.
 
 ## Releasing
 
     script/release 0.2.0           # on a clean main: sets the version, runs script/check, commits, tags v0.2.0
-    git push origin main v0.2.0    # GitHub builds both installers and publishes the release
+    git push public main v0.2.0    # GitHub builds both installers and publishes the release
+
+Releases are published from the public repository, the `public` remote here, which is where
+installed copies look for updates.
 
 The Release workflow can also be run by hand from the Actions tab, which builds the installers
 without publishing them. A version with a dash, like `0.2.0-rc.1`, is published as a pre-release.
@@ -99,6 +107,8 @@ searches much harder, and has found real bugs that the default run missed.
 - `crates/suggest`: inline suggestions, from the file and from a local model run by llama.cpp.
 - `crates/agent`: Gleipnir's MCP server, which gives coding agents the IDE's tools, and
   `gleipnir mcp`, which connects an agent to it.
+- `crates/updater`: updates from GitHub releases: the check, the download and its checksum, and
+  replacing the installed app or program.
 - `crates/terminal`: the terminal panel on alacritty_terminal, and coding agents' tabs in it.
 - `crates/index`: the file tree model, file list, fuzzy matching and search, gitignore rules, git
   status, file watching and file operations.

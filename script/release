@@ -3,7 +3,7 @@
 #   script/release 0.2.0
 # Sets the version, runs script/check, then commits "Release 0.2.0" and tags it v0.2.0. Nothing
 # leaves this machine: pushing the tag has GitHub build the installers and publish the release.
-#   git push origin main v0.2.0
+#   git push public main v0.2.0
 set -eu
 
 version=${1:-}
@@ -38,4 +38,4 @@ script/check
 git commit -q -am "Release $version"
 git tag -a "v$version" -m "Gleipnir $version"
 echo "Tagged v$version. To build the installers and publish the release:"
-echo "    git push origin main v$version"
+echo "    git push public main v$version"

@@ -2009,6 +2009,7 @@ dependencies = [
  "gleipnir-syntax",
  "gleipnir-terminal",
  "gleipnir-ui",
+ "gleipnir-updater",
  "gleipnir-workspace",
  "gpui",
  "gpui_platform",
@@ -2335,6 +2336,24 @@ dependencies = [
  "serde",
  "tempfile",
  "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
+name = "gleipnir-updater"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "flate2",
+ "gleipnir-core",
+ "gleipnir-packages",
+ "gleipnir-ui",
+ "gleipnir-workspace",
+ "gpui",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "ureq",
 ]
 
 [[package]]

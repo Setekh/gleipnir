@@ -1,0 +1,24 @@
+[package]
+name = "gleipnir-updater"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "gleipnir_updater"
+
+[dependencies]
+anyhow.workspace = true
+flate2 = "1"
+gleipnir-core.workspace = true
+gleipnir-packages.workspace = true
+gleipnir-ui.workspace = true
+gleipnir-workspace.workspace = true
+gpui.workspace = true
+serde_json.workspace = true
+sha2 = "0.10"
+tar = "0.4"
+ureq = "3"
+
+[dev-dependencies]
+tempfile = "3"

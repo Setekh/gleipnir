@@ -17,6 +17,21 @@ pub struct Settings {
     pub tools: ToolSettings,
     pub tests: TestSettings,
     pub diff: DiffSettings,
+    pub updates: UpdateSettings,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UpdateSettings {
+    /// Whether Gleipnir looks for new versions by itself and installs them, ready for the next
+    /// restart. Off, it only looks when asked to.
+    pub automatic: bool,
+}
+
+impl Default for UpdateSettings {
+    fn default() -> Self {
+        Self { automatic: true }
+    }
 }
 
 /// How the diff window shows changes, as chosen in its toolbar.

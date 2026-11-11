@@ -9,7 +9,8 @@ filesystem = "HFS+"
 files = [app]
 symlinks = {"Applications": "/Applications"}
 icon = defines["volume_icon"]  # noqa: F821
-hide_extensions = [os.path.basename(app)]
+# No hide_extensions: it marks the app with Finder information, which breaks its signature's
+# strict check. Finder hides an app's extension anyway.
 
 background = os.path.join(defines["settings_dir"], "dmg-background.png")  # noqa: F821
 # The background is 660 by 400; Finder's title bar adds to the height.

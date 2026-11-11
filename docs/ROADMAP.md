@@ -479,6 +479,15 @@ Still open from M12:
 | 12.7 | Instructions for agents in Gleipnir, one text for all: the MCP server's own instructions; for Claude Code a skill in a plugin passed with `--plugin-dir`, and a line saying where it runs; for Codex the skill's text as the session's developer instructions; so nothing is installed into the person's config | A new agent session uses the IDE's tools without being told to |
 | 12.8 | Codex: its tab, and the MCP server and instructions given to it its own way | A Codex tab's agent edits an open file through Gleipnir |
 
+## M13: Installers and updates
+
+| # | Item | Finished when |
+| --- | --- | --- |
+| 13.1 | Installers: a disk image for macOS and an archive with `install.sh` for Linux, from `script/bundle`; `script/release` tags a version and the Release workflow builds and publishes both. Done | A pushed tag publishes a release with both installers and their checksums |
+| 13.2 | Updates from GitHub releases: a periodic and an on-demand check (Gleipnir → Check for Updates), download checked against the published checksum, installed in place, and "Restart to update" in the status bar; never a restart by itself. Done, but not yet seen against a real release | An installed 0.1.0 becomes the next release from its status bar |
+| 13.3 | Signed releases: the workflow signs each installer with a key whose public half the app carries, and the updater refuses anything else | A release re-uploaded by another key isn't installed |
+| 13.4 | A Developer ID signature and notarization on macOS, so the first launch isn't blocked and permissions carry over updates | A downloaded disk image opens without a warning |
+
 ## Later
 
 WASM plugins (stage 3), Windows.

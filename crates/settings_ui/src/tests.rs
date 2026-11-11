@@ -105,7 +105,7 @@ fn a_search_narrows_the_pages_and_a_switch_saves_its_setting(cx: &mut TestAppCon
     );
     cx.run_until_parked();
     // The page's only row; its switch is the first control drawn.
-    let index = 7;
+    let index = 8;
     let switch = cx
         .debug_bounds(Box::leak(format!("setting-{index}").into_boxed_str()))
         .expect("the switch");
@@ -131,7 +131,14 @@ fn the_theme_and_font_sizes_are_chosen_and_kept(cx: &mut TestAppContext) {
     })
     .unwrap();
     let rows = cx.update(|_, cx| view.read(cx).debug_rows(cx));
-    assert_eq!(rows, ["Theme: Gleipnir Light", "Interface font size: 20"]);
+    assert_eq!(
+        rows,
+        [
+            "Theme: Gleipnir Light",
+            "Interface font size: 20",
+            "Update automatically: true"
+        ]
+    );
     let settings = cx.update(|_, cx| gleipnir_core::settings(cx).clone());
     assert_eq!(settings.editor.font_size, 15.);
     let themes = gleipnir_ui::Themes::load(&gleipnir_ui::themes_dir());

@@ -25,6 +25,7 @@ gleipnir-terminal.workspace = true
 gleipnir-suggest.workspace = true
 gleipnir-syntax.workspace = true
 gleipnir-ui.workspace = true
+gleipnir-updater.workspace = true
 gleipnir-workspace.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true

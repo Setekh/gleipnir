@@ -59,6 +59,7 @@ and can be tested without a window.
 gleipnir                 binary: startup, wiring, keymap defaults
    |
    +-- project_panel   search   code_nav   debugger_ui   settings_ui   git_ui   agent
+   +-- suggest   terminal   updater
    |        (each feature contributes panels and actions to the workspace)
    |
 workspace                window layout, docks, tool rail, split panes, tabs, action registry
@@ -562,6 +563,30 @@ says something, and tabs or spaces it doesn't mention come from EditorConfig, as
 JavaScript configs (`prettier.config.js` and the like) are run with Node, as Prettier does, and
 remembered until they change; a project's are run in the background as it opens, so opening a file
 doesn't wait. Changing any of these files re-indents the open files.
+
+### Updates
+
+`updater` keeps an installed Gleipnir current from the public repository's GitHub releases, which
+`script/release` and the Release workflow publish. Twenty seconds after launch and every six hours
+it asks GitHub for the latest release (pre-releases aren't "latest", so they're never offered). A
+newer one's installer for this platform is downloaded into the state folder, checked against the
+`.sha256` file published beside it, and put in place of the installed program:
+
+- **macOS**: the disk image is opened out of sight, its app copied beside the installed one, its
+  signature checked with `codesign --verify --strict`, and the two swapped by renaming.
+- **Linux**: `bin/gleipnir` is taken out of the archive and renamed over the program.
+
+Either way the swap is two renames on one disk, and a failure puts the old one back. The running
+program is untouched: it keeps the files it started with. The status bar then offers "Restart to
+update to 0.2.0", and nothing restarts unless that's clicked, because a restart ends terminals and
+agents. Only an installed Gleipnir updates itself, found from where the program runs: an app
+bundle, or on Linux a program outside any `target` folder, in a folder this user can write. One
+built from source, or installed for everyone by root, says so on Check for Updates and is left
+alone. Scripted runs never check. Settings can turn the automatic check off.
+
+The checksum comes from the same release as the installer, so it catches a broken download, not
+a release someone else published: that takes signing releases with a key the app carries, which
+is still to do.
 
 ## Coding agents
 

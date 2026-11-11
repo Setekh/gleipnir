@@ -32,6 +32,7 @@ gleipnir-syntax = { path = "crates/syntax" }
 gleipnir-terminal = { path = "crates/terminal" }
 gleipnir-text = { path = "crates/text" }
 gleipnir-ui = { path = "crates/ui" }
+gleipnir-updater = { path = "crates/updater" }
 gleipnir-workspace = { path = "crates/workspace" }
 
 anyhow = "1"
