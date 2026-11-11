@@ -1992,7 +1992,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "gleipnir-agent",
@@ -2020,7 +2020,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-agent"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -2046,7 +2046,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-code-nav"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -2066,7 +2066,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -2086,7 +2086,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-dap"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -2098,7 +2098,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-debugger-ui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "gleipnir-code-nav",
  "gleipnir-core",
@@ -2117,7 +2117,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-editor"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -2134,7 +2134,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-git-ui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "gleipnir-core",
@@ -2153,7 +2153,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-index"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -2170,7 +2170,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-lsp"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -2183,7 +2183,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-packages"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "flate2",
@@ -2203,7 +2203,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-project-panel"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -2221,7 +2221,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-search"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "gleipnir-core",
  "gleipnir-editor",
@@ -2238,7 +2238,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-settings-ui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "gleipnir-core",
@@ -2252,7 +2252,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-suggest"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "gleipnir-core",
@@ -2272,7 +2272,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-syntax"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "gleipnir-text",
  "proptest",
@@ -2293,7 +2293,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-terminal"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -2310,7 +2310,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-test-support"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "gpui",
  "tempfile",
@@ -2318,7 +2318,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-text"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "proptest",
  "ropey",
@@ -2327,7 +2327,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-ui"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "gleipnir-packages",
  "gleipnir-syntax",
@@ -2340,7 +2340,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-updater"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "flate2",
@@ -2358,7 +2358,7 @@ dependencies = [
 
 [[package]]
 name = "gleipnir-workspace"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "gleipnir-core",
