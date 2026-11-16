@@ -105,7 +105,7 @@ fn launch_in_shell(
         let script = "unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_CHILD_SESSION \
                       CLAUDE_CODE_SSE_PORT; \
                       if command -v \"$0\" >/dev/null 2>&1; then \"$0\" \"$@\"; \
-                      else printf '%s' \"$GLEIPNIR_AGENT_NOTE\"; fi";
+                      else printf '%s' \"$GLEIPNIR_AGENT_NOTE\"; sleep 0.2; fi";
         let mut shell_args = vec![
             "-l".to_string(),
             "-i".to_string(),
@@ -121,7 +121,10 @@ fn launch_in_shell(
             Some(binary) => (binary.to_string_lossy().into_owned(), args),
             None => (
                 "/bin/sh".into(),
-                vec!["-c".into(), "printf '%s' \"$GLEIPNIR_AGENT_NOTE\"".into()],
+                vec![
+                    "-c".into(),
+                    "printf '%s' \"$GLEIPNIR_AGENT_NOTE\"; sleep 0.2".into(),
+                ],
             ),
         }
     };
@@ -133,7 +136,9 @@ fn launch_in_shell(
     }
 }
 
-/// What the tab says when the agent isn't installed.
+/// What the tab says when the agent isn't installed. The shell that prints it waits a moment
+/// before it ends: on Linux, output still unread when a program ends can be lost, and the note
+/// came out cut short after its first line.
 fn missing_note(agent: &Agent) -> String {
     format!(
         "{name} isn't installed, or isn't on your shell's PATH.\r\n\r\n\
