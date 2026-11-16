@@ -271,7 +271,8 @@ fn opening_a_file_starts_its_server_once_and_opens_the_document(cx: &mut TestApp
 #[gpui::test]
 fn files_without_a_language_server_are_left_alone(cx: &mut TestAppContext) {
     let s = setup(None, cx);
-    let notes = buffer("text", &s.root.join("notes.md"), cx);
+    // Plain text has no language, so no server: Markdown has had one since it was added.
+    let notes = buffer("text", &s.root.join("notes.txt"), cx);
     s.servers
         .update(cx, |servers, cx| servers.register_buffer(&notes, cx));
     cx.run_until_parked();

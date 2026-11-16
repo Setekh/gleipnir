@@ -28,6 +28,8 @@ struct Setup<'a> {
 
 fn setup<'a>(root: &Path, cx: &'a mut TestAppContext) -> Setup<'a> {
     init(cx);
+    // The project is watched by a real thread, whose news can arrive at any point in a test.
+    cx.executor().allow_parking();
     let store = cx.new(|_| BufferStore::new());
     let root = root.to_path_buf();
     let (workspace, cx) = cx.add_window_view(|window, cx| {
