@@ -54,6 +54,7 @@ Status: built and passing on macOS. See the notes below the table for what's sti
 | --- | --- | --- |
 | 2.1 | Action registry and keymap, IntelliJ macOS shortcuts as defaults | Actions are listable and rebindable; Linux gets sensible modifier mapping |
 | 2.2 | Window layout: tool rail, docks, resizing | Panels toggle and resize; layout restores on reopen |
+| 2.2a | Tool windows dock anywhere: a rail button dragged to another group (left, bottom, right), or onto another button to go before it, moves its panel there; kept with the project's layout. Done | The project tree dragged to the right rail opens on the right, and is there again after a restart |
 | 2.3 | Split panes and tabs | Split either direction; the same file in two panes stays in sync |
 | 2.4 | Project panel: lazy tree, keyboard nav, file icons | Opens a large repo instantly; follows external file changes |
 | 2.5 | Project panel: file ops, reveal active file (Alt+F1, or the target in its header), gitignored and git status colours | Create, rename, delete and move all work, with confirmation for delete |

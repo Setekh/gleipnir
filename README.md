@@ -176,6 +176,10 @@ line:
 
 Mistakes are reported in the status bar, and don't stop the rest of the file from loading.
 
+Tool windows dock on the left, the bottom or the right: drag a window's button on the side rail
+to another group of buttons (the bottom dock's are the lower ones on the left rail), or onto
+another button to go before it. Where they are is kept with each project's layout.
+
 Languages & Tools (`Cmd+;`) shows each language's SDK and tools. Tools Gleipnir installs go into its
 state folder, never system-wide, the first time they're needed, unless that's turned off in
 Settings. Each project's layout is saved outside

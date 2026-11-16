@@ -827,6 +827,58 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Moves a panel to a dock, before the panel now at `index` there, or last. If it was showing
+    /// it shows where it lands; otherwise the docks keep showing what they showed.
+    pub fn move_panel(
+        &mut self,
+        id: &str,
+        to: DockPosition,
+        index: Option<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        let found = self.docks.iter().find_map(|dock| {
+            let index = dock.panels.iter().position(|p| p.id(cx) == id)?;
+            Some((dock.position, index))
+        });
+        let Some((from, from_index)) = found else {
+            return;
+        };
+        let mut index = index.unwrap_or(usize::MAX);
+        // Onto itself, or just after itself, is where it already is.
+        if from == to && (index == from_index || index == from_index + 1) {
+            return;
+        }
+        let source = self.dock_mut(from);
+        let was_showing = source.visible && source.active == from_index;
+        let shown = source.active_panel().map(|p| p.id(cx));
+        let panel = source.panels.remove(from_index);
+        if from == to && index > from_index {
+            index -= 1;
+        }
+        // The dock it left goes on showing what it showed, or its neighbour, or closes.
+        let source = self.dock_mut(from);
+        source.active = shown
+            .and_then(|shown| source.panels.iter().position(|p| p.id(cx) == shown))
+            .unwrap_or(from_index.min(source.panels.len().saturating_sub(1)));
+        if from != to && was_showing {
+            source.visible = false;
+        }
+        let target = self.dock_mut(to);
+        let shown = target.active_panel().map(|p| p.id(cx));
+        let index = index.min(target.panels.len());
+        target.panels.insert(index, panel);
+        if was_showing {
+            target.visible = true;
+            target.active = index;
+        } else {
+            target.active = shown
+                .and_then(|shown| target.panels.iter().position(|p| p.id(cx) == shown))
+                .unwrap_or(0);
+        }
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
     /// Shows a panel without changing focus.
     pub fn show_panel(&mut self, id: &str, cx: &mut Context<Self>) {
         for dock in &mut self.docks {
@@ -1703,6 +1755,7 @@ impl Workspace {
                         && dock.active_panel().is_none_or(|panel| panel.reopens(cx)),
                     size: dock.size.into(),
                     active_panel: dock.active_panel().map(|p| p.id(cx).to_string()),
+                    panels: dock.panels.iter().map(|p| p.id(cx).to_string()).collect(),
                 })
                 .collect(),
             panels,
@@ -1732,6 +1785,13 @@ impl Workspace {
         let sdks = saved.sdks.clone();
         self.toolchains.update(cx, |t, cx| t.set_choices(sdks, cx));
 
+        // Panels go back to the docks they were dragged to, in their order there. One the layout
+        // doesn't know, as from a newer version, stays where it starts.
+        for saved_dock in &saved.docks {
+            for (index, id) in saved_dock.panels.iter().enumerate() {
+                self.move_panel(id, saved_dock.position, Some(index), cx);
+            }
+        }
         for saved_dock in &saved.docks {
             let dock = self.dock_mut(saved_dock.position);
             dock.visible = saved_dock.visible;
@@ -2274,14 +2334,31 @@ impl Workspace {
         let theme = cx.global::<Theme>().clone();
         // The bottom dock's panels show lower on the left rail, as they're a separate group.
         let upper = self.rail_buttons(side, &theme, window, cx);
-        let lower = if side == DockPosition::Left {
-            self.rail_buttons(DockPosition::Bottom, &theme, window, cx)
-        } else {
-            Vec::new()
-        };
-        if upper.is_empty() && lower.is_empty() {
+        let lower = (side == DockPosition::Left)
+            .then(|| self.rail_buttons(DockPosition::Bottom, &theme, window, cx));
+        // Both rails show while there's any panel, even an empty one: it's where a panel is
+        // dropped to dock it on that side.
+        if self.docks.iter().all(|dock| dock.panels.is_empty()) {
             return None;
         }
+        // A group of buttons, which takes a dragged panel at its end.
+        let group = |to: DockPosition, buttons: Vec<AnyElement>, cx: &mut Context<Self>| {
+            let highlight = theme.selection_inactive;
+            div()
+                .id(gpui::SharedString::from(format!("rail-group-{to:?}")))
+                .debug_selector(|| format!("rail-group-{to:?}"))
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(4.))
+                .w_full()
+                .min_h(px(RAIL_DROP_HEIGHT))
+                .drag_over::<DraggedPanel>(move |style, _, _, _| style.bg(highlight))
+                .on_drop(cx.listener(move |this, dragged: &DraggedPanel, _, cx| {
+                    this.move_panel(dragged.id, to, None, cx);
+                }))
+                .children(buttons)
+        };
         Some(
             div()
                 .flex()
@@ -2295,22 +2372,13 @@ impl Workspace {
                 .border_color(theme.border)
                 .when(side == DockPosition::Left, |r| r.border_r_1())
                 .when(side == DockPosition::Right, |r| r.border_l_1())
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(4.))
-                        .children(upper),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .items_center()
-                        .gap(px(4.))
-                        .children(lower),
-                )
+                .child(group(side, upper, cx).flex_1())
+                // Room above the bottom dock's buttons to drop one at the end of the group.
+                .children(lower.map(|lower| {
+                    group(DockPosition::Bottom, lower, cx)
+                        .justify_end()
+                        .pt(px(16.))
+                }))
                 .into_any_element(),
         )
     }
@@ -2328,7 +2396,9 @@ impl Workspace {
             .enumerate()
             .map(|(index, panel)| {
                 let id = panel.id(cx);
+                let icon = panel.icon(cx);
                 let active = dock.visible && dock.active == index;
+                let accent = theme.accent;
                 div()
                     .id(gpui::SharedString::from(format!("rail-{id}")))
                     .debug_selector(|| format!("rail-{id}"))
@@ -2342,16 +2412,22 @@ impl Workspace {
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.click_panel_button(id, window, cx);
                     }))
-                    .child(
-                        svg()
-                            .path(panel.icon(cx).path())
-                            .size(px(18.))
-                            .text_color(if active {
-                                theme.accent
-                            } else {
-                                theme.text_muted
-                            }),
-                    )
+                    // Dragged to another group, or onto a button to go before it.
+                    .on_drag(DraggedPanel { id, icon }, |dragged, _, _, cx| {
+                        cx.new(|_| PanelPreview(dragged.icon))
+                    })
+                    .drag_over::<DraggedPanel>(move |style, _, _, _| {
+                        style.border_t_2().border_color(accent)
+                    })
+                    .on_drop(cx.listener(move |this, dragged: &DraggedPanel, _, cx| {
+                        cx.stop_propagation();
+                        this.move_panel(dragged.id, position, Some(index), cx);
+                    }))
+                    .child(svg().path(icon.path()).size(px(18.)).text_color(if active {
+                        theme.accent
+                    } else {
+                        theme.text_muted
+                    }))
                     .into_any_element()
             })
             .collect()
@@ -2517,6 +2593,39 @@ pub fn breadcrumb_segments(root: Option<&Path>, path: &Path) -> Vec<(String, Pat
 }
 
 pub(crate) const RAIL_WIDTH: f32 = 40.;
+/// An empty group of rail buttons is still this tall, to drop a panel on.
+const RAIL_DROP_HEIGHT: f32 = 48.;
+
+/// A panel's rail button being dragged to another dock.
+#[derive(Clone)]
+struct DraggedPanel {
+    id: &'static str,
+    icon: Icon,
+}
+
+/// What follows the pointer while a panel's button is dragged.
+struct PanelPreview(Icon);
+
+impl Render for PanelPreview {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = cx.global::<Theme>().clone();
+        div()
+            .size(px(30.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(6.))
+            .bg(theme.surface_raised)
+            .border_1()
+            .border_color(theme.accent)
+            .child(
+                svg()
+                    .path(self.0.path())
+                    .size(px(18.))
+                    .text_color(theme.accent),
+            )
+    }
+}
 pub(crate) const STATUS_BAR_HEIGHT: f32 = 24.;
 
 impl Focusable for Workspace {

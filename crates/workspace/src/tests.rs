@@ -1073,3 +1073,148 @@ fn the_title_bar_shows_the_app_menus_and_they_act_where_focus_was(cx: &mut TestA
     assert_eq!(tabs(&workspace, cx), [["a.rs"], ["a.rs"]]);
     assert_eq!(menu_labels(cx), None);
 }
+
+/// Each dock's panels, in the order left, bottom, right.
+fn docked(workspace: &Entity<Workspace>, cx: &mut VisualTestContext) -> [Vec<String>; 3] {
+    let docks = cx.update(|window, cx| workspace.read(cx).snapshot(window, cx).docks);
+    [
+        DockPosition::Left,
+        DockPosition::Bottom,
+        DockPosition::Right,
+    ]
+    .map(|position| {
+        let dock = docks.iter().find(|d| d.position == position).unwrap();
+        dock.panels.clone()
+    })
+}
+
+/// Drags the rail button of one panel onto something else on the rails: the middle of a button,
+/// or the empty top of a group of them.
+fn drag_panel(panel: &str, onto: &str, cx: &mut VisualTestContext) {
+    let bounds = |name: &str, cx: &mut VisualTestContext| {
+        cx.debug_bounds(Box::leak(name.to_string().into_boxed_str()))
+            .unwrap_or_else(|| panic!("no {name} on the rails"))
+    };
+    let from = bounds(&format!("rail-{panel}"), cx).center();
+    let target = bounds(onto, cx);
+    let to = if onto.starts_with("rail-group-") {
+        point(target.center().x, target.top() + px(4.))
+    } else {
+        target.center()
+    };
+    cx.simulate_mouse_down(from, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_move(
+        from + point(px(0.), px(10.)),
+        MouseButton::Left,
+        Modifiers::none(),
+    );
+    cx.simulate_mouse_move(to, MouseButton::Left, Modifiers::none());
+    cx.simulate_mouse_up(to, MouseButton::Left, Modifiers::none());
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn a_panel_dragged_to_another_dock_moves_there_and_stays_showing(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace_for(None, cx);
+    cx.update(|window, cx| workspace.update(cx, |w, cx| w.toggle_panel("left", window, cx)));
+    cx.run_until_parked();
+    assert_eq!(
+        docked(&workspace, cx),
+        [vec!["left"], vec!["bottom"], vec![]]
+    );
+
+    // Onto the right rail, which has nothing yet.
+    drag_panel("left", "rail-group-Right", cx);
+    assert_eq!(
+        docked(&workspace, cx),
+        [vec![], vec!["bottom"], vec!["left"]]
+    );
+    let visible = |position, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| workspace.read(cx).is_dock_visible(position))
+    };
+    assert!(
+        visible(DockPosition::Right, cx),
+        "it was showing, so it still is"
+    );
+    assert!(
+        !visible(DockPosition::Left, cx),
+        "and the dock it left is closed"
+    );
+
+    // Onto another panel's button, to go before it.
+    drag_panel("left", "rail-bottom", cx);
+    assert_eq!(
+        docked(&workspace, cx),
+        [vec![], vec!["left", "bottom"], vec![]]
+    );
+    assert!(visible(DockPosition::Bottom, cx));
+    let shown = cx.update(|window, cx| workspace.read(cx).snapshot(window, cx).docks);
+    let bottom = shown
+        .iter()
+        .find(|d| d.position == DockPosition::Bottom)
+        .unwrap();
+    assert_eq!(bottom.active.as_deref(), Some("left"));
+
+    // A click still opens and closes it rather than starting a drag.
+    let button = cx.debug_bounds("rail-left").unwrap().center();
+    cx.simulate_click(button, Modifiers::none());
+    assert!(!visible(DockPosition::Bottom, cx));
+    assert_eq!(
+        docked(&workspace, cx),
+        [vec![], vec!["left", "bottom"], vec![]]
+    );
+}
+
+#[gpui::test]
+fn a_hidden_panel_moves_without_changing_what_the_docks_show(cx: &mut TestAppContext) {
+    let (workspace, cx) = workspace_for(None, cx);
+    cx.update(|window, cx| workspace.update(cx, |w, cx| w.toggle_panel("bottom", window, cx)));
+    cx.run_until_parked();
+
+    drag_panel("left", "rail-group-Bottom", cx);
+
+    assert_eq!(
+        docked(&workspace, cx),
+        [vec![], vec!["bottom", "left"], vec![]]
+    );
+    let docks = cx.update(|window, cx| workspace.read(cx).snapshot(window, cx).docks);
+    let bottom = docks
+        .iter()
+        .find(|d| d.position == DockPosition::Bottom)
+        .unwrap();
+    assert!(bottom.visible);
+    assert_eq!(bottom.active.as_deref(), Some("bottom"));
+}
+
+#[gpui::test]
+fn where_panels_were_dragged_is_kept_with_the_project(cx: &mut TestAppContext) {
+    let (_dir, root) = project(&[("a.rs", "")]);
+    {
+        let (workspace, cx) = workspace_for(Some(&root), cx);
+        cx.update(|window, cx| workspace.update(cx, |w, cx| w.toggle_panel("left", window, cx)));
+        cx.update(|_, cx| {
+            workspace.update(cx, |w, cx| {
+                w.move_panel("bottom", DockPosition::Right, None, cx);
+                w.move_panel("left", DockPosition::Right, Some(0), cx);
+                w.save_now(cx);
+            })
+        });
+    }
+    let (workspace, cx) = workspace_for(Some(&root), cx);
+    cx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            assert!(workspace.restore_layout(window, cx));
+        })
+    });
+    assert_eq!(
+        docked(&workspace, cx),
+        [vec![], vec![], vec!["left", "bottom"]]
+    );
+    let docks = cx.update(|window, cx| workspace.read(cx).snapshot(window, cx).docks);
+    let right = docks
+        .iter()
+        .find(|d| d.position == DockPosition::Right)
+        .unwrap();
+    assert!(right.visible);
+    assert_eq!(right.active.as_deref(), Some("left"));
+}

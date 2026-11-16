@@ -61,6 +61,10 @@ pub struct SavedDock {
     pub size: f32,
     #[serde(default)]
     pub active_panel: Option<String>,
+    /// The dock's panels in order, by id, since they can be dragged between docks. Empty in
+    /// layouts saved before that, which leaves each panel where it starts.
+    #[serde(default)]
+    pub panels: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -222,6 +226,7 @@ mod persistence_tests {
                 visible: true,
                 size: 280.,
                 active_panel: Some("project".into()),
+                panels: vec!["project".into()],
             }],
             panels: HashMap::new(),
             recent_files: vec!["a.rs".into()],
