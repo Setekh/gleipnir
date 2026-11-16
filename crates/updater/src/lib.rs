@@ -29,6 +29,8 @@ const LATEST_RELEASE: &str = "https://api.github.com/repos/Setekh/gleipnir/relea
 /// The first check waits for the window to be up; later ones are far apart, as releases are.
 const FIRST_CHECK: Duration = Duration::from_secs(20);
 const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+/// A check that failed, as when the network was down, is tried again this soon.
+const RETRY_EVERY: Duration = Duration::from_secs(10 * 60);
 
 /// How long the answer to Check for Updates stays in the status bar.
 const ANSWER_SHOWS_FOR: Duration = Duration::from_secs(12);
@@ -51,12 +53,15 @@ struct State {
     busy: bool,
     /// When an answer that only shows for a while goes away.
     until: Option<Instant>,
+    /// When GitHub last answered, whatever it said.
+    answered: Option<Instant>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
     status: Status::Idle,
     busy: false,
     until: None,
+    answered: None,
 });
 
 fn state() -> std::sync::MutexGuard<'static, State> {
@@ -227,7 +232,13 @@ pub fn check(asked: bool) {
                 }
             })
         });
-        state().busy = false;
+        {
+            let mut state = state();
+            state.busy = false;
+            if result.is_ok() {
+                state.answered = Some(Instant::now());
+            }
+        }
         match result {
             Ok(Some(version)) => set_status(Status::Ready(version)),
             Ok(None) if asked => set_status(Status::UpToDate),
@@ -258,10 +269,15 @@ pub fn init(cx: &mut App) {
     cx.spawn(async move |cx| {
         cx.background_executor().timer(FIRST_CHECK).await;
         loop {
-            if cx.update(|cx| gleipnir_core::settings(cx).updates.automatic) {
+            // Due when GitHub hasn't answered for a while: so a check that failed is tried
+            // again at the next turn, and one that worked not for hours.
+            let due = state()
+                .answered
+                .is_none_or(|answered| answered.elapsed() >= CHECK_EVERY);
+            if due && cx.update(|cx| gleipnir_core::settings(cx).updates.automatic) {
                 check(false);
             }
-            cx.background_executor().timer(CHECK_EVERY).await;
+            cx.background_executor().timer(RETRY_EVERY).await;
         }
     })
     .detach();

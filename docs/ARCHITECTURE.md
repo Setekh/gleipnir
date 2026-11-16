@@ -568,7 +568,8 @@ doesn't wait. Changing any of these files re-indents the open files.
 
 `updater` keeps an installed Gleipnir current from the public repository's GitHub releases, which
 `script/release` and the Release workflow publish. Twenty seconds after launch and every six hours
-it asks GitHub for the latest release (pre-releases aren't "latest", so they're never offered). A
+it asks GitHub for the latest release (pre-releases aren't "latest", so they're never offered); a check that fails, as with the
+network down, is tried again ten minutes later. A
 newer one's installer for this platform is downloaded into the state folder, checked against the
 `.sha256` file published beside it, and put in place of the installed program:
 
